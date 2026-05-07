@@ -175,8 +175,9 @@ tune is against a regression corpus:
    physical key sequences.
 2. Add external TSV hard cases where needed. TSV format is
    `keys<TAB>expected-layout`.
-3. Run `typeflow eval <cases.tsv>` or `typeflow eval --generated <N>`, collect
-   accuracy + confusion matrix.
+3. Run `typeflow eval <cases.tsv>` or `typeflow eval --generated <N>`. The
+   report includes accuracy, confusion counts, false positives/negatives,
+   failure buckets by token length, and a bounded failure sample.
 4. Adjust one knob at a time, re-run, see whether accuracy moves.
 
 The generated corpus is intentionally stricter than the old smoke set. For

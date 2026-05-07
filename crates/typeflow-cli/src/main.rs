@@ -1,5 +1,6 @@
 mod config;
 
+use std::collections::BTreeMap;
 use std::env;
 use std::fmt::Write as _;
 use std::fs;
@@ -403,6 +404,21 @@ struct EvalCase {
     expected: Layout,
 }
 
+#[derive(Clone, Debug)]
+struct EvalFailure {
+    name: String,
+    keys: String,
+    expected: Layout,
+    actual: Layout,
+    rendered: String,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct EvalLengthStats {
+    total: usize,
+    failed: usize,
+}
+
 fn cmd_eval(args: &[String], explicit_config: Option<&Path>) -> Result<(), String> {
     let source = load_config(explicit_config)?;
     let mut engine = build_engine(&source.config)?;
@@ -410,38 +426,144 @@ fn cmd_eval(args: &[String], explicit_config: Option<&Path>) -> Result<(), Strin
 
     let mut passed = 0usize;
     let mut failed = 0usize;
+    let mut confusion = [[0usize; 2]; 2];
+    let mut by_len: BTreeMap<usize, EvalLengthStats> = BTreeMap::new();
+    let mut failures: Vec<EvalFailure> = Vec::new();
 
     for case in &cases {
         engine.reset_layout(Layout::English);
         let rendered = run_token_committed(&mut engine, &case.keys)?;
         let actual = engine.current_layout();
+        let expected_idx = layout_index(case.expected);
+        let actual_idx = layout_index(actual);
+        confusion[expected_idx][actual_idx] += 1;
+
+        let len = case.keys.chars().count();
+        let len_stats = by_len.entry(len).or_default();
+        len_stats.total += 1;
 
         if actual == case.expected {
             passed += 1;
         } else {
             failed += 1;
-            eprintln!(
-                "FAIL {}\tkeys={}\texpected={}\tactual={}\trendered={}",
-                case.name,
-                case.keys,
-                layout_label(&engine, case.expected),
-                layout_label(&engine, actual),
+            len_stats.failed += 1;
+            failures.push(EvalFailure {
+                name: case.name.clone(),
+                keys: case.keys.clone(),
+                expected: case.expected,
+                actual,
                 rendered,
-            );
+            });
         }
     }
 
-    println!(
-        "eval: {} passed / {} failed / {} total",
-        passed,
-        failed,
-        cases.len()
-    );
+    print_eval_report(&engine, passed, failed, &confusion, &by_len, &failures);
 
     if failed == 0 {
         Ok(())
     } else {
         Err("evaluation failed".into())
+    }
+}
+
+fn print_eval_report(
+    engine: &Engine,
+    passed: usize,
+    failed: usize,
+    confusion: &[[usize; 2]; 2],
+    by_len: &BTreeMap<usize, EvalLengthStats>,
+    failures: &[EvalFailure],
+) {
+    let total = passed + failed;
+    let accuracy = percentage(passed, total);
+    let false_positive = confusion[layout_index(Layout::English)][layout_index(Layout::Secondary)];
+    let false_negative = confusion[layout_index(Layout::Secondary)][layout_index(Layout::English)];
+
+    println!(
+        "eval: {} passed / {} failed / {} total ({:.2}% accuracy)",
+        passed, failed, total, accuracy
+    );
+    println!(
+        "confusion: expected\\actual\t{}\t{}",
+        layout_label(engine, Layout::English),
+        layout_label(engine, Layout::Secondary)
+    );
+    println!(
+        "confusion: {}\t{}\t{}",
+        layout_label(engine, Layout::English),
+        confusion[layout_index(Layout::English)][layout_index(Layout::English)],
+        confusion[layout_index(Layout::English)][layout_index(Layout::Secondary)]
+    );
+    println!(
+        "confusion: {}\t{}\t{}",
+        layout_label(engine, Layout::Secondary),
+        confusion[layout_index(Layout::Secondary)][layout_index(Layout::English)],
+        confusion[layout_index(Layout::Secondary)][layout_index(Layout::Secondary)]
+    );
+    println!(
+        "errors: false_positive_{}_to_{}={} false_negative_{}_to_{}={}",
+        token_label(engine, Layout::English),
+        token_label(engine, Layout::Secondary),
+        false_positive,
+        token_label(engine, Layout::Secondary),
+        token_label(engine, Layout::English),
+        false_negative
+    );
+
+    print_eval_length_report(by_len);
+    print_eval_failures(engine, failures);
+}
+
+fn print_eval_length_report(by_len: &BTreeMap<usize, EvalLengthStats>) {
+    println!("by_len: len\ttotal\tfailed\tfailure_rate");
+    for (len, stats) in by_len {
+        if stats.failed == 0 {
+            continue;
+        }
+        println!(
+            "by_len: {}\t{}\t{}\t{:.2}%",
+            len,
+            stats.total,
+            stats.failed,
+            percentage(stats.failed, stats.total)
+        );
+    }
+}
+
+fn print_eval_failures(engine: &Engine, failures: &[EvalFailure]) {
+    const FAILURE_SAMPLE_LIMIT: usize = 20;
+
+    for failure in failures.iter().take(FAILURE_SAMPLE_LIMIT) {
+        println!(
+            "FAIL {}\tkeys={}\texpected={}\tactual={}\trendered={}",
+            failure.name,
+            failure.keys,
+            layout_label(engine, failure.expected),
+            layout_label(engine, failure.actual),
+            failure.rendered,
+        );
+    }
+
+    if failures.len() > FAILURE_SAMPLE_LIMIT {
+        println!(
+            "FAIL ... {} additional failures omitted",
+            failures.len() - FAILURE_SAMPLE_LIMIT
+        );
+    }
+}
+
+fn layout_index(layout: Layout) -> usize {
+    match layout {
+        Layout::English => 0,
+        Layout::Secondary => 1,
+    }
+}
+
+fn percentage(count: usize, total: usize) -> f64 {
+    if total == 0 {
+        0.0
+    } else {
+        (count as f64 / total as f64) * 100.0
     }
 }
 
