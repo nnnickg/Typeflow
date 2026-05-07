@@ -726,6 +726,27 @@ dict = "dict.fst"
     }
 
     #[test]
+    fn pack_manifest_rejects_unsupported_format_version() {
+        let dir = temp_pack_dir("unsupported-format");
+        fs::write(
+            dir.join(PACK_MANIFEST_FILE),
+            r#"
+format_version = 999
+id = "xx"
+display_name = "Bad"
+script = "Latin"
+layout = "english-us"
+ngrams = "ngrams.bin"
+dict = "dict.fst"
+"#,
+        )
+        .unwrap();
+
+        let error = LanguagePackManifest::read_from_dir(&dir).unwrap_err();
+        assert!(error.to_string().contains("unsupported pack format"));
+    }
+
+    #[test]
     fn pack_loader_rejects_malformed_ngram_bytes() {
         let dir = temp_pack_dir("bad-ngrams");
         write_manifest(&dir, "xx");
