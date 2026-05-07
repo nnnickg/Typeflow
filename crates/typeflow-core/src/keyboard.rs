@@ -195,7 +195,6 @@ impl KeyboardMap {
     pub fn named(name: &str) -> Option<Self> {
         match name.trim().to_ascii_lowercase().as_str() {
             "english-us" | "en-us" | "us" => Some(Self::english_us()),
-            "russian-jcuken" | "ru-jcuken" | "jcuken" => Some(Self::russian_jcuken()),
             "ukrainian-jcuken-osx" | "uk-jcuken-osx" | "ukrainian-osx" | "uk-osx" => {
                 Some(Self::ukrainian_jcuken_osx())
             }
@@ -205,10 +204,6 @@ impl KeyboardMap {
 
     pub fn english_us() -> Self {
         Self::new(ENGLISH_US_UNSHIFTED, ENGLISH_US_SHIFTED)
-    }
-
-    pub fn russian_jcuken() -> Self {
-        Self::new(RUSSIAN_JCUKEN_UNSHIFTED, RUSSIAN_JCUKEN_SHIFTED)
     }
 
     pub fn ukrainian_jcuken_osx() -> Self {
@@ -265,16 +260,6 @@ const ENGLISH_US_UNSHIFTED: [char; PhysicalKey::COUNT] = [
 const ENGLISH_US_SHIFTED: [char; PhysicalKey::COUNT] = [
     'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S',
     'T', 'U', 'V', 'W', 'X', 'Y', 'Z', '~', '{', '}', ':', '"', '<', '>', '|',
-];
-
-const RUSSIAN_JCUKEN_UNSHIFTED: [char; PhysicalKey::COUNT] = [
-    'ф', 'и', 'с', 'в', 'у', 'а', 'п', 'р', 'ш', 'о', 'л', 'д', 'ь', 'т', 'щ', 'з', 'й', 'к', 'ы',
-    'е', 'г', 'м', 'ц', 'ч', 'н', 'я', 'ё', 'х', 'ъ', 'ж', 'э', 'б', 'ю', '\\',
-];
-
-const RUSSIAN_JCUKEN_SHIFTED: [char; PhysicalKey::COUNT] = [
-    'Ф', 'И', 'С', 'В', 'У', 'А', 'П', 'Р', 'Ш', 'О', 'Л', 'Д', 'Ь', 'Т', 'Щ', 'З', 'Й', 'К', 'Ы',
-    'Е', 'Г', 'М', 'Ц', 'Ч', 'Н', 'Я', 'Ё', 'Х', 'Ъ', 'Ж', 'Э', 'Б', 'Ю', '/',
 ];
 
 const UKRAINIAN_JCUKEN_OSX_UNSHIFTED: [char; PhysicalKey::COUNT] = [

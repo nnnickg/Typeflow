@@ -22,6 +22,7 @@ crates/
 docs/
 ├── architecture.md  component layout + data flow
 ├── engine.md        scoring math, what the config knobs actually do
+├── invariants.md    core/host contract the macOS layer must obey
 └── handoff.md       current state, outstanding work, open questions
 macos/                placeholder; IMK bundle not yet built
 ```
@@ -95,11 +96,11 @@ typeflow bench 50000
 typeflow model
 
 # External-pack workflow. The binary itself stays standalone.
-cargo run --release -p typeflow-data -- build-pack docs/examples/ru.toml --out /tmp/ru.typeflow-pack
-typeflow pack install /tmp/ru.typeflow-pack
+cargo run --release -p typeflow-data -- build-pack ./secondary.toml --out /tmp/secondary.typeflow-pack
+typeflow pack install /tmp/secondary.typeflow-pack
 typeflow pack list
-typeflow pack use ru
-typeflow pack inspect ru
+typeflow pack use secondary
+typeflow pack inspect secondary
 
 # Stream tokens from stdin.
 echo -e "ghsdbn\nhello\nyt" | typeflow stream

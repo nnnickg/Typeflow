@@ -520,8 +520,6 @@ mod tests {
 
     #[test]
     fn keyboard_map_loads_named_and_custom_layouts() {
-        let named = KeyboardMap::named("russian-jcuken").unwrap();
-        assert_eq!(named.render(PhysicalKey::G, false), 'п');
         let named = KeyboardMap::named("ukrainian-jcuken-osx").unwrap();
         assert_eq!(named.render(PhysicalKey::Backslash, false), 'ґ');
 

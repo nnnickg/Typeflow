@@ -21,7 +21,7 @@ in `привіт`. A **trigram** is three: `при`, `рив`, `иві`, `віт
 
 We precompute the log-probability of every observed bigram and trigram in a
 ~200 MB sample of English OpenSubtitles and a secondary-language corpus
-(Ukrainian by default; Russian/etc. via external packs). For a candidate token,
+(Ukrainian by default; other languages via external packs). For a candidate token,
 we sum the log-probability of each of its bigrams (and trigrams) under each
 language's model. Higher = "more like this language."
 
@@ -186,6 +186,9 @@ real false negatives; those belong in the calibration report, not hidden from
 the test data. Use `typeflow repl` for interactive inspection of any failure.
 
 ## The action protocol (host contract)
+
+`docs/invariants.md` is the source of truth for this contract. This section is
+the explanatory version.
 
 The engine returns one of four `Action` variants:
 

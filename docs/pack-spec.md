@@ -3,13 +3,13 @@
 `typeflow-data build-pack` creates an installable secondary-language pack from a
 TOML spec.
 
-Ukrainian is the embedded secondary language. Use packs for Russian or any
-other local secondary language.
+Ukrainian is the embedded secondary language. Use packs for any other local
+secondary language.
 
 ```sh
-cargo run --release -p typeflow-data -- build-pack docs/examples/ru.toml --out /tmp/ru.typeflow-pack
-typeflow pack install /tmp/ru.typeflow-pack
-typeflow pack use ru
+cargo run --release -p typeflow-data -- build-pack ./secondary.toml --out /tmp/secondary.typeflow-pack
+typeflow pack install /tmp/secondary.typeflow-pack
+typeflow pack use secondary
 ```
 
 The output directory contains:
@@ -23,16 +23,16 @@ dict.fst
 ## Spec Format
 
 ```toml
-id = "ru"
-display_name = "Russian"
+id = "secondary"
+display_name = "Secondary"
 script = "Cyrillic"
-layout = "russian-jcuken"
-alphabet = "абвгдеёжзийклмнопрстуфхцчшщъыьэюя"
+layout = "custom"
+alphabet = "..."
 
 # Local paths are resolved relative to this spec file. HTTP/HTTPS URLs are
 # downloaded into the build cache.
-corpus = "https://object.pouta.csc.fi/OPUS-OpenSubtitles/v2018/mono/ru.txt.gz"
-dictionary = "https://raw.githubusercontent.com/hermitdave/FrequencyWords/master/content/2018/ru/ru_full.txt"
+corpus = "./secondary.txt.gz"
+dictionary = "./secondary_freq.txt"
 
 # Optional. Omit for unbounded corpus processing.
 plaintext_budget_bytes = 200000000
@@ -40,9 +40,9 @@ plaintext_budget_bytes = 200000000
 # Optional. Default: 500000
 dictionary_top_k = 500000
 
-source_corpus = "OpenSubtitles mono ru"
-source_dictionary = "hermitdave/FrequencyWords 2018 ru"
-build_id = "ru-2026-05-07"
+source_corpus = "secondary corpus"
+source_dictionary = "secondary dictionary"
+build_id = "secondary-2026-05-07"
 
 [keyboard]
 # 34 chars each: a-z, then ` [ ] ; ' , . \
@@ -53,7 +53,6 @@ shifted = "..."
 Built-in layouts currently accepted without `[keyboard]`:
 
 - `english-us`
-- `russian-jcuken`
 - `ukrainian-jcuken-osx`
 
 The corpus is used for character bigram/trigram probabilities. The dictionary
