@@ -1,5 +1,9 @@
 # Typeflow
 
+<p align="center">
+  <img src=".github/assets/typeflow-icon.png" alt="Typeflow icon" width="128" height="128">
+</p>
+
 Typeflow is a macOS input method that should make English plus one configurable
 secondary keyboard layout disappear while typing. Punto-style auto-detection,
 but as a real macOS `InputMethodKit` bundle (not a CGEventTap that backspaces
@@ -7,9 +11,10 @@ and retypes).
 
 ## Status
 
-Pre-alpha. The Rust engine works end-to-end on real data. The macOS Swift/IMK
-bundle is **not built yet**. See [`docs/handoff.md`](docs/handoff.md) for the
-complete state-of-the-project snapshot.
+Pre-alpha. The Rust engine works end-to-end on real data. `macos/` has a Swift
+staticlib smoke target and a minimal signed IMK app bundle build. The bundle is
+not manually host-tested in TextEdit yet. See [`docs/handoff.md`](docs/handoff.md)
+for the complete state-of-the-project snapshot.
 
 ## Workspace
 
@@ -28,7 +33,7 @@ docs/
 ├── panic-unsafe-audit.md  panic/unsafe audit notes
 ├── release-verification.md  optimized build checks and packaging caveat
 └── handoff.md       current state, outstanding work, open questions
-macos/                placeholder; IMK bundle not yet built
+macos/                Swift staticlib smoke + minimal IMK bundle build
 ```
 
 ## Quick start
@@ -90,14 +95,25 @@ typeflow predict ghsdbn                  # -> "Ukrainian\tпривіт"
 typeflow predict --json ghsdbn           # -> JSON line
 typeflow convert type                    # force-convert current token
 
-# Built-in hard-case smoke corpus, generated dictionary regression corpus,
-# and hot-loop benchmark.
+# Built-in hard-case smoke corpus and generated dictionary regression corpus.
 typeflow eval
 typeflow eval --generated 500             # 500 EN + 500 secondary dictionary cases
 # eval prints accuracy, confusion counts, false positives/negatives, length
 # buckets, and a bounded failure sample.
-typeflow bench 50000
 typeflow model
+
+# Real benchmarks live under Cargo's benchmark harness.
+cargo bench -p typeflow-core
+cargo bench -p typeflow-ffi
+
+# Verify Swift can link the Rust staticlib and call the C ABI.
+make -C macos smoke
+
+# Build and ad-hoc sign the minimal IMK app bundle.
+make -C macos bundle
+
+# Install, register, and enable the input method for the current user.
+make -C macos install-user
 
 # External-pack workflow. The binary itself stays standalone.
 cargo run --release -p typeflow-data -- build-pack ./secondary.toml --out /tmp/secondary.typeflow-pack

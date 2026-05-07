@@ -63,6 +63,8 @@ Reviewed direct indexing sites:
   `PhysicalKey` is a closed enum with `COUNT = 34`.
 - `TfAction::write` slices `replace_text` only after checking
   `bytes.len() <= TF_REPLACE_BUF_LEN`.
+- FFI config validation rejects `max_token_len` values that could produce a
+  replacement larger than `TF_REPLACE_BUF_LEN`.
 - eval confusion-matrix indexing uses `layout_index`, which only returns `0`
   or `1`.
 - CLI argument indexing is guarded by arity checks before access.

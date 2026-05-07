@@ -63,7 +63,6 @@ Subcommands all driving the same engine:
 - `typeflow predict [--json] <KEYS>` — one-shot, pipeable
 - `typeflow convert <KEYS>` — force-convert one token to the opposite layout
 - `typeflow eval [<tsv>]` — run hard-case or labeled corpus checks
-- `typeflow bench [iterations]` — hot-loop micro-benchmark
 - `typeflow model` — print language-pack metadata/fingerprints
 - `typeflow pack install/list/use/inspect` — external language-pack workflow.
   Installed packs are directories containing `pack.toml`, `ngrams.bin`, and
@@ -75,12 +74,19 @@ Subcommands all driving the same engine:
 `--config <path>`, `$TYPEFLOW_CONFIG`, and `~/.config/typeflow/config.toml` are
 all honored, in that override precedence.
 
-### FFI (typeflow-ffi) — surface ready, not consumed yet
+Performance checks live under Cargo's benchmark harness:
 
-Header at `crates/typeflow-ffi/include/typeflow.h`. Builds as `cdylib`
-(`libtypeflow_ffi.dylib`). The Swift IMK bundle isn't built so this is
-not verified inside a real host app yet, but the public ABI has Rust integration
-smoke coverage. Release hosts should use
+```sh
+cargo bench -p typeflow-core
+cargo bench -p typeflow-ffi
+```
+
+### FFI (typeflow-ffi) — surface ready
+
+Header at `crates/typeflow-ffi/include/typeflow.h`. Builds as `staticlib`,
+`cdylib`, and `rlib`. The Swift IMK bundle isn't built yet, but `macos/` now
+has a Swift staticlib smoke target that links `libtypeflow_ffi.a`, calls the C
+ABI, and verifies `ghsdbn -> привіт`. Release hosts should use
 `typeflow_engine_new_embedded()` or
 `typeflow_engine_new_embedded_with_config(...)`.
 `typeflow_engine_new_from_data_dir(...)` is a dev override for testing rebuilt
@@ -90,36 +96,73 @@ plus one installed secondary language pack. FFI exposes `TF_EVENT_LITERAL`,
 `typeflow_engine_default_config(...)`, modifier-bypass bits, and
 `typeflow_engine_set_host_context(...)`.
 
+### macOS bridge (`macos/`) — staticlib smoke + minimal IMK bundle build
+
+`make -C macos smoke` builds the Rust `typeflow-ffi` static archive, compiles
+Swift with the local module map, links against `libtypeflow_ffi.a`, and runs a
+host-buffer smoke test.
+
+`make -C macos bundle` builds and ad-hoc signs `Typeflow.app`. The executable
+starts an `IMKServer` from `Info.plist`, exposes `TypeflowInputController`, maps
+ANSI keycodes to Rust physical key indexes, calls the FFI, and applies
+`TypeflowAction` through `NSTextInputClient.insertText(_:replacementRange:)`.
+`make -C macos install-user` copies the bundle to `~/Library/Input Methods/`,
+calls `TISRegisterInputSource`, and enables the parent input method plus the
+visible Ukrainian mode. It also writes the `com.apple.HIToolbox`
+`AppleEnabledInputSources` entries that System Settings reads for mode-enabled
+input methods. TIS sees:
+
+- `io.github.nnnickg.typeflow.inputmethod.Typeflow`
+  (`TISTypeKeyboardInputMethodModeEnabled`)
+- `io.github.nnnickg.typeflow.inputmethod.Typeflow.Ukrainian`
+  (`TISTypeKeyboardInputMode`, language `uk`)
+
+This is build/register/TIS-discovery verified, not manually host-tested in
+TextEdit yet.
+
+Files:
+
+- `macos/TypeflowFFI/include/module.modulemap`
+- `macos/TypeflowFFI/include/typeflow_shim.h`
+- `macos/Sources/TypeflowKit/Engine.swift`
+- `macos/Sources/TypeflowKit/KeyCodeMap.swift`
+- `macos/Sources/TypeflowSmoke/main.swift`
+- `macos/Sources/TypeflowInputMethod/InputController.swift`
+- `macos/Sources/TypeflowInputMethod/main.swift`
+- `macos/Sources/TypeflowRegister/main.swift`
+- `macos/Resources/Info.plist`
+- `macos/Resources/PkgInfo`
+- `macos/Resources/Typeflow.png`
+- `macos/Makefile`
+
 ### CI — enabled
 
 `.github/workflows/ci.yml` runs fmt, workspace tests, clippy with warnings
-denied, release workspace tests, release CLI/FFI build, and release CLI smoke
-against embedded Ukrainian on macOS.
+denied, release workspace tests, benchmark compilation, release CLI/FFI build,
+Swift staticlib smoke, signed IMK bundle build, and release CLI smoke against
+embedded Ukrainian on macOS.
 
 ## What's NOT done
 
-### macOS IMK bundle (`macos/`) — empty placeholder
+### macOS manual IMK validation — not done yet
 
-Nothing here yet beyond a `.gitkeep`. This is the next big milestone. Plan:
+The bundle builds and registers; the actual system integration still needs a
+real GUI smoke.
+Plan:
 
-1. Create an Xcode project (or a SwiftPM target) under `macos/`.
-2. `IMKInputController` subclass that:
-   - Receives `keyDown:` / `keyUp:` from `IMKServer`.
-   - Translates `event.keyCode` (`kVK_ANSI_*`) to the integer `PhysicalKey`
-     index expected by `typeflow_engine_process`.
-   - Dispatches via the FFI, applies the returned `TfAction` to the host
-     via `client.insertText:replacementRange:`.
-3. Bundle `Info.plist` registers as a macOS input source claiming both
-   Latin and Cyrillic scripts.
-4. `Makefile` target builds `libtypeflow_ffi.dylib`, embeds it in
-   `Typeflow.app/Contents/MacOS/`, copies the `.app` to
-   `~/Library/Input Methods/`, signals `killall -HUP "Typeflow"`.
-5. Manual smoke test: activate the input source in System Settings →
-   Keyboard → Input Sources, type `ghsdbn` in TextEdit, see `привіт`.
+1. Run `make -C macos install-user`.
+2. Reopen System Settings → Keyboard → Input Sources. Typeflow should be in
+   the Ukrainian language bucket; search for `Typeflow` if the list is cached.
+3. Type `ghsdbn` in TextEdit and verify `привіт`.
+4. Confirm the one visible Ukrainian mode can emit both Latin and Cyrillic
+   scripts.
+5. If macOS rejects that in real apps, split into two paired modes/input
+   sources.
 
-The non-obvious part: macOS expects each input source to be tied to one script.
-The "claims both Latin and Cyrillic" trick is the Punto-style workaround. If
-that fails, fall back to registering two paired input sources and switching
+The non-obvious part: macOS expects each input source to be tied to one primary
+language/script. The current Punto-style approach exposes one Ukrainian mode and
+lets the Rust engine emit either Latin or Cyrillic text. If that fails in real
+apps, fall back to registering two paired modes/input sources and switching
 between them programmatically (KeyKey-style).
 
 ### Regression corpus + calibration
@@ -193,6 +236,10 @@ If you're building the IMK bundle:
 - `docs/panic-unsafe-audit.md` — FFI unsafe boundary and panic/indexing audit.
 - `docs/release-verification.md` — release artifact checks and the dylib
   install-name caveat the packaging script must handle.
+- `macos/Sources/TypeflowKit/Engine.swift` — Swift wrapper already calling the
+  staticlib through the C ABI.
+- `macos/Sources/TypeflowInputMethod/InputController.swift` — current IMK
+  keyDown/action application path.
 - `crates/typeflow-ffi/include/typeflow.h` — exact ABI to consume.
 - `crates/typeflow-ffi/src/lib.rs` — Rust side of the bridge; understand
   `TfEvent` / `TfAction` / `typeflow_engine_process` before writing Swift.
@@ -210,10 +257,10 @@ If you're tuning thresholds:
 
 ## Open questions for the next agent / next session
 
-1. **macOS input source registration trick.** Does a single IMK source claiming
-   `kTextServiceInputModeRoman` + Cyrillic actually let us emit both scripts in
-   one session, or do we need the two-paired-sources hack? Worth a 1-day spike
-   before committing to the architecture.
+1. **macOS input source registration trick.** Does one visible Ukrainian IMK
+   mode actually let us emit both Latin and Cyrillic in real apps, or do we
+   need the two-paired-sources hack? Worth a 1-day spike before committing to
+   the architecture.
 2. **Embedding strategy.** Should the IMK bundle ship `include_bytes!`-embedded
    data (~10 MB binary) or load from `Bundle.main.resourcePath` as files? File
    loading is cheaper to update; embedding is simpler.

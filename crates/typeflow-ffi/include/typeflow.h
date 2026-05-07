@@ -33,6 +33,7 @@ typedef struct {
 
 typedef struct {
     size_t min_token_len;
+    size_t max_token_len;
     float  confidence_margin;
     float  dict_exact_weight;
     float  dict_prefix_weight;

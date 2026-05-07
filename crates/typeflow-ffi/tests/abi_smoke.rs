@@ -136,6 +136,7 @@ fn public_abi_literals_and_backspace_stay_in_sync() {
 fn public_abi_accepts_explicit_config() {
     let mut config = TfEngineConfig {
         min_token_len: 0,
+        max_token_len: 0,
         confidence_margin: 0.0,
         dict_exact_weight: 0.0,
         dict_prefix_weight: 0.0,
@@ -150,6 +151,7 @@ fn public_abi_accepts_explicit_config() {
         typeflow_engine_default_config(&mut config);
     }
     assert_eq!(config.min_token_len, 4);
+    assert_eq!(config.max_token_len, 128);
 
     config.min_token_len = 6;
     let engine = typeflow_engine_new_embedded_with_config(config);

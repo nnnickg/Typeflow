@@ -70,9 +70,11 @@ If `|margin| >= confidence_margin`, switch to the winning layout (otherwise
 keep the current one). Subject to refusal gates *before* this margin check:
 
 1. `token.len() < min_token_len` → keep, don't decide yet.
-2. `disable_on_internal_caps` and the token has shift on any non-first letter
+2. The next letter would exceed `max_token_len` → bypass scoring until the
+   next token boundary.
+3. `disable_on_internal_caps` and the token has shift on any non-first letter
    (camelCase / PascalCase) → keep, don't decide.
-3. The whole token is shifted (acronym-like, e.g. `HTTP`) → keep, don't decide.
+4. The whole token is shifted (acronym-like, e.g. `HTTP`) → keep, don't decide.
 
 Digits, punctuation, and identifier separators arrive as `InputEvent::Literal`
 and terminate the current token — they don't reach the margin check at all
@@ -94,6 +96,13 @@ Minimum number of letters before the engine will decide *anything*. Below this,
 all letters commit in the current layout and `Decision::Keep` is returned. Lower =
 faster reaction but more false positives on short ambiguous prefixes (`не` vs
 `yt`, `при` vs `ghb`). Higher = more cautious, sluggish-feeling.
+
+### `max_token_len` *(default: 128)*
+
+Maximum number of letters tracked as one replaceable token. Once a letter-only
+run exceeds this, the engine clears token state and commits subsequent letters
+without scoring until a hard token boundary. This caps hot-path work for huge
+identifiers, pasted blobs, or broken host boundary detection.
 
 ### `confidence_margin` *(default: 1.0)*
 
