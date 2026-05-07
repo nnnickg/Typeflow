@@ -121,15 +121,17 @@ between them programmatically (KeyKey-style).
 `typeflow eval` still runs the small built-in smoke set. `typeflow eval
 --generated [limit-per-layout]` now builds a larger regression corpus from the
 loaded dictionaries: top EN words expect English, top secondary words are
-rendered back to physical-key strings and expect secondary. External TSVs are
-still supported with `keys<TAB>expected-layout`. Eval output now includes
-accuracy, confusion counts, false positives/negatives, failing token lengths,
-and a bounded failure sample.
+rendered back to physical-key strings and expect secondary unless that key
+string is an exact English dictionary word. Those ambiguous generated secondary
+cases are skipped and counted. External TSVs are still supported with
+`keys<TAB>expected-layout`. Eval output now includes accuracy, confusion counts,
+false positives/negatives, failing token lengths, and a bounded failure sample.
 
 Defaults (especially `confidence_margin = 1.0`) are still an educated guess.
 Before the IMK bundle ships, run generated eval at useful limits, add
 hand-curated hard cases for ambiguous short tokens / code identifiers /
 mixed-script names, then tune until accuracy is north of 95%.
+See `docs/calibration.md` for the current ambiguity policy.
 
 ### Host-driven config fields
 
@@ -191,6 +193,7 @@ If you're building the IMK bundle:
 If you're tuning thresholds:
 
 - `docs/engine.md#calibration-how-to-tune` — what to do.
+- `docs/calibration.md` — what ambiguous generated cases mean.
 - `~/.config/typeflow/config.toml` — where to do it.
 - `typeflow config show` — verify what the engine is actually loading.
 
@@ -206,9 +209,9 @@ If you're tuning thresholds:
 3. **Dictionary expansion.** hermitdave's lists include only attested surface
    forms from OPUS. For rare secondary-language inflections this misses obvious words.
    Worth merging in Hunspell expansions before the regression corpus pass?
-4. **Score calibration target.** Are we tuning for max accuracy, or for max
-   *user-perceived correctness* (which weighs false-positive switches as worse
-   than false-negative no-switches)? Different objectives → different thresholds.
+4. **Score calibration target.** Current policy weights false-positive
+   switches as worse than false-negative no-switches. Revisit only if real
+   typing sessions show manual conversion is too frequent.
 5. **Multi-app config.** Does the user want different thresholds per app
    (e.g. more conservative in code editors)? Schema-wise it's
    `[apps.com.googlecode.iterm2.engine]` — defer until calibration is done.

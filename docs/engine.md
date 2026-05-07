@@ -180,10 +180,10 @@ tune is against a regression corpus:
    failure buckets by token length, and a bounded failure sample.
 4. Adjust one knob at a time, re-run, see whether accuracy moves.
 
-The generated corpus is intentionally stricter than the old smoke set. For
-example, secondary words whose physical keys form valid English words expose
-real false negatives; those belong in the calibration report, not hidden from
-the test data. Use `typeflow repl` for interactive inspection of any failure.
+The generated corpus is intentionally stricter than the old smoke set, but it
+skips generated secondary cases whose physical key sequence is an exact English
+dictionary word. See `docs/calibration.md` for that ambiguity policy. Use
+`typeflow repl` for interactive inspection of any failure.
 
 ## The action protocol (host contract)
 
