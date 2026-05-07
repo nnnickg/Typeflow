@@ -21,6 +21,7 @@ crates/
 └── typeflow-ffi/    C ABI bridge for the future Swift/IMK bundle
 docs/
 ├── architecture.md  component layout + data flow
+├── calibration.md   eval policy and ambiguous-token handling
 ├── engine.md        scoring math, what the config knobs actually do
 ├── invariants.md    core/host contract the macOS layer must obey
 └── handoff.md       current state, outstanding work, open questions

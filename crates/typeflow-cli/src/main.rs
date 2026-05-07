@@ -21,8 +21,8 @@ use typeflow_core::data::{
     PACK_NGRAMS_FILE,
 };
 use typeflow_core::{
-    Action, Decision, Engine, EngineConfig, InputEvent, LayoutScore, ScoreAnalysis,
-    has_dictionary_evidence,
+    Action, Decision, Engine, EngineConfig, InputEvent, LayoutCandidates, LayoutScore,
+    ScoreAnalysis, has_dictionary_evidence,
 };
 
 use config::{Config, ConfigSource};
@@ -645,11 +645,16 @@ fn generated_eval_cases(engine: &Engine, limit_per_layout: usize) -> Result<Vec<
         Layout::English,
         limit_per_layout,
     )?);
-    cases.extend(generated_dictionary_cases(
-        engine,
-        Layout::Secondary,
-        limit_per_layout,
-    )?);
+    let (secondary_cases, skipped_ambiguous) =
+        generated_secondary_dictionary_cases(engine, limit_per_layout)?;
+    if skipped_ambiguous > 0 {
+        println!(
+            "generated: skipped_ambiguous_secondary_exact_{}={}",
+            token_label(engine, Layout::English),
+            skipped_ambiguous
+        );
+    }
+    cases.extend(secondary_cases);
     Ok(cases)
 }
 
@@ -681,6 +686,58 @@ fn generated_dictionary_cases(
     }
 
     Ok(cases)
+}
+
+fn generated_secondary_dictionary_cases(
+    engine: &Engine,
+    limit: usize,
+) -> Result<(Vec<EvalCase>, usize), String> {
+    let pack = engine.bundle().pack(Layout::Secondary);
+    let mut words = dictionary_words_by_frequency(pack)?;
+    words.retain(|word| word.chars().count() >= engine.config().min_token_len);
+    words.truncate(limit);
+
+    let mut skipped_ambiguous = 0usize;
+    let mut cases = Vec::with_capacity(words.len());
+    for (idx, word) in words.into_iter().enumerate() {
+        let Some(keys) = physical_keys_for_word(engine, &word) else {
+            continue;
+        };
+        if is_exact_dictionary_word(engine, Layout::English, &keys) {
+            skipped_ambiguous += 1;
+            continue;
+        }
+        cases.push(EvalCase {
+            name: format!(
+                "generated_{}_{}_{}",
+                token_label(engine, Layout::Secondary),
+                idx + 1,
+                word
+            ),
+            keys,
+            expected: Layout::Secondary,
+        });
+    }
+
+    Ok((cases, skipped_ambiguous))
+}
+
+fn is_exact_dictionary_word(engine: &Engine, layout: Layout, word: &str) -> bool {
+    let candidates = match layout {
+        Layout::English => LayoutCandidates {
+            english: word.to_owned(),
+            secondary: String::new(),
+        },
+        Layout::Secondary => LayoutCandidates {
+            english: String::new(),
+            secondary: word.to_owned(),
+        },
+    };
+    let score = engine.score(&candidates);
+    match layout {
+        Layout::English => score.english.exact_count > 0,
+        Layout::Secondary => score.secondary.exact_count > 0,
+    }
 }
 
 fn dictionary_words_by_frequency(pack: &LanguagePack) -> Result<Vec<String>, String> {
