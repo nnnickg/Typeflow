@@ -37,7 +37,7 @@
   <dict>
     <key>tsInputModeListKey</key>
     <dict>
-      <key>io.github.nnnickg.typeflow.inputmethod.Typeflow.Ukrainian</key>
+      <key>Typeflow</key>
       <dict>
         <key>TISIconLabels</key>
         <dict>
@@ -64,7 +64,7 @@
     </dict>
     <key>tsVisibleInputModeOrderedArrayKey</key>
     <array>
-      <string>io.github.nnnickg.typeflow.inputmethod.Typeflow.Ukrainian</string>
+      <string>Typeflow</string>
     </array>
   </dict>
   <key>LSUIElement</key>
@@ -85,7 +85,7 @@
   <string>Typeflow.tiff</string>
   <key>tsInputMethodCharacterRepertoireKey</key>
   <array>
-    <string>uk</string>
+    <string>Cyrl</string>
   </array>
 </dict>
 </plist>

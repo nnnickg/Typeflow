@@ -1,9 +1,5 @@
 # Typeflow
 
-<p align="center">
-  <img src=".github/assets/typeflow-icon.png" alt="Typeflow icon" width="128" height="128">
-</p>
-
 Typeflow is a macOS input method that should make English plus one configurable
 secondary keyboard layout disappear while typing. Punto-style auto-detection,
 but as a real macOS `InputMethodKit` bundle (not a CGEventTap that backspaces
