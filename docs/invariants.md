@@ -119,6 +119,7 @@ accident.
 - Pack ids are stable user-facing identifiers. `en` is reserved and cannot be a
   secondary pack id.
 - Pack format compatibility is governed by `PACK_FORMAT_VERSION`.
+- `docs/artifact-format.md` defines what requires a format-version bump.
 - `LanguageBundle::embedded()` means embedded English plus embedded Ukrainian.
 - `LanguageBundle::from_secondary_pack_dir(path)` means embedded English plus
   exactly one external secondary pack.
