@@ -163,9 +163,11 @@ Current files:
   and applies `TfAction` to `NSTextInputClient`.
 - `Sources/TypeflowInputMethod/main.swift` starts the `IMKServer`.
 - `Sources/TypeflowRegister/main.swift` calls `TISRegisterInputSource` after
-  install and enables the parent input method plus its visible Ukrainian mode.
+  install, enables the parent input method plus its visible Ukrainian mode, and
+  writes the `com.apple.HIToolbox` `AppleEnabledInputSources` records that
+  System Settings reads.
 - `Resources/Info.plist` defines a mode-enabled input method bundle with one
-  visible Ukrainian mode,
+  visible Ukrainian mode. The `InputModeID` is `Typeflow`; the selectable TIS source id is
   `io.github.nnnickg.typeflow.inputmethod.Typeflow.Ukrainian`. The bundle id
   intentionally contains `.inputmethod.` because TIS depends on that old naming
   convention.

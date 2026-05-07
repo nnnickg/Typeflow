@@ -107,15 +107,14 @@ starts an `IMKServer` from `Info.plist`, exposes `TypeflowInputController`, maps
 ANSI keycodes to Rust physical key indexes, calls the FFI, and applies
 `TypeflowAction` through `NSTextInputClient.insertText(_:replacementRange:)`.
 `make -C macos install-user` copies the bundle to `~/Library/Input Methods/`,
-calls `TISRegisterInputSource`, and enables the parent input method plus the
-visible Ukrainian mode. It also writes the `com.apple.HIToolbox`
-`AppleEnabledInputSources` entries that System Settings reads for mode-enabled
-input methods. TIS sees:
+calls `TISRegisterInputSource`, enables the parent input method plus the visible
+Ukrainian mode, and writes the `com.apple.HIToolbox`
+`AppleEnabledInputSources` entries that System Settings reads. TIS sees:
 
 - `io.github.nnnickg.typeflow.inputmethod.Typeflow`
   (`TISTypeKeyboardInputMethodModeEnabled`)
 - `io.github.nnnickg.typeflow.inputmethod.Typeflow.Ukrainian`
-  (`TISTypeKeyboardInputMode`, language `uk`)
+  (`TISTypeKeyboardInputMode`, language `uk`, input mode `Typeflow`)
 
 This is build/register/TIS-discovery verified, not manually host-tested in
 TextEdit yet.
@@ -151,19 +150,18 @@ real GUI smoke.
 Plan:
 
 1. Run `make -C macos install-user`.
-2. Reopen System Settings → Keyboard → Input Sources. Typeflow should be in
-   the Ukrainian language bucket; search for `Typeflow` if the list is cached.
+2. Reopen System Settings → Keyboard → Input Sources. Typeflow should appear as
+   an enabled input mode; search for `Typeflow` if the list is cached.
 3. Type `ghsdbn` in TextEdit and verify `привіт`.
 4. Confirm the one visible Ukrainian mode can emit both Latin and Cyrillic
    scripts.
-5. If macOS rejects that in real apps, split into two paired modes/input
-   sources.
+5. If macOS rejects that in real apps, split into two paired input sources.
 
 The non-obvious part: macOS expects each input source to be tied to one primary
 language/script. The current Punto-style approach exposes one Ukrainian mode and
 lets the Rust engine emit either Latin or Cyrillic text. If that fails in real
-apps, fall back to registering two paired modes/input sources and switching
-between them programmatically (KeyKey-style).
+apps, fall back to registering two paired input sources and switching between
+them programmatically (KeyKey-style).
 
 ### Regression corpus + calibration
 

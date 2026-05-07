@@ -2,7 +2,8 @@ import Carbon
 import Foundation
 
 let typeflowInputMethodID = "io.github.nnnickg.typeflow.inputmethod.Typeflow"
-let typeflowModeID = "io.github.nnnickg.typeflow.inputmethod.Typeflow.Ukrainian"
+let typeflowInputModeID = "Typeflow"
+let typeflowModeSourceID = "io.github.nnnickg.typeflow.inputmethod.Typeflow.Ukrainian"
 let hitoolboxDomain = "com.apple.HIToolbox" as CFString
 let enabledInputSourcesKey = "AppleEnabledInputSources" as CFString
 
@@ -22,52 +23,24 @@ func findInputSource(id targetID: String) -> TISInputSource? {
     }
 }
 
-func inputSourceEntryExists(
-    _ entries: [[String: Any]],
-    kind: String,
-    bundleID: String,
-    inputMode: String? = nil
-) -> Bool {
-    entries.contains { entry in
-        guard entry["InputSourceKind"] as? String == kind,
-              entry["Bundle ID"] as? String == bundleID
-        else {
-            return false
-        }
-
-        return entry["Input Mode"] as? String == inputMode
-    }
-}
-
 func ensureHIToolboxEnabledRecords() {
-    var entries = CFPreferencesCopyAppValue(
+    var entries = (CFPreferencesCopyAppValue(
         enabledInputSourcesKey,
         hitoolboxDomain
-    ) as? [[String: Any]] ?? []
-
-    if !inputSourceEntryExists(
-        entries,
-        kind: "Input Mode",
-        bundleID: typeflowInputMethodID,
-        inputMode: typeflowModeID
-    ) {
-        entries.append([
-            "Bundle ID": typeflowInputMethodID,
-            "Input Mode": typeflowModeID,
-            "InputSourceKind": "Input Mode",
-        ])
+    ) as? [[String: Any]] ?? []).filter { entry in
+        entry["Bundle ID"] as? String != typeflowInputMethodID
     }
 
-    if !inputSourceEntryExists(
-        entries,
-        kind: "Keyboard Input Method",
-        bundleID: typeflowInputMethodID
-    ) {
-        entries.append([
-            "Bundle ID": typeflowInputMethodID,
-            "InputSourceKind": "Keyboard Input Method",
-        ])
-    }
+    entries.append([
+        "Bundle ID": typeflowInputMethodID,
+        "Input Mode": typeflowInputModeID,
+        "InputSourceKind": "Input Mode",
+    ])
+
+    entries.append([
+        "Bundle ID": typeflowInputMethodID,
+        "InputSourceKind": "Keyboard Input Method",
+    ])
 
     CFPreferencesSetAppValue(
         enabledInputSourcesKey,
@@ -106,19 +79,19 @@ guard inputMethodEnableStatus == noErr else {
     exit(1)
 }
 
-guard let mode = findInputSource(id: typeflowModeID) else {
-    FileHandle.standardError.write(Data("registered app, but input mode was not visible to TIS: \(typeflowModeID)\n".utf8))
+guard let mode = findInputSource(id: typeflowModeSourceID) else {
+    FileHandle.standardError.write(Data("registered app, but input mode was not visible to TIS: \(typeflowModeSourceID)\n".utf8))
     exit(1)
 }
 
-let enableStatus = TISEnableInputSource(mode)
-guard enableStatus == noErr else {
-    FileHandle.standardError.write(Data("TISEnableInputSource failed for \(typeflowModeID): \(enableStatus)\n".utf8))
+let modeEnableStatus = TISEnableInputSource(mode)
+guard modeEnableStatus == noErr else {
+    FileHandle.standardError.write(Data("TISEnableInputSource failed for \(typeflowModeSourceID): \(modeEnableStatus)\n".utf8))
     exit(1)
 }
 
 print("enabled input method: \(typeflowInputMethodID)")
-print("enabled input source: \(typeflowModeID)")
+print("enabled input source: \(typeflowModeSourceID)")
 
 ensureHIToolboxEnabledRecords()
 print("updated HIToolbox enabled input sources")
