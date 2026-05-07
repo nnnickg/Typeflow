@@ -39,6 +39,14 @@
 Pure Rust. Hot path has no I/O; startup can deserialize embedded data or load an
 external pack directory. Contains:
 
+- `types.rs` — public API data types: layouts, input events, actions,
+  decisions, scores, host context, and config.
+- `keyboard.rs` — physical key positions, keyboard maps, reverse mapping, and
+  layout rendering helpers.
+- `engine.rs` — state machine and action protocol implementation.
+- `score.rs` — n-gram + dictionary scoring and dictionary-evidence checks.
+- `data.rs` — language model, dictionary lookup, embedded artifacts, and pack
+  loading/validation.
 - `PhysicalKey` — 33 enum variants (26 ANSI letters + `` ` `` `[` `]` `;` `'` `,` `.`).
   Bidirectional `from_char` accepts both Latin and Cyrillic input.
 - `KeyboardMap` / `LanguagePack` — runtime data for one side of the pair:
