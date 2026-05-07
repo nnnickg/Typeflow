@@ -182,6 +182,7 @@ If you're debugging engine behaviour:
 If you're building the IMK bundle:
 
 - `docs/invariants.md` — read this first. It is the host contract.
+- `docs/panic-unsafe-audit.md` — FFI unsafe boundary and panic/indexing audit.
 - `docs/release-verification.md` — release artifact checks and the dylib
   install-name caveat the packaging script must handle.
 - `crates/typeflow-ffi/include/typeflow.h` — exact ABI to consume.

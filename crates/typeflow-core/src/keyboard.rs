@@ -222,7 +222,9 @@ impl KeyboardMap {
     pub fn letter_event_from_char(&self, value: char) -> Option<LetterEvent> {
         let lower = value.to_lowercase().next().unwrap_or(value);
         for index in 0..PhysicalKey::COUNT {
-            let key = PhysicalKey::from_index(index as u8).expect("keyboard map index is valid");
+            let Some(key) = PhysicalKey::from_index(index as u8) else {
+                continue;
+            };
             if self.unshifted[index] == lower {
                 return Some(LetterEvent {
                     physical_key: key,
