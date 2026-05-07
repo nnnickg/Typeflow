@@ -478,6 +478,7 @@ impl LanguageBundle {
     }
 }
 
+#[cfg(test)]
 impl LanguageBundle {
     /// Builds a bundle from inline word lists for use in unit tests. N-gram tables
     /// are derived directly from the supplied word/frequency pairs, so tests are
@@ -504,6 +505,7 @@ impl LanguageBundle {
     }
 }
 
+#[cfg(test)]
 fn synthetic_pack(
     id: &str,
     display_name: &str,
@@ -532,6 +534,7 @@ fn synthetic_pack(
     }
 }
 
+#[cfg(test)]
 fn synthetic_model(tag: &str, words: &[(&str, u64)]) -> LanguageModel {
     let mut bigrams: HashMap<String, u64> = HashMap::new();
     let mut trigrams: HashMap<String, u64> = HashMap::new();
@@ -581,6 +584,7 @@ fn synthetic_model(tag: &str, words: &[(&str, u64)]) -> LanguageModel {
     }
 }
 
+#[cfg(test)]
 fn synthetic_fst(words: &[(&str, u64)]) -> fst::Map<Vec<u8>> {
     let mut sorted: Vec<(&str, u64)> = words.to_vec();
     sorted.sort_by(|a, b| a.0.cmp(b.0));

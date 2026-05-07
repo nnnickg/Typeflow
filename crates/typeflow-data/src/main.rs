@@ -112,11 +112,11 @@ impl Language {
         }
     }
 
-    fn normalizer(self) -> Normalizer {
+    fn normalizer(self) -> Result<Normalizer> {
         match self {
-            Language::English => Normalizer::ascii_letters(),
+            Language::English => Ok(Normalizer::ascii_letters()),
             Language::Ukrainian => Normalizer::from_alphabet("абвгґдеєжзиіїйклмнопрстуфхцчшщьюя")
-                .expect("built-in Ukrainian alphabet is valid"),
+                .context("built-in Ukrainian alphabet must be valid"),
         }
     }
 }
@@ -428,7 +428,7 @@ fn build_language(
     plaintext_budget: u64,
 ) -> Result<()> {
     eprintln!("== {} ==", lang.tag());
-    let normalizer = lang.normalizer();
+    let normalizer = lang.normalizer()?;
 
     let opus_cache = cache_dir.join(format!("opus-{}.txt.gz", lang.tag()));
     download_with_cache(opus_url, &opus_cache)?;
@@ -466,11 +466,11 @@ fn workspace_root() -> Result<PathBuf> {
 fn download_with_cache(url: &str, dest: &Path) -> Result<()> {
     if dest.is_file() {
         let size = fs::metadata(dest)?.len();
-        eprintln!(
-            "   cached {} ({})",
-            dest.file_name().unwrap().to_string_lossy(),
-            human_bytes(size)
-        );
+        let name = dest
+            .file_name()
+            .map(|value| value.to_string_lossy())
+            .unwrap_or_else(|| dest.as_os_str().to_string_lossy());
+        eprintln!("   cached {} ({})", name, human_bytes(size));
         return Ok(());
     }
 

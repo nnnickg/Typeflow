@@ -446,8 +446,10 @@ pub unsafe extern "C" fn typeflow_engine_default_config(out_config: *mut TfEngin
 #[cfg(test)]
 mod tests {
     use super::{
-        TF_ACTION_COMMIT, TF_ACTION_KEEP, TF_EVENT_LITERAL, TfAction, TfEngineConfig, TfEvent,
-        decode_event, engine_config_from_ffi,
+        TF_ACTION_COMMIT, TF_ACTION_KEEP, TF_EVENT_LETTER, TF_EVENT_LITERAL, TfAction,
+        TfEngineConfig, TfEvent, decode_event, engine_config_from_ffi,
+        typeflow_engine_default_config, typeflow_engine_new_embedded_with_config,
+        typeflow_engine_process,
     };
     use typeflow_core::InputEvent;
 
@@ -490,6 +492,60 @@ mod tests {
         };
 
         assert!(engine_config_from_ffi(config).is_none());
+    }
+
+    #[test]
+    fn constructor_rejects_invalid_config() {
+        let config = TfEngineConfig {
+            min_token_len: 0,
+            confidence_margin: 1.0,
+            dict_exact_weight: 5.0,
+            dict_prefix_weight: 2.0,
+            ngram_only_confidence_margin: 3.0,
+            bigram_weight: 1.0,
+            trigram_weight: 1.0,
+            length_normalize: 1,
+            disable_on_internal_caps: 1,
+        };
+
+        let engine = typeflow_engine_new_embedded_with_config(config);
+
+        assert!(engine.is_null());
+    }
+
+    #[test]
+    fn process_with_null_engine_leaves_action_unchanged() {
+        let mut action = TfAction {
+            tag: TF_ACTION_COMMIT,
+            commit_codepoint: 'x' as u32,
+            replace_old_len: 9,
+            replace_text_len: 9,
+            replace_layout: 1,
+            replace_text: [1; super::TF_REPLACE_BUF_LEN],
+        };
+
+        unsafe {
+            typeflow_engine_process(
+                std::ptr::null_mut(),
+                TfEvent {
+                    tag: TF_EVENT_LETTER,
+                    physical: 0,
+                    modifiers: 0,
+                    codepoint: 0,
+                },
+                &mut action,
+            );
+        }
+
+        assert_eq!(action.tag, TF_ACTION_COMMIT);
+        assert_eq!(action.commit_codepoint, 'x' as u32);
+    }
+
+    #[test]
+    fn default_config_accepts_null_output_pointer() {
+        unsafe {
+            typeflow_engine_default_config(std::ptr::null_mut());
+        }
     }
 
     #[test]
