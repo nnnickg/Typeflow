@@ -133,6 +133,9 @@ See [`docs/engine.md`](docs/engine.md) for what each config field actually contr
 cargo test --workspace
 ```
 
+CI runs fmt, tests, clippy, release tests, release build, and release CLI smoke
+on macOS for every push to `main` and every pull request.
+
 ## License
 
 Licensed under either of:

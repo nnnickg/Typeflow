@@ -90,6 +90,12 @@ plus one installed secondary language pack. FFI exposes `TF_EVENT_LITERAL`,
 `typeflow_engine_default_config(...)`, modifier-bypass bits, and
 `typeflow_engine_set_host_context(...)`.
 
+### CI — enabled
+
+`.github/workflows/ci.yml` runs fmt, workspace tests, clippy with warnings
+denied, release workspace tests, release CLI/FFI build, and release CLI smoke
+against embedded Ukrainian on macOS.
+
 ## What's NOT done
 
 ### macOS IMK bundle (`macos/`) — empty placeholder
