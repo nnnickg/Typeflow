@@ -651,6 +651,7 @@ name = "typeflow-cli"
 version = "0.1.0"
 dependencies = [
  "crossterm",
+ "fst",
  "serde",
  "toml",
  "typeflow-core",
