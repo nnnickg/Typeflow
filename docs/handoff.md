@@ -161,7 +161,13 @@ loads user preferences from.
 
 If you're debugging engine behaviour:
 
-- `crates/typeflow-core/src/lib.rs` — `score_layout`, `decide`, `process_letter`.
+- `crates/typeflow-core/src/engine.rs` — state transitions, `decide`,
+  `step_letter`, backspace/literal handling.
+- `crates/typeflow-core/src/score.rs` — `score_layout`,
+  `has_dictionary_evidence`.
+- `crates/typeflow-core/src/keyboard.rs` — physical key mapping, keyboard maps,
+  render/reverse-map helpers.
+- `crates/typeflow-core/src/types.rs` — public event/action/config/score types.
 - `crates/typeflow-core/src/data.rs` — `LanguageModel`, `dict_lookup`,
   `LanguageBundle::for_testing`.
 - `crates/typeflow-cli/src/main.rs` — REPL is the fastest way to feel the
