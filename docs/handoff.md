@@ -76,7 +76,8 @@ all honored, in that override precedence.
 
 Header at `crates/typeflow-ffi/include/typeflow.h`. Builds as `cdylib`
 (`libtypeflow_ffi.dylib`). The Swift IMK bundle isn't built so this is
-unverified end-to-end, but compiles clean. Release hosts should use
+not verified inside a real host app yet, but the public ABI has Rust integration
+smoke coverage. Release hosts should use
 `typeflow_engine_new_embedded()` or
 `typeflow_engine_new_embedded_with_config(...)`.
 `typeflow_engine_new_from_data_dir(...)` is a dev override for testing rebuilt
@@ -172,6 +173,8 @@ If you're building the IMK bundle:
 - `crates/typeflow-ffi/include/typeflow.h` — exact ABI to consume.
 - `crates/typeflow-ffi/src/lib.rs` — Rust side of the bridge; understand
   `TfEvent` / `TfAction` / `typeflow_engine_process` before writing Swift.
+- `crates/typeflow-ffi/tests/abi_smoke.rs` — public ABI host-buffer simulation
+  that Swift should mirror.
 - `docs/engine.md#the-action-protocol-host-contract` — the action protocol
   the Swift side must implement faithfully or undo (Cmd-Z) breaks.
 
