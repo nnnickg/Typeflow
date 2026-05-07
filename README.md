@@ -24,6 +24,7 @@ docs/
 ├── calibration.md   eval policy and ambiguous-token handling
 ├── engine.md        scoring math, what the config knobs actually do
 ├── invariants.md    core/host contract the macOS layer must obey
+├── release-verification.md  optimized build checks and packaging caveat
 └── handoff.md       current state, outstanding work, open questions
 macos/                placeholder; IMK bundle not yet built
 ```
