@@ -43,6 +43,57 @@ Expected:
 - generated eval passes with no failures. Ambiguous exact-English secondary
   cases may be skipped and reported.
 
+## macOS Staticlib Smoke
+
+This verifies Swift can import the local C module map, link the Rust static
+archive, and call the FFI:
+
+```sh
+make -C macos smoke
+```
+
+Expected:
+
+```text
+staticlib smoke: ghsdbn -> привіт
+```
+
+## macOS IMK Bundle Build
+
+This verifies the minimal input-method app bundle compiles, has a valid plist
+with a visible Ukrainian mode, has a generated icon resource, compiles the TIS
+registration/enabling helper, and is ad-hoc signed:
+
+```sh
+make -C macos bundle
+```
+
+Expected:
+
+- `build/Typeflow.app/Contents/Info.plist` passes `plutil -lint`.
+- `build/Typeflow.app/Contents/Resources/Typeflow.icns` exists for Finder/Dock.
+- `build/Typeflow.app/Contents/Resources/Typeflow.tiff` exists for TIS/input
+  source menus.
+- `build/Typeflow.app/Contents/MacOS/Typeflow` is an arm64 Mach-O executable on
+  Apple Silicon.
+- `build/typeflow-register-input-source` compiles.
+- `codesign --verify --strict` passes.
+
+To install and register for the current user:
+
+```sh
+make -C macos install-user
+```
+
+Expected install helper output includes:
+
+```text
+registered input source: /Users/<user>/Library/Input Methods/Typeflow.app
+enabled input method: io.github.nnnickg.typeflow.inputmethod.Typeflow
+enabled input source: io.github.nnnickg.typeflow.inputmethod.Typeflow.Ukrainian
+updated HIToolbox enabled input sources
+```
+
 ## Release Tests
 
 ```sh

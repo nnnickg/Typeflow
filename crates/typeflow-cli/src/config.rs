@@ -24,6 +24,7 @@ pub struct Config {
 #[serde(default)]
 pub struct EngineSection {
     pub min_token_len: usize,
+    pub max_token_len: usize,
     pub confidence_margin: f32,
     pub dict_exact_weight: f32,
     pub dict_prefix_weight: f32,
@@ -39,6 +40,7 @@ impl Default for EngineSection {
         let defaults = EngineConfig::default();
         Self {
             min_token_len: defaults.min_token_len,
+            max_token_len: defaults.max_token_len,
             confidence_margin: defaults.confidence_margin,
             dict_exact_weight: defaults.dict_exact_weight,
             dict_prefix_weight: defaults.dict_prefix_weight,
@@ -55,6 +57,7 @@ impl From<EngineSection> for EngineConfig {
     fn from(value: EngineSection) -> Self {
         Self {
             min_token_len: value.min_token_len,
+            max_token_len: value.max_token_len,
             confidence_margin: value.confidence_margin,
             dict_exact_weight: value.dict_exact_weight,
             dict_prefix_weight: value.dict_prefix_weight,

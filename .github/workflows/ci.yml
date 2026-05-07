@@ -33,8 +33,17 @@ jobs:
       - name: Release Test
         run: cargo test --release --workspace
 
+      - name: Benchmark Compile
+        run: cargo bench --workspace --no-run
+
       - name: Release Build
         run: cargo build --release -p typeflow-cli -p typeflow-ffi
+
+      - name: macOS Staticlib Smoke
+        run: make -C macos smoke CARGO_TARGET_DIR="$PWD/target" BUILD_DIR="$RUNNER_TEMP/typeflow-macos-build"
+
+      - name: macOS Bundle Build
+        run: make -C macos bundle CARGO_TARGET_DIR="$PWD/target" BUILD_DIR="$RUNNER_TEMP/typeflow-macos-build"
 
       - name: Release Artifact Smoke
         run: |

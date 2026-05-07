@@ -488,6 +488,37 @@ mod tests {
     }
 
     #[test]
+    fn long_tokens_bypass_until_boundary() {
+        let config = EngineConfig {
+            max_token_len: 3,
+            ..EngineConfig::default()
+        };
+        let mut engine = engine_with_config(config);
+
+        for event in letters(&[PhysicalKey::A, PhysicalKey::B, PhysicalKey::C]) {
+            let output = engine.process(InputEvent::Letter(event));
+            assert_eq!(output.decision, Decision::Keep);
+        }
+        assert_eq!(engine.token_len(), 3);
+
+        let output = engine.process(InputEvent::Letter(LetterEvent::new(PhysicalKey::D)));
+        assert_eq!(output.decision, Decision::Bypass);
+        assert_eq!(output.action, Action::Commit('d'));
+        assert_eq!(engine.token_len(), 0);
+
+        let output = engine.process(InputEvent::Letter(LetterEvent::new(PhysicalKey::E)));
+        assert_eq!(output.decision, Decision::Bypass);
+        assert_eq!(output.action, Action::Commit('e'));
+        assert_eq!(engine.token_len(), 0);
+
+        engine.process(InputEvent::EndToken);
+        let output = engine.process(InputEvent::Letter(LetterEvent::new(PhysicalKey::F)));
+        assert_eq!(output.decision, Decision::Keep);
+        assert_eq!(output.action, Action::Commit('f'));
+        assert_eq!(engine.token_len(), 1);
+    }
+
+    #[test]
     fn action_only_path_matches_full_output_for_switching_token() {
         let mut full = engine();
         let mut fast = engine();

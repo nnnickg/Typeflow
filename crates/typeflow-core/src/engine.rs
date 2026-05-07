@@ -13,6 +13,7 @@ pub struct Engine {
     score_cache: Option<ScoreAnalysis>,
     layout: Layout,
     token_start_layout: Layout,
+    bypass_until_boundary: bool,
     host_context: HostContext,
 }
 
@@ -26,6 +27,7 @@ impl Engine {
             score_cache: None,
             layout: Layout::English,
             token_start_layout: Layout::English,
+            bypass_until_boundary: false,
             host_context: HostContext::default(),
         }
     }
@@ -59,6 +61,7 @@ impl Engine {
         self.candidates.english.clear();
         self.candidates.secondary.clear();
         self.score_cache = None;
+        self.bypass_until_boundary = false;
         self.token_start_layout = self.layout;
     }
 
@@ -68,6 +71,7 @@ impl Engine {
         self.candidates.english.clear();
         self.candidates.secondary.clear();
         self.score_cache = None;
+        self.bypass_until_boundary = false;
         self.token_start_layout = layout;
     }
 
@@ -169,11 +173,21 @@ impl Engine {
     }
 
     fn step_letter(&mut self, event: LetterEvent) -> (Action, Decision) {
+        let commit_char = self.bundle.render(event, self.layout);
+        if self.bypass_until_boundary {
+            return (Action::Commit(commit_char), Decision::Bypass);
+        }
+
         if self.token.is_empty() {
             self.token_start_layout = self.layout;
         }
 
-        let commit_char = self.bundle.render(event, self.layout);
+        if self.token.len() >= self.config.max_token_len {
+            self.reset_token();
+            self.bypass_until_boundary = true;
+            return (Action::Commit(commit_char), Decision::Bypass);
+        }
+
         self.token.push(event);
         self.push_candidate_chars(event);
 
@@ -215,6 +229,10 @@ impl Engine {
     }
 
     fn step_backspace(&mut self) -> (Action, Decision) {
+        if self.bypass_until_boundary {
+            return (Action::Keep, Decision::Bypass);
+        }
+
         self.token.pop();
         self.candidates.english.pop();
         self.candidates.secondary.pop();

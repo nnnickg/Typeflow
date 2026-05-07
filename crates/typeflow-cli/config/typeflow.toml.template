@@ -17,6 +17,12 @@
 # Default: 4
 min_token_len = 4
 
+# Maximum number of letters tracked as one replaceable token. Longer letter-only
+# runs bypass scoring until a real token boundary so huge identifiers or pasted
+# text cannot turn scoring into quadratic nonsense.
+# Default: 128
+max_token_len = 128
+
 # Required score margin (in log10 probability units) before switching layouts.
 # 1.0 means the winning language must be 10x more likely than the loser
 # on the normalized score scale.

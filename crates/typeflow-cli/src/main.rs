@@ -7,7 +7,6 @@ use std::fs;
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::Instant;
 
 use crossterm::{
     ExecutableCommand, cursor,
@@ -49,7 +48,6 @@ fn main() -> ExitCode {
         Some("predict") => cmd_predict(&parsed.rest, parsed.config_path.as_deref()),
         Some("convert") => cmd_convert(&parsed.rest, parsed.config_path.as_deref()),
         Some("eval") => cmd_eval(&parsed.rest, parsed.config_path.as_deref()),
-        Some("bench") => cmd_bench(&parsed.rest, parsed.config_path.as_deref()),
         Some("model") => cmd_model(&parsed.rest, parsed.config_path.as_deref()),
         Some("pack") => cmd_pack(&parsed.rest, parsed.config_path.as_deref()),
         Some("config") => cmd_config(&parsed.rest, parsed.config_path.as_deref()),
@@ -117,8 +115,6 @@ Usage:
                                  force-convert one token to the opposite layout
   typeflow [--config <path>] eval [--generated [limit-per-layout] | <tsv>]
                                  run labeled checks. TSV: keys<TAB>expected-layout
-  typeflow [--config <path>] bench [iterations]
-                                 micro-benchmark the hot engine loop
   typeflow [--config <path>] model
                                  print embedded/loaded language-pack metadata
   typeflow [--config <path>] pack install <PACK_DIR>
@@ -302,10 +298,6 @@ fn cmd_stream(args: &[String], explicit_config: Option<&Path>) -> Result<(), Str
     }
 
     Ok(())
-}
-
-fn run_token_silent(engine: &mut Engine, token: &str) -> Result<(), String> {
-    run_token_committed(engine, token).map(|_| ())
 }
 
 fn run_token_committed(engine: &mut Engine, token: &str) -> Result<String, String> {
@@ -772,52 +764,6 @@ fn parse_layout(value: &str) -> Result<Layout, String> {
         "uk" | "ukr" | "ukrainian" | "secondary" => Ok(Layout::Secondary),
         other => Err(format!("unknown expected layout: {other}")),
     }
-}
-
-fn cmd_bench(args: &[String], explicit_config: Option<&Path>) -> Result<(), String> {
-    if args.len() > 1 {
-        return Err("usage: typeflow bench [iterations]".into());
-    }
-    let iterations = match args.first() {
-        Some(value) => value
-            .parse::<usize>()
-            .map_err(|e| format!("parse iterations: {e}"))?,
-        None => 50_000,
-    };
-    if iterations == 0 {
-        return Err("iterations must be > 0".into());
-    }
-
-    let source = load_config(explicit_config)?;
-    let mut engine = build_engine(&source.config)?;
-    let tokens = [
-        "ghsdbn",
-        "typeflow",
-        "http",
-        "kubectl",
-        "Ghsdbn",
-        "snake_case",
-    ];
-    let started = Instant::now();
-    let mut keys = 0usize;
-
-    for idx in 0..iterations {
-        let token = tokens[idx % tokens.len()];
-        engine.reset_layout(Layout::English);
-        run_token_silent(&mut engine, token)?;
-        keys += token.chars().count();
-    }
-
-    let elapsed = started.elapsed();
-    let ns_per_key = elapsed.as_nanos() as f64 / keys as f64;
-    println!(
-        "bench: {} tokens / {} keys in {:.3}s = {:.1} ns/key",
-        iterations,
-        keys,
-        elapsed.as_secs_f64(),
-        ns_per_key
-    );
-    Ok(())
 }
 
 fn cmd_model(args: &[String], explicit_config: Option<&Path>) -> Result<(), String> {

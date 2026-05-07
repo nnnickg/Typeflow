@@ -28,6 +28,7 @@ pub const TF_LAYOUT_ENGLISH: u8 = 0;
 pub const TF_LAYOUT_SECONDARY: u8 = 1;
 
 pub const TF_REPLACE_BUF_LEN: usize = 4096;
+const TF_MAX_TOKEN_LEN: usize = TF_REPLACE_BUF_LEN / 4;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -42,6 +43,7 @@ pub struct TfEvent {
 #[derive(Clone, Copy)]
 pub struct TfEngineConfig {
     pub min_token_len: usize,
+    pub max_token_len: usize,
     pub confidence_margin: f32,
     pub dict_exact_weight: f32,
     pub dict_prefix_weight: f32,
@@ -133,6 +135,7 @@ fn default_ffi_config() -> TfEngineConfig {
     let config = EngineConfig::default();
     TfEngineConfig {
         min_token_len: config.min_token_len,
+        max_token_len: config.max_token_len,
         confidence_margin: config.confidence_margin,
         dict_exact_weight: config.dict_exact_weight,
         dict_prefix_weight: config.dict_prefix_weight,
@@ -154,6 +157,8 @@ fn engine_config_from_ffi(config: TfEngineConfig) -> Option<EngineConfig> {
         config.trigram_weight,
     ];
     if config.min_token_len == 0
+        || config.max_token_len == 0
+        || config.max_token_len > TF_MAX_TOKEN_LEN
         || floats
             .iter()
             .any(|value| !value.is_finite() || *value < 0.0)
@@ -163,6 +168,7 @@ fn engine_config_from_ffi(config: TfEngineConfig) -> Option<EngineConfig> {
 
     Some(EngineConfig {
         min_token_len: config.min_token_len,
+        max_token_len: config.max_token_len,
         confidence_margin: config.confidence_margin,
         dict_exact_weight: config.dict_exact_weight,
         dict_prefix_weight: config.dict_prefix_weight,
@@ -446,10 +452,10 @@ pub unsafe extern "C" fn typeflow_engine_default_config(out_config: *mut TfEngin
 #[cfg(test)]
 mod tests {
     use super::{
-        TF_ACTION_COMMIT, TF_ACTION_KEEP, TF_EVENT_LETTER, TF_EVENT_LITERAL, TfAction,
-        TfEngineConfig, TfEvent, decode_event, engine_config_from_ffi,
-        typeflow_engine_default_config, typeflow_engine_new_embedded_with_config,
-        typeflow_engine_process,
+        TF_ACTION_COMMIT, TF_ACTION_KEEP, TF_EVENT_LETTER, TF_EVENT_LITERAL, TF_REPLACE_BUF_LEN,
+        TfAction, TfEngineConfig, TfEvent, decode_event, default_ffi_config,
+        engine_config_from_ffi, typeflow_engine_default_config,
+        typeflow_engine_new_embedded_with_config, typeflow_engine_process,
     };
     use typeflow_core::InputEvent;
 
@@ -481,6 +487,7 @@ mod tests {
     fn config_rejects_invalid_numbers() {
         let config = TfEngineConfig {
             min_token_len: 4,
+            max_token_len: 128,
             confidence_margin: f32::NAN,
             dict_exact_weight: 5.0,
             dict_prefix_weight: 2.0,
@@ -498,6 +505,7 @@ mod tests {
     fn constructor_rejects_invalid_config() {
         let config = TfEngineConfig {
             min_token_len: 0,
+            max_token_len: 128,
             confidence_margin: 1.0,
             dict_exact_weight: 5.0,
             dict_prefix_weight: 2.0,
@@ -510,6 +518,17 @@ mod tests {
 
         let engine = typeflow_engine_new_embedded_with_config(config);
 
+        assert!(engine.is_null());
+    }
+
+    #[test]
+    fn config_rejects_max_token_len_that_can_overflow_replace_buffer() {
+        let mut config = default_ffi_config();
+        config.max_token_len = TF_REPLACE_BUF_LEN;
+
+        assert!(engine_config_from_ffi(config).is_none());
+
+        let engine = typeflow_engine_new_embedded_with_config(config);
         assert!(engine.is_null());
     }
 

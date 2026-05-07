@@ -4,7 +4,7 @@
 
 ```text
                    ┌────────────────────────────────────┐
-                   │  macOS InputMethodKit bundle       │  ← NOT BUILT YET
+                   │  macOS InputMethodKit bundle       │
                    │  (Swift/AppKit IMKInputController) │
                    └─────────────┬──────────────────────┘
                                  │ keyDown / keyCode / shift
@@ -12,7 +12,7 @@
 ┌────────────────────┐   ┌───────────────────────────────┐   ┌────────────────────┐
 │  typeflow-cli      │──▶│  typeflow-core                │◀──│  typeflow-ffi      │
 │  type / stream     │   │   - PhysicalKey, InputEvent   │   │  C ABI for IMK     │
-│  repl / predict    │   │   - Engine.process()          │   │  (not consumed yet)│
+│  repl / predict    │   │   - Engine.process()          │   │  (Swift IMK host) │
 │  pack / config     │   │   - LanguageBundle scoring    │   │                    │
 └────────────────────┘   └───────────┬───────────────────┘   └────────────────────┘
                                      │ embedded data by default
@@ -111,10 +111,16 @@ The interactive binary. Subcommands are all driven by the same engine:
 | `typeflow convert <KEYS>` | force-convert one token to the opposite layout |
 | `typeflow repl` | `crossterm` raw-mode TTY, type live, see live scores + simulated committed text |
 | `typeflow eval [--generated [N] \| <tsv>]` | run hard-case, generated dictionary, or external labeled corpus checks |
-| `typeflow bench [iterations]` | micro-benchmark the hot engine loop |
 | `typeflow model` | print language-pack metadata and fingerprints |
 | `typeflow pack install/list/use/inspect` | external language-pack workflow |
 | `typeflow config init/show` | manage `~/.config/typeflow/config.toml` |
+
+Performance checks are Cargo benchmarks, not CLI subcommands:
+
+```sh
+cargo bench -p typeflow-core
+cargo bench -p typeflow-ffi
+```
 
 ### `typeflow-ffi`
 
@@ -137,14 +143,42 @@ in `TfAction` keeps the FFI lifetime-free: no Vec passed across the boundary,
 Swift just copies bytes. See `docs/invariants.md` for the required ownership,
 event, and action semantics.
 
-### `macos/` (placeholder)
+### `macos/`
 
-The eventual IMKInputController bundle. **Not built yet.** Will:
+Staticlib bridge smoke plus the current minimal IMKInputController bundle.
+Current files:
 
-1. Register as a macOS input source via `Info.plist`.
-2. Subclass `IMKInputController` to receive `keyDown:` events.
-3. Translate `event.keyCode` (`kVK_ANSI_*`) to `PhysicalKey` index, call FFI.
-4. Apply the returned `Action` via `client.insertText:replacementRange:`.
+- `Makefile` builds `libtypeflow_ffi.a`, compiles Swift, and runs the smoke.
+- `TypeflowFFI/include/module.modulemap` exposes the C ABI to Swift.
+- `TypeflowFFI/include/typeflow_shim.h` includes the canonical Rust header and
+  adds tiny C helpers for zeroed actions/events.
+- `Sources/TypeflowKit/Engine.swift` wraps the opaque `TfEngine*` lifecycle and
+  decodes `TfAction`.
+- `Sources/TypeflowKit/KeyCodeMap.swift` maps macOS ANSI virtual keycodes to
+  Rust physical key indexes.
+- `Sources/TypeflowSmoke/main.swift` verifies `ghsdbn` becomes `привіт` through
+  the Rust static archive.
+- `Sources/TypeflowInputMethod/InputController.swift` subclasses
+  `IMKInputController`, handles keyDown events, dispatches to the Rust engine,
+  and applies `TfAction` to `NSTextInputClient`.
+- `Sources/TypeflowInputMethod/main.swift` starts the `IMKServer`.
+- `Sources/TypeflowRegister/main.swift` calls `TISRegisterInputSource` after
+  install and enables the parent input method plus its visible Ukrainian mode.
+- `Resources/Info.plist` defines a mode-enabled input method bundle with one
+  visible Ukrainian mode,
+  `io.github.nnnickg.typeflow.inputmethod.Typeflow.Ukrainian`. The bundle id
+  intentionally contains `.inputmethod.` because TIS depends on that old naming
+  convention.
+
+`make -C macos bundle` builds and ad-hoc signs `Typeflow.app`.
+`make -C macos install-user` installs it under `~/Library/Input Methods/` and
+registers/enables it with TIS. It still needs manual host testing. The remaining IMK
+work:
+
+1. Confirm System Settings exposes the source and TextEdit receives correct
+   output.
+2. Validate the single-mode Latin+Cyrillic output path on current macOS.
+3. Add host config handling for excluded apps, secure input, and manual convert.
 
 ## Data flow during a keystroke
 
@@ -155,11 +189,12 @@ The eventual IMKInputController bundle. **Not built yet.** Will:
 3. The host creates the engine from the embedded bundle in release builds. Dev
    builds can point at a rebuilt data directory.
 4. `Engine::process(event)`:
-   - Pushes the event onto the internal token (a `Vec<LetterEvent>`).
+   - Pushes the event onto the internal token (a `Vec<LetterEvent>`) unless
+     the token has exceeded `max_token_len` and is bypassing until a boundary.
    - Updates both layout candidates from the token (English string, secondary string).
    - `score_layout` for each language: bigram + trigram + dict bonuses.
    - `decide` checks `min_token_len`, `disable_on_internal_caps`, then picks
-     the winning layout if its margin clears `confidence_margin`.
+     the winning layout if its margin clears the required confidence threshold.
 5. Returns an `EngineOutput { candidates, score, decision, action }`.
 6. Host applies the `action`:
    - `Commit(c)` → insert one char in the current layout.

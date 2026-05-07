@@ -106,6 +106,8 @@ impl HostContext {
 pub struct EngineConfig {
     /// Tokens shorter than this never trigger a layout switch.
     pub min_token_len: usize,
+    /// Maximum number of letter events tracked as one replaceable token.
+    pub max_token_len: usize,
     /// Required score margin (log10 probability units) before switching.
     pub confidence_margin: f32,
     /// Bonus weight added when the rendered token is a complete dictionary entry.
@@ -128,6 +130,7 @@ impl Default for EngineConfig {
     fn default() -> Self {
         Self {
             min_token_len: 4,
+            max_token_len: 128,
             // With length_normalize = true the score is per-character log-prob, so
             // 1.0 means "winning language is on average 10x more likely per bigram".
             confidence_margin: 1.0,

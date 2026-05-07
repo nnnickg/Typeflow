@@ -10,3 +10,10 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [dependencies]
 typeflow-core = { path = "../typeflow-core" }
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "ffi"
+harness = false

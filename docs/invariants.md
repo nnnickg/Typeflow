@@ -45,6 +45,8 @@ accident.
 - `Backspace` removes one `LetterEvent` from token state, reconciles the
   inferred layout for the shortened token, and returns `Action::Keep`.
 - Backspace on an empty token is a no-op.
+- Once a letter-only run exceeds `max_token_len`, the engine stops tracking it
+  as replaceable state and bypasses scoring until the next token boundary.
 - Hosts must call `EndToken` or `reset_token()` on focus loss, app switch,
   committed whitespace, or any other boundary that makes the previous letters
   no longer replaceable as one contiguous token.
@@ -109,6 +111,8 @@ accident.
 - `TF_REPLACE_BUF_LEN` bounds replacement payloads. If a replacement ever
   exceeds that buffer, the FFI action writer must fail closed rather than
   exposing partial text.
+- FFI constructors reject `max_token_len` values that could produce a UTF-8
+  replacement larger than `TF_REPLACE_BUF_LEN`.
 
 ## Data And Packs
 
