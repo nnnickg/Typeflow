@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  rust:
+    name: Rust core
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          rustup show
+          cargo --version
+          rustc --version
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Release Test
+        run: cargo test --release --workspace
+
+      - name: Release Build
+        run: cargo build --release -p typeflow-cli -p typeflow-ffi
+
+      - name: Release Artifact Smoke
+        run: |
+          test -x target/release/typeflow
+          test -f target/release/libtypeflow_ffi.a
+          test -f target/release/libtypeflow_ffi.dylib
+          touch /tmp/typeflow-empty.toml
+          target/release/typeflow --config /tmp/typeflow-empty.toml model
+          target/release/typeflow --config /tmp/typeflow-empty.toml predict ghsdbn
+          target/release/typeflow --config /tmp/typeflow-empty.toml pack inspect uk
+          target/release/typeflow --config /tmp/typeflow-empty.toml eval --generated 500
