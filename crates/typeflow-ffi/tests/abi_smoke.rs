@@ -78,12 +78,12 @@ fn public_abi_replaces_wrong_layout_token() {
     assert!(!engine.is_null());
 
     let mut committed = String::new();
-    for physical in [6, 7, 1, 3, 19, 13] {
+    for physical in [6, 7, 18, 3, 1, 13] {
         let action = process(engine, letter(physical));
         apply_action(&action, &mut committed);
     }
 
-    assert_eq!(committed, "привет");
+    assert_eq!(committed, "привіт");
     assert_eq!(
         unsafe { typeflow_engine_current_layout(engine) },
         TF_LAYOUT_SECONDARY

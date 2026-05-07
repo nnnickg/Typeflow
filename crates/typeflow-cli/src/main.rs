@@ -121,8 +121,6 @@ Usage:
                                  micro-benchmark the hot engine loop
   typeflow [--config <path>] model
                                  print embedded/loaded language-pack metadata
-  typeflow [--config <path>] pack export-ru <DIR>
-                                 export the embedded Russian model as an installable pack
   typeflow [--config <path>] pack install <PACK_DIR>
                                  validate and install a language pack
   typeflow [--config <path>] pack list
@@ -179,16 +177,16 @@ fn load_language_bundle(config: &Config) -> Result<LanguageBundle, String> {
     }
 
     let secondary_id = normalized_secondary_id(config);
+    if secondary_id == "uk" {
+        return LanguageBundle::embedded().map_err(|e| format!("load embedded bundle: {e}"));
+    }
+
     if let Some(pack_dir) = configured_pack_dir(config) {
         let candidate = pack_dir.join(&secondary_id);
         if candidate.join(PACK_MANIFEST_FILE).is_file() {
             return LanguageBundle::from_secondary_pack_dir(&candidate)
                 .map_err(|e| format!("load pack {}: {e}", candidate.display()));
         }
-    }
-
-    if secondary_id == "ru" {
-        return LanguageBundle::embedded().map_err(|e| format!("load embedded bundle: {e}"));
     }
 
     let pack_dir = configured_pack_dir(config)
@@ -202,7 +200,7 @@ fn load_language_bundle(config: &Config) -> Result<LanguageBundle, String> {
 fn normalized_secondary_id(config: &Config) -> String {
     let id = config.language.secondary.trim();
     if id.is_empty() {
-        "ru".to_owned()
+        "uk".to_owned()
     } else {
         id.to_owned()
     }
@@ -617,8 +615,8 @@ fn read_eval_cases(path: &Path) -> Result<Vec<EvalCase>, String> {
 
 fn builtin_eval_cases() -> Vec<EvalCase> {
     [
-        ("ru_privet", "ghbdtn", Layout::Secondary),
-        ("ru_privet_caps", "Ghbdtn", Layout::Secondary),
+        ("uk_pryvit", "ghsdbn", Layout::Secondary),
+        ("uk_pryvit_caps", "Ghsdbn", Layout::Secondary),
         ("en_typeflow", "typeflow", Layout::English),
         ("en_hello", "hello", Layout::English),
         ("en_http", "http", Layout::English),
@@ -714,7 +712,9 @@ fn physical_keys_for_word(engine: &Engine, word: &str) -> Option<String> {
 fn parse_layout(value: &str) -> Result<Layout, String> {
     match value.trim().to_ascii_lowercase().as_str() {
         "en" | "eng" | "english" => Ok(Layout::English),
-        "ru" | "rus" | "russian" | "secondary" => Ok(Layout::Secondary),
+        "uk" | "ukr" | "ukrainian" | "ru" | "rus" | "russian" | "secondary" => {
+            Ok(Layout::Secondary)
+        }
         other => Err(format!("unknown expected layout: {other}")),
     }
 }
@@ -736,11 +736,11 @@ fn cmd_bench(args: &[String], explicit_config: Option<&Path>) -> Result<(), Stri
     let source = load_config(explicit_config)?;
     let mut engine = build_engine(&source.config)?;
     let tokens = [
-        "ghbdtn",
+        "ghsdbn",
         "typeflow",
         "http",
         "kubectl",
-        "Ghbdtn",
+        "Ghsdbn",
         "snake_case",
     ];
     let started = Instant::now();
@@ -794,12 +794,6 @@ fn cmd_model(args: &[String], explicit_config: Option<&Path>) -> Result<(), Stri
 
 fn cmd_pack(args: &[String], explicit_config: Option<&Path>) -> Result<(), String> {
     match args.first().map(String::as_str) {
-        Some("export-ru") => {
-            if args.len() != 2 {
-                return Err("usage: typeflow pack export-ru <DIR>".into());
-            }
-            export_embedded_russian_pack(Path::new(&args[1]))
-        }
         Some("install") => {
             if args.len() != 2 {
                 return Err("usage: typeflow pack install <PACK_DIR>".into());
@@ -825,34 +819,10 @@ fn cmd_pack(args: &[String], explicit_config: Option<&Path>) -> Result<(), Strin
             inspect_pack(args[1].as_str(), explicit_config)
         }
         Some(other) => Err(format!(
-            "unknown pack subcommand: {other}\n\nusage: typeflow pack <export-ru|install|list|use|inspect>"
+            "unknown pack subcommand: {other}\n\nusage: typeflow pack <install|list|use|inspect>"
         )),
-        None => Err("usage: typeflow pack <export-ru|install|list|use|inspect>".into()),
+        None => Err("usage: typeflow pack <install|list|use|inspect>".into()),
     }
-}
-
-fn export_embedded_russian_pack(out_dir: &Path) -> Result<(), String> {
-    ensure_empty_or_create_dir(out_dir)?;
-    let (ngrams, dict) = LanguageBundle::embedded_secondary_artifacts();
-    fs::write(out_dir.join(PACK_NGRAMS_FILE), ngrams)
-        .map_err(|e| format!("write {}: {e}", out_dir.join(PACK_NGRAMS_FILE).display()))?;
-    fs::write(out_dir.join(PACK_DICT_FILE), dict)
-        .map_err(|e| format!("write {}: {e}", out_dir.join(PACK_DICT_FILE).display()))?;
-
-    let manifest = LanguagePackManifest::embedded_russian();
-    manifest
-        .write_to_dir(out_dir)
-        .map_err(|e| format!("write manifest: {e}"))?;
-
-    let pack = LanguagePack::from_pack_dir(out_dir)
-        .map_err(|e| format!("validate exported pack {}: {e}", out_dir.display()))?;
-    println!(
-        "exported {}\t{}\t{}",
-        pack.id,
-        pack.display_name,
-        out_dir.display()
-    );
-    Ok(())
 }
 
 fn install_pack(source_dir: &Path, explicit_config: Option<&Path>) -> Result<(), String> {
@@ -948,7 +918,7 @@ fn use_pack(id: &str, explicit_config: Option<&Path>) -> Result<(), String> {
         Config::default()
     };
 
-    if id != "ru" {
+    if id != "uk" {
         let install_root = pack_dir_or_error(&config)?;
         let pack_path = install_root.join(id);
         LanguagePack::from_pack_dir(&pack_path).map_err(|e| {
@@ -966,16 +936,16 @@ fn use_pack(id: &str, explicit_config: Option<&Path>) -> Result<(), String> {
 }
 
 fn inspect_pack(value: &str, explicit_config: Option<&Path>) -> Result<(), String> {
-    let source = load_config(explicit_config)?;
-    let install_root = pack_dir_or_error(&source.config)?;
-    let pack_path = resolve_pack_reference(value, &install_root);
-
-    if value == "ru" && !pack_path.join(PACK_MANIFEST_FILE).is_file() {
+    if value == "uk" {
         let bundle =
             LanguageBundle::embedded().map_err(|e| format!("load embedded bundle: {e}"))?;
         print_pack_details(&bundle.secondary, "embedded");
         return Ok(());
     }
+
+    let source = load_config(explicit_config)?;
+    let install_root = pack_dir_or_error(&source.config)?;
+    let pack_path = resolve_pack_reference(value, &install_root);
 
     let pack = LanguagePack::from_pack_dir(&pack_path)
         .map_err(|e| format!("load pack {}: {e}", pack_path.display()))?;
@@ -1035,25 +1005,6 @@ fn validate_cli_pack_id(id: &str) -> Result<(), String> {
         ));
     }
     Ok(())
-}
-
-fn ensure_empty_or_create_dir(path: &Path) -> Result<(), String> {
-    if path.exists() {
-        if !path.is_dir() {
-            return Err(format!("{} exists and is not a directory", path.display()));
-        }
-        let mut entries =
-            fs::read_dir(path).map_err(|e| format!("read {}: {e}", path.display()))?;
-        if entries.next().is_some() {
-            return Err(format!(
-                "{} already exists and is not empty",
-                path.display()
-            ));
-        }
-        return Ok(());
-    }
-
-    fs::create_dir_all(path).map_err(|e| format!("create {}: {e}", path.display()))
 }
 
 fn copy_pack_file(source: &Path, dest: &Path) -> Result<(), String> {

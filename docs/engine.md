@@ -4,26 +4,26 @@ How the engine actually decides which layout you meant.
 
 ## The classification problem
 
-When the user types `g`, `h`, `b`, `d`, `t`, `n` on a US keyboard layout, they
+When the user types `g`, `h`, `s`, `d`, `b`, `n` on a US keyboard layout, they
 might have meant:
 
-- English: `ghbdtn` (gibberish)
-- Secondary layout, e.g. Russian: `привет` (hello)
+- English: `ghsdbn` (gibberish)
+- Secondary layout, Ukrainian by default: `привіт` (hello)
 
-The ANSI key positions are unambiguous (G H B D T N). The question is which
+The ANSI key positions are unambiguous (G H S D B N). The question is which
 language model better explains the resulting text. We score both renderings
 and pick the higher one if the margin is convincing enough.
 
 ## Bigrams and trigrams
 
-A **bigram** is two consecutive characters, e.g. `пр`, `ри`, `ив`, `ве`, `ет`
-in `привет`. A **trigram** is three: `при`, `рив`, `иве`, `вет`.
+A **bigram** is two consecutive characters, e.g. `пр`, `ри`, `ив`, `ві`, `іт`
+in `привіт`. A **trigram** is three: `при`, `рив`, `иві`, `віт`.
 
 We precompute the log-probability of every observed bigram and trigram in a
 ~200 MB sample of English OpenSubtitles and a secondary-language corpus
-(Russian/ Ukrainian/etc.). For a candidate token, we sum the log-probability of each of
-its bigrams (and trigrams) under each language's model. Higher = "more like
-this language."
+(Ukrainian by default; Russian/etc. via external packs). For a candidate token,
+we sum the log-probability of each of its bigrams (and trigrams) under each
+language's model. Higher = "more like this language."
 
 Why both? Bigrams are stable but coarse — `er` is common in many languages.
 Trigrams are sharper but only kick in once the token has 3+ chars. Combining
@@ -154,7 +154,7 @@ across token lengths. Strongly recommend leaving on.
 
 If the token has Shift active on any letter past the first, refuse to switch.
 This catches camelCase / PascalCase identifiers without blocking properly
-capitalized words like `Hello` or `Привет`.
+capitalized words like `Hello` or `Привіт`.
 
 ## Token boundaries
 

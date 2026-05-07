@@ -76,7 +76,7 @@ pub struct LanguageSection {
 impl Default for LanguageSection {
     fn default() -> Self {
         Self {
-            secondary: "ru".to_owned(),
+            secondary: "uk".to_owned(),
         }
     }
 }

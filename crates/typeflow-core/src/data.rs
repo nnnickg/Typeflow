@@ -117,13 +117,13 @@ pub struct LanguagePackManifest {
 }
 
 impl LanguagePackManifest {
-    pub fn embedded_russian() -> Self {
+    pub fn embedded_ukrainian() -> Self {
         Self {
             format_version: PACK_FORMAT_VERSION,
-            id: "ru".to_owned(),
-            display_name: "Russian".to_owned(),
+            id: "uk".to_owned(),
+            display_name: "Ukrainian".to_owned(),
             script: "Cyrillic".to_owned(),
-            layout: "russian-jcuken".to_owned(),
+            layout: "ukrainian-jcuken-osx".to_owned(),
             ngrams: PathBuf::from(PACK_NGRAMS_FILE),
             dict: PathBuf::from(PACK_DICT_FILE),
             source_corpus: Some("OPUS OpenSubtitles2018 mono".to_owned()),
@@ -376,8 +376,13 @@ impl LanguageBundle {
     /// normally use this path so the CLI/IMK bundle is self-contained.
     pub fn embedded() -> Result<Self, BundleError> {
         let (en_ngrams, en_dict) = Self::embedded_english_artifacts();
-        let (ru_ngrams, ru_dict) = Self::embedded_secondary_artifacts();
-        Self::from_bytes(en_ngrams, ru_ngrams, en_dict.to_vec(), ru_dict.to_vec())
+        let (secondary_ngrams, secondary_dict) = Self::embedded_secondary_artifacts();
+        Self::from_bytes(
+            en_ngrams,
+            secondary_ngrams,
+            en_dict.to_vec(),
+            secondary_dict.to_vec(),
+        )
     }
 
     pub fn embedded_english_artifacts() -> (&'static [u8], &'static [u8]) {
@@ -389,29 +394,29 @@ impl LanguageBundle {
 
     pub fn embedded_secondary_artifacts() -> (&'static [u8], &'static [u8]) {
         (
-            include_bytes!("../data/ru.ngrams.bin"),
-            include_bytes!("../data/ru.dict.fst"),
+            include_bytes!("../data/uk.ngrams.bin"),
+            include_bytes!("../data/uk.dict.fst"),
         )
     }
 
     /// Loads a bundle from the four artifacts produced by `typeflow-data` in `data_dir`:
-    /// `en.ngrams.bin`, `ru.ngrams.bin`, `en.dict.fst`, `ru.dict.fst`.
+    /// `en.ngrams.bin`, `uk.ngrams.bin`, `en.dict.fst`, `uk.dict.fst`.
     pub fn from_data_dir(data_dir: &Path) -> Result<Self, BundleError> {
         let en_ngrams = fs::read(data_dir.join("en.ngrams.bin"))?;
-        let ru_ngrams = fs::read(data_dir.join("ru.ngrams.bin"))?;
+        let secondary_ngrams = fs::read(data_dir.join("uk.ngrams.bin"))?;
         let en_dict = fs::read(data_dir.join("en.dict.fst"))?;
-        let ru_dict = fs::read(data_dir.join("ru.dict.fst"))?;
+        let secondary_dict = fs::read(data_dir.join("uk.dict.fst"))?;
 
-        Self::from_bytes(&en_ngrams, &ru_ngrams, en_dict, ru_dict)
+        Self::from_bytes(&en_ngrams, &secondary_ngrams, en_dict, secondary_dict)
     }
 
     /// Loads a bundle from in-memory bytes. Suitable for `include_bytes!` use from
     /// downstream crates (CLI / FFI / IMK bundle).
     pub fn from_bytes(
         en_ngrams: &[u8],
-        ru_ngrams: &[u8],
+        secondary_ngrams: &[u8],
         en_dict: Vec<u8>,
-        ru_dict: Vec<u8>,
+        secondary_dict: Vec<u8>,
     ) -> Result<Self, BundleError> {
         Ok(Self {
             english: LanguagePack::from_bytes(
@@ -424,13 +429,13 @@ impl LanguageBundle {
                 en_dict,
             )?,
             secondary: LanguagePack::from_bytes(
-                "ru",
-                "Russian",
+                "uk",
+                "Ukrainian",
                 "Cyrillic",
-                "russian-jcuken",
-                KeyboardMap::russian_jcuken(),
-                ru_ngrams,
-                ru_dict,
+                "ukrainian-jcuken-osx",
+                KeyboardMap::ukrainian_jcuken_osx(),
+                secondary_ngrams,
+                secondary_dict,
             )?,
         })
     }
@@ -477,7 +482,7 @@ impl LanguageBundle {
     /// Builds a bundle from inline word lists for use in unit tests. N-gram tables
     /// are derived directly from the supplied word/frequency pairs, so tests are
     /// fully deterministic and do not depend on any on-disk artifacts.
-    pub fn for_testing(english_words: &[(&str, u64)], russian_words: &[(&str, u64)]) -> Self {
+    pub fn for_testing(english_words: &[(&str, u64)], secondary_words: &[(&str, u64)]) -> Self {
         Self {
             english: synthetic_pack(
                 "en",
@@ -488,12 +493,12 @@ impl LanguageBundle {
                 english_words,
             ),
             secondary: synthetic_pack(
-                "ru",
-                "Russian",
+                "uk",
+                "Ukrainian",
                 "Cyrillic",
-                "russian-jcuken",
-                KeyboardMap::russian_jcuken(),
-                russian_words,
+                "ukrainian-jcuken-osx",
+                KeyboardMap::ukrainian_jcuken_osx(),
+                secondary_words,
             ),
         }
     }

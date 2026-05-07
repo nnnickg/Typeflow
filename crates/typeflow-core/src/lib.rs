@@ -48,14 +48,14 @@ mod tests {
                 ("deployment", 800),
             ],
             &[
-                ("привет", 900),
-                ("привычка", 200),
-                ("приватный", 150),
+                ("привіт", 900),
+                ("приватний", 200),
+                ("звичка", 150),
                 ("мир", 1000),
-                ("язык", 600),
-                ("раскладка", 100),
-                ("клавиатура", 80),
-                ("переключение", 70),
+                ("мова", 600),
+                ("розкладка", 100),
+                ("клавіатура", 80),
+                ("перемикання", 70),
             ],
         )
     }
@@ -74,7 +74,7 @@ mod tests {
         assert_eq!(engine.current_layout(), Layout::English);
         assert_eq!(engine.token_len(), 0);
         assert_eq!(engine.bundle().display_name(Layout::English), "English");
-        assert_eq!(engine.bundle().display_name(Layout::Secondary), "Russian");
+        assert_eq!(engine.bundle().display_name(Layout::Secondary), "Ukrainian");
     }
 
     #[test]
@@ -83,28 +83,28 @@ mod tests {
         for event in letters(&[
             PhysicalKey::G,
             PhysicalKey::H,
-            PhysicalKey::B,
+            PhysicalKey::S,
             PhysicalKey::D,
-            PhysicalKey::T,
+            PhysicalKey::B,
             PhysicalKey::N,
         ]) {
             engine.process(InputEvent::Letter(event));
         }
 
         let candidates = engine.token_candidates();
-        assert_eq!(candidates.english, "ghbdtn");
-        assert_eq!(candidates.secondary, "привет");
+        assert_eq!(candidates.english, "ghsdbn");
+        assert_eq!(candidates.secondary, "привіт");
     }
 
     #[test]
-    fn it_scores_russian_higher_for_privet() {
+    fn it_scores_ukrainian_higher_for_pryvit() {
         let mut engine = engine();
         for event in letters(&[
             PhysicalKey::G,
             PhysicalKey::H,
-            PhysicalKey::B,
+            PhysicalKey::S,
             PhysicalKey::D,
-            PhysicalKey::T,
+            PhysicalKey::B,
             PhysicalKey::N,
         ]) {
             engine.process(InputEvent::Letter(event));
@@ -112,7 +112,7 @@ mod tests {
         let score = engine.score(&engine.token_candidates());
         assert!(
             score.secondary.total > score.english.total,
-            "expected russian > english, got {:?} vs {:?}",
+            "expected ukrainian > english, got {:?} vs {:?}",
             score.secondary,
             score.english
         );
@@ -144,17 +144,17 @@ mod tests {
         for event in letters(&[
             PhysicalKey::G,
             PhysicalKey::H,
-            PhysicalKey::B,
+            PhysicalKey::S,
             PhysicalKey::D,
-            PhysicalKey::T,
+            PhysicalKey::B,
             PhysicalKey::N,
         ]) {
             last_action = engine.process(InputEvent::Letter(event)).action;
         }
 
-        // Engine should have flipped to Russian at some point during the token.
+        // Engine should have flipped to Ukrainian at some point during the token.
         assert_eq!(engine.current_layout(), Layout::Secondary);
-        // The final action should either be a Commit (already in Russian) or Replace
+        // The final action should either be a Commit (already in Ukrainian) or Replace
         // (just flipped on this letter); both are acceptable depending on calibration.
         assert!(matches!(
             last_action,
@@ -198,7 +198,7 @@ mod tests {
         for event in letters(&[
             PhysicalKey::G,
             PhysicalKey::H,
-            PhysicalKey::B,
+            PhysicalKey::S,
             PhysicalKey::D,
         ]) {
             engine.process(InputEvent::Letter(event));
@@ -207,7 +207,7 @@ mod tests {
 
         engine.process(InputEvent::Backspace);
 
-        assert_eq!(engine.token_candidates().english, "ghb");
+        assert_eq!(engine.token_candidates().english, "ghs");
         assert_eq!(engine.current_layout(), Layout::English);
     }
 
@@ -222,14 +222,14 @@ mod tests {
     #[test]
     fn it_refuses_to_switch_on_internal_caps() {
         let mut engine = engine();
-        // Type "gHbDtN" — same physical keys as привет but with mid-word capitals.
+        // Type "gHsDbN" — same physical keys as привіт but with mid-word capitals.
         // Engine should refuse to switch layouts because this looks like an identifier.
         for (idx, key) in [
             PhysicalKey::G,
             PhysicalKey::H,
-            PhysicalKey::B,
+            PhysicalKey::S,
             PhysicalKey::D,
-            PhysicalKey::T,
+            PhysicalKey::B,
             PhysicalKey::N,
         ]
         .iter()
@@ -248,13 +248,13 @@ mod tests {
     #[test]
     fn it_does_not_block_capitalized_first_letter() {
         let mut engine = engine();
-        // Type "Привет" via physical keys with shift on position 0 only.
+        // Type "Привіт" via physical keys with shift on position 0 only.
         for (idx, key) in [
             PhysicalKey::G,
             PhysicalKey::H,
-            PhysicalKey::B,
+            PhysicalKey::S,
             PhysicalKey::D,
-            PhysicalKey::T,
+            PhysicalKey::B,
             PhysicalKey::N,
         ]
         .iter()
@@ -283,6 +283,7 @@ mod tests {
             ('"', PhysicalKey::Quote),
             ('<', PhysicalKey::Comma),
             ('>', PhysicalKey::Period),
+            ('|', PhysicalKey::Backslash),
         ];
 
         for (character, key) in cases {
@@ -306,9 +307,9 @@ mod tests {
         for event in letters(&[
             PhysicalKey::G,
             PhysicalKey::H,
-            PhysicalKey::B,
+            PhysicalKey::S,
             PhysicalKey::D,
-            PhysicalKey::T,
+            PhysicalKey::B,
             PhysicalKey::N,
         ]) {
             engine.process(InputEvent::Letter(event));
@@ -493,7 +494,7 @@ mod tests {
         let mut full_committed = String::new();
         let mut fast_committed = String::new();
 
-        for character in "ghbdtn".chars() {
+        for character in "ghsdbn".chars() {
             let input = input_event_for_char(&full, character);
             let output = full.process(input);
             apply_action_to_string(&output.action, &mut full_committed);
@@ -503,7 +504,7 @@ mod tests {
             apply_action_to_string(&action, &mut fast_committed);
         }
 
-        assert_eq!(full_committed, "привет");
+        assert_eq!(full_committed, "привіт");
         assert_eq!(fast_committed, full_committed);
         assert_eq!(fast.current_layout(), full.current_layout());
     }
@@ -521,10 +522,12 @@ mod tests {
     fn keyboard_map_loads_named_and_custom_layouts() {
         let named = KeyboardMap::named("russian-jcuken").unwrap();
         assert_eq!(named.render(PhysicalKey::G, false), 'п');
+        let named = KeyboardMap::named("ukrainian-jcuken-osx").unwrap();
+        assert_eq!(named.render(PhysicalKey::Backslash, false), 'ґ');
 
         let custom = KeyboardMap::from_rows(
-            "abcdefghijklmnopqrstuvwxyz`[];',.",
-            "ABCDEFGHIJKLMNOPQRSTUVWXYZ~{}:\"<>",
+            "abcdefghijklmnopqrstuvwxyz`[];',.\\",
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZ~{}:\"<>|",
         )
         .unwrap();
         assert_eq!(custom.render(PhysicalKey::A, false), 'a');
@@ -542,7 +545,7 @@ mod tests {
         let mut committed = String::new();
         let mut flip_action: Option<Action> = None;
 
-        for character in "ghbdtn".chars() {
+        for character in "ghsdbn".chars() {
             let action = engine.process_action(input_event_for_char(&engine, character));
             if matches!(action, Action::ReplaceToken { .. }) {
                 flip_action = Some(action.clone());
@@ -558,10 +561,10 @@ mod tests {
             apply_action_to_string(&action, &mut committed);
         }
 
-        assert_eq!(committed, "привет");
+        assert_eq!(committed, "привіт");
         assert!(
             flip_action.is_some(),
-            "expected a ReplaceToken event for ghbdtn -> привет"
+            "expected a ReplaceToken event for ghsdbn -> привіт"
         );
     }
 

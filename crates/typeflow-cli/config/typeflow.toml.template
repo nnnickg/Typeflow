@@ -65,10 +65,10 @@ disable_on_internal_caps = true
 [language]
 
 # English is always the primary side. This selects the non-English side.
-# "ru" is embedded in the release binary. Any other value must be installed
+# "uk" is embedded in the release binary. Any other value must be installed
 # with `typeflow pack install <PACK_DIR>`.
-# Default: "ru"
-secondary = "ru"
+# Default: "uk"
+secondary = "uk"
 
 
 [packs]

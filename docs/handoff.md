@@ -7,8 +7,8 @@ read this end-to-end and you'll have everything.
 
 ### Engine (typeflow-core) — works on real data
 
-- `PhysicalKey` covers all 33 Russian-mapped positions (26 ANSI letters + 7
-  punctuation positions for ё/х/ъ/ж/э/б/ю).
+- `PhysicalKey` covers 34 positions (26 ANSI letters + `` ` `` `[` `]` `;`
+  `'` `,` `.` `\`). The backslash position exists for Ukrainian `ґ`.
 - `PhysicalKey::from_char` is bidirectional — accepts both Latin and Cyrillic
   characters and reverse-maps to the underlying physical key.
 - `InputEvent::Letter / Literal / Backspace / EndToken` is the unified entry.
@@ -39,12 +39,13 @@ read this end-to-end and you'll have everything.
 
 ### Data pipeline (typeflow-data) — works
 
-`cargo run --release -p typeflow-data` downloads ~4.3 GB into
+`cargo run --release -p typeflow-data` downloads ~3.7 GB into
 `target/typeflow-data-cache/` (resumable — won't re-download on subsequent
 runs), processes everything, and writes four artifacts to
 `crates/typeflow-core/data/`. Those artifacts are compile-time inputs embedded
-into release binaries with `include_bytes!`. The raw subtitle cache is never
-needed at runtime.
+into release binaries with `include_bytes!`. The embedded pair is English plus
+Ukrainian; Russian is now an external language-pack workflow. The raw subtitle
+cache is never needed at runtime.
 
 `cargo run --release -p typeflow-data -- build-pack <spec.toml> --out <dir>`
 builds an external pack directory (`pack.toml`, `ngrams.bin`, `dict.fst`) from
@@ -62,9 +63,9 @@ Subcommands all driving the same engine:
 - `typeflow eval [<tsv>]` — run hard-case or labeled corpus checks
 - `typeflow bench [iterations]` — hot-loop micro-benchmark
 - `typeflow model` — print language-pack metadata/fingerprints
-- `typeflow pack export-ru/install/list/use/inspect` — external language-pack
-  workflow. Installed packs are directories containing `pack.toml`,
-  `ngrams.bin`, and `dict.fst`; the release binary remains standalone.
+- `typeflow pack install/list/use/inspect` — external language-pack workflow.
+  Installed packs are directories containing `pack.toml`, `ngrams.bin`, and
+  `dict.fst`; the release binary remains standalone.
 - `typeflow repl` — interactive raw-mode TTY with live score panel and
   "what you would see in TextEdit" simulated commit buffer
 - `typeflow config init/show` — manage `~/.config/typeflow/config.toml`
@@ -106,7 +107,7 @@ Nothing here yet beyond a `.gitkeep`. This is the next big milestone. Plan:
    `Typeflow.app/Contents/MacOS/`, copies the `.app` to
    `~/Library/Input Methods/`, signals `killall -HUP "Typeflow"`.
 5. Manual smoke test: activate the input source in System Settings →
-   Keyboard → Input Sources, type `ghbdtn` in TextEdit, see `привет`.
+   Keyboard → Input Sources, type `ghsdbn` in TextEdit, see `привіт`.
 
 The non-obvious part: macOS expects each input source to be tied to one script.
 The "claims both Latin and Cyrillic" trick is the Punto-style workaround. If
@@ -200,7 +201,7 @@ If you're tuning thresholds:
    data (~10 MB binary) or load from `Bundle.main.resourcePath` as files? File
    loading is cheaper to update; embedding is simpler.
 3. **Dictionary expansion.** hermitdave's lists include only attested surface
-   forms from OPUS. For rare Russian inflections this misses obvious words.
+   forms from OPUS. For rare Ukrainian/Russian inflections this misses obvious words.
    Worth merging in Hunspell expansions before the regression corpus pass?
 4. **Score calibration target.** Are we tuning for max accuracy, or for max
    *user-perceived correctness* (which weighs false-positive switches as worse

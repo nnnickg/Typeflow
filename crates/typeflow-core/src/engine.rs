@@ -355,11 +355,11 @@ fn is_acronym_like(token: &[LetterEvent]) -> bool {
 /// either keyboard layout — digits and ASCII symbols that don't have a
 /// Cyrillic letter on the same key.
 ///
-/// Keyboard-position chars like `,` `.` `;` `'` `[` `]` `` ` `` and their
-/// shifted forms `<` `>` `:` `"` `{` `}` `~` are intentionally NOT in this
-/// list: in the Russian layout the same physical keys produce Cyrillic
-/// letters (б, ю, ж, э, х, ъ, ё, …). The engine must see them as Letter
-/// events so it can score `юбка` against `.,rf` and pick the right side.
+/// Keyboard-position chars like `,` `.` `;` `'` `[` `]` `\` `` ` `` and their
+/// shifted forms `<` `>` `:` `"` `{` `}` `|` `~` are intentionally NOT in this
+/// list: in Cyrillic layouts the same physical keys can produce letters. The
+/// engine must see them as Letter events so it can score words typed through
+/// punctuation-position keys and pick the right side.
 pub fn is_literal_bypass_char(character: char) -> bool {
     character.is_ascii_digit()
         || matches!(
@@ -378,8 +378,6 @@ pub fn is_literal_bypass_char(character: char) -> bool {
                 | '+'
                 | '='
                 | '/'
-                | '\\'
                 | '?'
-                | '|'
         )
 }

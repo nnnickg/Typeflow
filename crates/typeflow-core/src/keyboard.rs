@@ -37,10 +37,11 @@ pub enum PhysicalKey {
     Quote,
     Comma,
     Period,
+    Backslash,
 }
 
 impl PhysicalKey {
-    pub const COUNT: usize = 33;
+    pub const COUNT: usize = 34;
 
     pub fn index(self) -> usize {
         self as usize
@@ -81,6 +82,7 @@ impl PhysicalKey {
             30 => Some(Self::Quote),
             31 => Some(Self::Comma),
             32 => Some(Self::Period),
+            33 => Some(Self::Backslash),
             _ => None,
         }
     }
@@ -124,6 +126,7 @@ impl PhysicalKey {
             '`' => Some(Self::Grave),
             '[' => Some(Self::LBracket),
             ']' => Some(Self::RBracket),
+            '\\' => Some(Self::Backslash),
             ';' => Some(Self::Semicolon),
             '\'' => Some(Self::Quote),
             ',' => Some(Self::Comma),
@@ -131,6 +134,7 @@ impl PhysicalKey {
             '~' => Some(Self::Grave),
             '{' => Some(Self::LBracket),
             '}' => Some(Self::RBracket),
+            '|' => Some(Self::Backslash),
             ':' => Some(Self::Semicolon),
             '"' => Some(Self::Quote),
             '<' => Some(Self::Comma),
@@ -192,6 +196,9 @@ impl KeyboardMap {
         match name.trim().to_ascii_lowercase().as_str() {
             "english-us" | "en-us" | "us" => Some(Self::english_us()),
             "russian-jcuken" | "ru-jcuken" | "jcuken" => Some(Self::russian_jcuken()),
+            "ukrainian-jcuken-osx" | "uk-jcuken-osx" | "ukrainian-osx" | "uk-osx" => {
+                Some(Self::ukrainian_jcuken_osx())
+            }
             _ => None,
         }
     }
@@ -202,6 +209,10 @@ impl KeyboardMap {
 
     pub fn russian_jcuken() -> Self {
         Self::new(RUSSIAN_JCUKEN_UNSHIFTED, RUSSIAN_JCUKEN_SHIFTED)
+    }
+
+    pub fn ukrainian_jcuken_osx() -> Self {
+        Self::new(UKRAINIAN_JCUKEN_OSX_UNSHIFTED, UKRAINIAN_JCUKEN_OSX_SHIFTED)
     }
 
     pub fn render(&self, key: PhysicalKey, shift: bool) -> char {
@@ -248,22 +259,32 @@ fn parse_keyboard_row(
 
 const ENGLISH_US_UNSHIFTED: [char; PhysicalKey::COUNT] = [
     'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's',
-    't', 'u', 'v', 'w', 'x', 'y', 'z', '`', '[', ']', ';', '\'', ',', '.',
+    't', 'u', 'v', 'w', 'x', 'y', 'z', '`', '[', ']', ';', '\'', ',', '.', '\\',
 ];
 
 const ENGLISH_US_SHIFTED: [char; PhysicalKey::COUNT] = [
     'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S',
-    'T', 'U', 'V', 'W', 'X', 'Y', 'Z', '~', '{', '}', ':', '"', '<', '>',
+    'T', 'U', 'V', 'W', 'X', 'Y', 'Z', '~', '{', '}', ':', '"', '<', '>', '|',
 ];
 
 const RUSSIAN_JCUKEN_UNSHIFTED: [char; PhysicalKey::COUNT] = [
     'ф', 'и', 'с', 'в', 'у', 'а', 'п', 'р', 'ш', 'о', 'л', 'д', 'ь', 'т', 'щ', 'з', 'й', 'к', 'ы',
-    'е', 'г', 'м', 'ц', 'ч', 'н', 'я', 'ё', 'х', 'ъ', 'ж', 'э', 'б', 'ю',
+    'е', 'г', 'м', 'ц', 'ч', 'н', 'я', 'ё', 'х', 'ъ', 'ж', 'э', 'б', 'ю', '\\',
 ];
 
 const RUSSIAN_JCUKEN_SHIFTED: [char; PhysicalKey::COUNT] = [
     'Ф', 'И', 'С', 'В', 'У', 'А', 'П', 'Р', 'Ш', 'О', 'Л', 'Д', 'Ь', 'Т', 'Щ', 'З', 'Й', 'К', 'Ы',
-    'Е', 'Г', 'М', 'Ц', 'Ч', 'Н', 'Я', 'Ё', 'Х', 'Ъ', 'Ж', 'Э', 'Б', 'Ю',
+    'Е', 'Г', 'М', 'Ц', 'Ч', 'Н', 'Я', 'Ё', 'Х', 'Ъ', 'Ж', 'Э', 'Б', 'Ю', '/',
+];
+
+const UKRAINIAN_JCUKEN_OSX_UNSHIFTED: [char; PhysicalKey::COUNT] = [
+    'ф', 'і', 'с', 'в', 'у', 'а', 'п', 'р', 'ш', 'о', 'л', 'д', 'ь', 'т', 'щ', 'з', 'й', 'к', 'и',
+    'е', 'г', 'м', 'ц', 'ч', 'н', 'я', '\'', 'х', 'ї', 'ж', 'є', 'б', 'ю', 'ґ',
+];
+
+const UKRAINIAN_JCUKEN_OSX_SHIFTED: [char; PhysicalKey::COUNT] = [
+    'Ф', 'І', 'С', 'В', 'У', 'А', 'П', 'Р', 'Ш', 'О', 'Л', 'Д', 'Ь', 'Т', 'Щ', 'З', 'Й', 'К', 'И',
+    'Е', 'Г', 'М', 'Ц', 'Ч', 'Н', 'Я', '~', 'Х', 'Ї', 'Ж', 'Є', 'Б', 'Ю', 'Ґ',
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -288,7 +309,7 @@ impl LetterEvent {
     pub fn from_char(value: char) -> Option<Self> {
         let physical_key = PhysicalKey::from_char(value)?;
         let shift = match value {
-            '~' | '{' | '}' | ':' | '"' | '<' | '>' => true,
+            '~' | '{' | '}' | ':' | '"' | '<' | '>' | '|' => true,
             _ => value.is_uppercase(),
         };
 

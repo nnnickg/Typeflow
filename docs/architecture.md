@@ -19,8 +19,8 @@
                                      ▼
                    ┌────────────────────────────────────┐
                    │  crates/typeflow-core/data/        │
-                   │   en.ngrams.bin / ru.ngrams.bin    │  ← compile-time inputs
-                   │   en.dict.fst   / ru.dict.fst      │
+                   │   en.ngrams.bin / uk.ngrams.bin    │  ← compile-time inputs
+                   │   en.dict.fst   / uk.dict.fst      │
                    └────────────────────────────────────┘
                                      ▲
                                      │ produces
@@ -47,7 +47,7 @@ external pack directory. Contains:
 - `score.rs` — n-gram + dictionary scoring and dictionary-evidence checks.
 - `data.rs` — language model, dictionary lookup, embedded artifacts, and pack
   loading/validation.
-- `PhysicalKey` — 33 enum variants (26 ANSI letters + `` ` `` `[` `]` `;` `'` `,` `.`).
+- `PhysicalKey` — 34 enum variants (26 ANSI letters + `` ` `` `[` `]` `;` `'` `,` `.` `\`).
   Bidirectional `from_char` accepts both Latin and Cyrillic input.
 - `KeyboardMap` / `LanguagePack` — runtime data for one side of the pair:
   layout rendering, n-gram model, dictionary FST, manifest validation, and
@@ -77,7 +77,7 @@ to drive the engine with synthetic inline word lists — no on-disk artifacts re
 ### `typeflow-data` (xtask)
 
 A binary that produces data artifacts. With no arguments it rebuilds the embedded
-EN/RU artifacts. With `build-pack <spec.toml> --out <dir>` it builds an
+EN/UK artifacts. With `build-pack <spec.toml> --out <dir>` it builds an
 installable external secondary-language pack. Cached downloads live under
 `target/typeflow-data-cache/` and are reused across runs.
 
@@ -85,15 +85,15 @@ Inputs:
 
 - **OpenSubtitles2018** monolingual text dumps from OPUS for char n-gram counts.
   - EN (3.66 GB gz, sampled to ~200 MB plaintext — n-grams converge way before that).
-  - RU (655 MB gz, full).
+  - UK (~17 MB gz, full).
 - **hermitdave/FrequencyWords** — pre-tokenized word + frequency lists derived
   from the same OpenSubtitles dump.
 
 Outputs:
 
-- `{en,ru}.ngrams.bin` — `bincode`-serialized `CompiledLanguageData`
+- `{en,uk}.ngrams.bin` — `bincode`-serialized `CompiledLanguageData`
   (sorted bigrams + trigrams with log-probabilities + smoothing floors).
-- `{en,ru}.dict.fst` — BurntSushi `fst::Map` (word → frequency, ~500K entries).
+- `{en,uk}.dict.fst` — BurntSushi `fst::Map` (word → frequency).
 - External packs: `pack.toml`, `ngrams.bin`, `dict.fst`. Spec details live in
   `docs/pack-spec.md`.
 
@@ -111,7 +111,7 @@ The interactive binary. Subcommands are all driven by the same engine:
 | `typeflow eval [--generated [N] \| <tsv>]` | run hard-case, generated dictionary, or external labeled corpus checks |
 | `typeflow bench [iterations]` | micro-benchmark the hot engine loop |
 | `typeflow model` | print language-pack metadata and fingerprints |
-| `typeflow pack export-ru/install/list/use/inspect` | external language-pack workflow |
+| `typeflow pack install/list/use/inspect` | external language-pack workflow |
 | `typeflow config init/show` | manage `~/.config/typeflow/config.toml` |
 
 ### `typeflow-ffi`
@@ -168,6 +168,6 @@ The eventual IMKInputController bundle. **Not built yet.** Will:
 
 - A CGEventTap "global hook" architecture. Backspace-and-retype is the wrong
   shape; we want a real input source so the host app sees correct text the first time.
-- Layouts needing keys outside the current 33-position model.
+- Layouts needing keys outside the current 34-position model.
 - Cloud inference of any kind.
 - A preferences UI before the engine is calibrated.
