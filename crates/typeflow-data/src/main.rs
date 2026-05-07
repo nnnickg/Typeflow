@@ -1,3 +1,4 @@
+use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs::{self, File};
@@ -674,7 +675,7 @@ fn build_fst(
     }
 
     // Take the most-frequent K, then sort lexicographically for the FST builder.
-    entries.sort_by(|a, b| b.1.cmp(&a.1));
+    entries.sort_by_key(|entry| Reverse(entry.1));
     entries.truncate(dict_top_k);
     entries.sort_by(|a, b| a.0.cmp(&b.0));
 
