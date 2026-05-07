@@ -85,8 +85,10 @@ typeflow predict ghbdtn                  # -> "Russian\tпривет"
 typeflow predict --json ghbdtn           # -> JSON line
 typeflow convert type                    # force-convert current token
 
-# Built-in hard-case corpus and hot-loop benchmark.
+# Built-in hard-case smoke corpus, generated dictionary regression corpus,
+# and hot-loop benchmark.
 typeflow eval
+typeflow eval --generated 500             # 500 EN + 500 secondary dictionary cases
 typeflow bench 50000
 typeflow model
 

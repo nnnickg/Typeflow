@@ -114,19 +114,16 @@ between them programmatically (KeyKey-style).
 
 ### Regression corpus + calibration
 
-There is now a tiny built-in hard-case set via `typeflow eval`, but not a real
-large labeled corpus. Defaults (especially `confidence_margin = 1.0`) are still
-an educated guess. Before the IMK bundle ships, do this:
+`typeflow eval` still runs the small built-in smoke set. `typeflow eval
+--generated [limit-per-layout]` now builds a larger regression corpus from the
+loaded dictionaries: top EN words expect English, top secondary words are
+rendered back to physical-key strings and expect secondary. External TSVs are
+still supported with `keys<TAB>expected-layout`.
 
-1. Iterate hermitdave EN word list, render each word's keystrokes (the word
-   already in EN layout maps to itself), expect EN.
-2. Iterate the active secondary dictionary, render each word's keystrokes via
-   `PhysicalKey::from_char` reverse mapping, expect secondary.
-3. Add a hand-curated "hard cases" set with ambiguous short tokens, code
-   identifiers, mixed-script names, etc.
-4. Run it through `typeflow eval <cases.tsv>`, report accuracy + which tokens
-   flip wrongly.
-5. Tune defaults until accuracy is north of 95%.
+Defaults (especially `confidence_margin = 1.0`) are still an educated guess.
+Before the IMK bundle ships, run generated eval at useful limits, add
+hand-curated hard cases for ambiguous short tokens / code identifiers /
+mixed-script names, then tune until accuracy is north of 95%.
 
 ### Host-driven config fields
 

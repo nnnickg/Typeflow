@@ -13,6 +13,7 @@ use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     terminal::{self, ClearType},
 };
+use fst::Streamer;
 use typeflow_core::Layout;
 use typeflow_core::data::{
     LanguageBundle, LanguagePack, LanguagePackManifest, PACK_DICT_FILE, PACK_MANIFEST_FILE,
@@ -113,8 +114,8 @@ Usage:
                                  one-shot: print the picked layout + rendered text. Pipeline-friendly.
   typeflow [--config <path>] convert <KEYS>
                                  force-convert one token to the opposite layout
-  typeflow [--config <path>] eval [<tsv>]
-                                 run labeled corpus checks. TSV: keys<TAB>expected-layout
+  typeflow [--config <path>] eval [--generated [limit-per-layout] | <tsv>]
+                                 run labeled checks. TSV: keys<TAB>expected-layout
   typeflow [--config <path>] bench [iterations]
                                  micro-benchmark the hot engine loop
   typeflow [--config <path>] model
@@ -403,17 +404,9 @@ struct EvalCase {
 }
 
 fn cmd_eval(args: &[String], explicit_config: Option<&Path>) -> Result<(), String> {
-    if args.len() > 1 {
-        return Err("usage: typeflow eval [<tsv>]".into());
-    }
-
     let source = load_config(explicit_config)?;
     let mut engine = build_engine(&source.config)?;
-    let cases = if let Some(path) = args.first() {
-        read_eval_cases(Path::new(path))?
-    } else {
-        builtin_eval_cases()
-    };
+    let cases = eval_cases(args, &engine)?;
 
     let mut passed = 0usize;
     let mut failed = 0usize;
@@ -449,6 +442,24 @@ fn cmd_eval(args: &[String], explicit_config: Option<&Path>) -> Result<(), Strin
         Ok(())
     } else {
         Err("evaluation failed".into())
+    }
+}
+
+fn eval_cases(args: &[String], engine: &Engine) -> Result<Vec<EvalCase>, String> {
+    match args {
+        [] => Ok(builtin_eval_cases()),
+        [flag] if flag == "--generated" => generated_eval_cases(engine, 5_000),
+        [flag, limit] if flag == "--generated" => {
+            let limit = limit
+                .parse::<usize>()
+                .map_err(|e| format!("parse generated eval limit: {e}"))?;
+            if limit == 0 {
+                return Err("generated eval limit must be > 0".into());
+            }
+            generated_eval_cases(engine, limit)
+        }
+        [path] if !path.starts_with("--") => read_eval_cases(Path::new(path)),
+        _ => Err("usage: typeflow eval [--generated [limit-per-layout] | <tsv>]".into()),
     }
 }
 
@@ -505,6 +516,77 @@ fn builtin_eval_cases() -> Vec<EvalCase> {
         expected,
     })
     .collect()
+}
+
+fn generated_eval_cases(engine: &Engine, limit_per_layout: usize) -> Result<Vec<EvalCase>, String> {
+    let mut cases = builtin_eval_cases();
+    cases.extend(generated_dictionary_cases(
+        engine,
+        Layout::English,
+        limit_per_layout,
+    )?);
+    cases.extend(generated_dictionary_cases(
+        engine,
+        Layout::Secondary,
+        limit_per_layout,
+    )?);
+    Ok(cases)
+}
+
+fn generated_dictionary_cases(
+    engine: &Engine,
+    expected: Layout,
+    limit: usize,
+) -> Result<Vec<EvalCase>, String> {
+    let pack = engine.bundle().pack(expected);
+    let mut words = dictionary_words_by_frequency(pack)?;
+    words.retain(|word| word.chars().count() >= engine.config().min_token_len);
+    words.truncate(limit);
+
+    let mut cases = Vec::with_capacity(words.len());
+    for (idx, word) in words.into_iter().enumerate() {
+        let Some(keys) = physical_keys_for_word(engine, &word) else {
+            continue;
+        };
+        cases.push(EvalCase {
+            name: format!(
+                "generated_{}_{}_{}",
+                token_label(engine, expected),
+                idx + 1,
+                word
+            ),
+            keys,
+            expected,
+        });
+    }
+
+    Ok(cases)
+}
+
+fn dictionary_words_by_frequency(pack: &LanguagePack) -> Result<Vec<String>, String> {
+    let mut entries: Vec<(String, u64)> = Vec::new();
+    let mut stream = pack.dict.stream();
+
+    while let Some((key, count)) = stream.next() {
+        let word = std::str::from_utf8(key)
+            .map_err(|e| format!("dictionary {} contains non-UTF-8 key: {e}", pack.id))?;
+        entries.push((word.to_owned(), count));
+    }
+
+    entries.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    Ok(entries.into_iter().map(|(word, _)| word).collect())
+}
+
+fn physical_keys_for_word(engine: &Engine, word: &str) -> Option<String> {
+    let bundle = engine.bundle();
+    let mut keys = String::new();
+
+    for character in word.chars() {
+        let event = bundle.letter_event_from_char(character)?;
+        keys.push(bundle.render(event, Layout::English));
+    }
+
+    Some(keys)
 }
 
 fn parse_layout(value: &str) -> Result<Layout, String> {

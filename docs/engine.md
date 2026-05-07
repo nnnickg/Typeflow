@@ -170,14 +170,19 @@ the input stream — backspace through a literal works without desync.
 The defaults are an educated guess, not a calibrated value. The right way to
 tune is against a regression corpus:
 
-1. Build a labeled set: `(physical_keys → expected_layout)` from real word
-   lists in both languages.
-2. Run `typeflow eval <cases.tsv>`, collect accuracy + confusion matrix.
-3. Adjust one knob at a time, re-run, see whether accuracy moves.
+1. Start with `typeflow eval --generated <N>`. This derives labeled cases from
+   the loaded EN and secondary dictionaries and renders secondary words back to
+   physical key sequences.
+2. Add external TSV hard cases where needed. TSV format is
+   `keys<TAB>expected-layout`.
+3. Run `typeflow eval <cases.tsv>` or `typeflow eval --generated <N>`, collect
+   accuracy + confusion matrix.
+4. Adjust one knob at a time, re-run, see whether accuracy moves.
 
-Until that exists, calibration is by feel via `typeflow repl`. Watch the score
-breakdown panel — when something feels wrong, look at *which* term (bigram,
-trigram, dict_exact, dict_prefix) is dragging the wrong direction.
+The generated corpus is intentionally stricter than the old smoke set. For
+example, secondary words whose physical keys form valid English words expose
+real false negatives; those belong in the calibration report, not hidden from
+the test data. Use `typeflow repl` for interactive inspection of any failure.
 
 ## The action protocol (host contract)
 

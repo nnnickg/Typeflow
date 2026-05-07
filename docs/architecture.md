@@ -100,7 +100,7 @@ The interactive binary. Subcommands are all driven by the same engine:
 | `typeflow predict [--json] <KEYS>` | one-shot decision, pipe-friendly |
 | `typeflow convert <KEYS>` | force-convert one token to the opposite layout |
 | `typeflow repl` | `crossterm` raw-mode TTY, type live, see live scores + simulated committed text |
-| `typeflow eval [<tsv>]` | run labeled corpus checks; TSV format is `keys<TAB>expected-layout` |
+| `typeflow eval [--generated [N] \| <tsv>]` | run hard-case, generated dictionary, or external labeled corpus checks |
 | `typeflow bench [iterations]` | micro-benchmark the hot engine loop |
 | `typeflow model` | print language-pack metadata and fingerprints |
 | `typeflow pack export-ru/install/list/use/inspect` | external language-pack workflow |
