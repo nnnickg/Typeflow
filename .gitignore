@@ -1,0 +1,12 @@
+/target/
+/.idea/
+/.vscode/
+*.swp
+*.DS_Store
+
+# macOS/Xcode build output
+/DerivedData/
+/build/
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
