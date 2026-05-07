@@ -16,16 +16,16 @@ use typeflow_core::data::{
 };
 
 const EN_OPUS_URL: &str = "https://object.pouta.csc.fi/OPUS-OpenSubtitles/v2018/mono/en.txt.gz";
-const RU_OPUS_URL: &str = "https://object.pouta.csc.fi/OPUS-OpenSubtitles/v2018/mono/ru.txt.gz";
+const UK_OPUS_URL: &str = "https://object.pouta.csc.fi/OPUS-OpenSubtitles/v2018/mono/uk.txt.gz";
 
 const EN_FREQ_URL: &str = "https://raw.githubusercontent.com/hermitdave/FrequencyWords/master/content/2018/en/en_full.txt";
-const RU_FREQ_URL: &str = "https://raw.githubusercontent.com/hermitdave/FrequencyWords/master/content/2018/ru/ru_full.txt";
+const UK_FREQ_URL: &str = "https://raw.githubusercontent.com/hermitdave/FrequencyWords/master/content/2018/uk/uk_full.txt";
 
 /// EN dump is 3.66 GB compressed (~12 GB plaintext). N-gram statistics converge
 /// long before that; cap the ingestion to keep iteration fast.
 const EN_PLAINTEXT_BUDGET_BYTES: u64 = 200 * 1024 * 1024;
-/// RU dump is 655 MB gz / ~2.5 GB plaintext. Use the whole thing.
-const RU_PLAINTEXT_BUDGET_BYTES: u64 = u64::MAX;
+/// UK dump is small enough to process completely on build machines.
+const UK_PLAINTEXT_BUDGET_BYTES: u64 = u64::MAX;
 
 const DICT_TOP_K: usize = 500_000;
 
@@ -51,7 +51,7 @@ fn usage() -> &'static str {
 
 Usage:
   typeflow-data
-      rebuild embedded EN/RU artifacts under crates/typeflow-core/data
+      rebuild embedded EN/UK artifacts under crates/typeflow-core/data
   typeflow-data build-embedded
       same as no arguments
   typeflow-data build-pack <SPEC.toml> --out <PACK_DIR> [--cache <DIR>] [--force]
@@ -88,10 +88,10 @@ fn build_embedded_artifacts() -> Result<()> {
     build_language(
         &cache_dir,
         &data_dir,
-        Language::Russian,
-        RU_OPUS_URL,
-        RU_FREQ_URL,
-        RU_PLAINTEXT_BUDGET_BYTES,
+        Language::Ukrainian,
+        UK_OPUS_URL,
+        UK_FREQ_URL,
+        UK_PLAINTEXT_BUDGET_BYTES,
     )?;
 
     eprintln!("\ndone.");
@@ -101,22 +101,22 @@ fn build_embedded_artifacts() -> Result<()> {
 #[derive(Clone, Copy)]
 enum Language {
     English,
-    Russian,
+    Ukrainian,
 }
 
 impl Language {
     fn tag(self) -> &'static str {
         match self {
             Language::English => "en",
-            Language::Russian => "ru",
+            Language::Ukrainian => "uk",
         }
     }
 
     fn normalizer(self) -> Normalizer {
         match self {
             Language::English => Normalizer::ascii_letters(),
-            Language::Russian => Normalizer::from_alphabet("абвгдеёжзийклмнопрстуфхцчшщъыьэюя")
-                .expect("built-in Russian alphabet is valid"),
+            Language::Ukrainian => Normalizer::from_alphabet("абвгґдеєжзиіїйклмнопрстуфхцчшщьюя")
+                .expect("built-in Ukrainian alphabet is valid"),
         }
     }
 }

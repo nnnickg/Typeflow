@@ -39,15 +39,15 @@ To rebuild the embedded model artifacts, run:
 cargo run --release -p typeflow-data
 ```
 
-That downloads ~4.3 GB from OpenSubtitles + hermitdave into
+That downloads ~3.7 GB from OpenSubtitles + hermitdave into
 `target/typeflow-data-cache/` and produces the small compile-time artifacts:
 
 ```text
 crates/typeflow-core/data/
 ├── en.ngrams.bin
-├── ru.ngrams.bin
+├── uk.ngrams.bin
 ├── en.dict.fst
-└── ru.dict.fst
+└── uk.dict.fst
 ```
 
 The cache is not needed at runtime. Keep it only to avoid re-downloading when
@@ -74,15 +74,15 @@ typeflow --help
 
 ```sh
 # Per-keystroke trace ending in final score breakdown.
-typeflow type ghbdtn        # Russian: привет
+typeflow type ghsdbn        # Ukrainian: привіт
 typeflow type typeflow      # English
 
 # Cyrillic input also works (reverse-mapped to physical keys).
-typeflow type привет
+typeflow type привіт
 
 # One-shot decision, pipe-friendly.
-typeflow predict ghbdtn                  # -> "Russian\tпривет"
-typeflow predict --json ghbdtn           # -> JSON line
+typeflow predict ghsdbn                  # -> "Ukrainian\tпривіт"
+typeflow predict --json ghsdbn           # -> JSON line
 typeflow convert type                    # force-convert current token
 
 # Built-in hard-case smoke corpus, generated dictionary regression corpus,
@@ -95,15 +95,14 @@ typeflow bench 50000
 typeflow model
 
 # External-pack workflow. The binary itself stays standalone.
-cargo run --release -p typeflow-data -- build-pack ./language.toml --out /tmp/lang.typeflow-pack
-typeflow pack export-ru /tmp/ru.typeflow-pack
+cargo run --release -p typeflow-data -- build-pack docs/examples/ru.toml --out /tmp/ru.typeflow-pack
 typeflow pack install /tmp/ru.typeflow-pack
 typeflow pack list
 typeflow pack use ru
 typeflow pack inspect ru
 
 # Stream tokens from stdin.
-echo -e "ghbdtn\nhello\nyt" | typeflow stream
+echo -e "ghsdbn\nhello\nyt" | typeflow stream
 
 # Interactive raw-mode REPL with live score updates.
 typeflow repl
@@ -118,7 +117,7 @@ All scoring knobs are exposed via TOML. Generate a fully-commented default:
 ```sh
 typeflow config init        # writes ~/.config/typeflow/config.toml
 typeflow config show        # prints effective merged config
-typeflow --config /tmp/x.toml type ghbdtn
+typeflow --config /tmp/x.toml type ghsdbn
 ```
 
 See [`docs/engine.md`](docs/engine.md) for what each config field actually controls.
