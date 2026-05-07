@@ -89,6 +89,8 @@ typeflow convert type                    # force-convert current token
 # and hot-loop benchmark.
 typeflow eval
 typeflow eval --generated 500             # 500 EN + 500 secondary dictionary cases
+# eval prints accuracy, confusion counts, false positives/negatives, length
+# buckets, and a bounded failure sample.
 typeflow bench 50000
 typeflow model
 

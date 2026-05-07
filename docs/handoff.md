@@ -118,7 +118,9 @@ between them programmatically (KeyKey-style).
 --generated [limit-per-layout]` now builds a larger regression corpus from the
 loaded dictionaries: top EN words expect English, top secondary words are
 rendered back to physical-key strings and expect secondary. External TSVs are
-still supported with `keys<TAB>expected-layout`.
+still supported with `keys<TAB>expected-layout`. Eval output now includes
+accuracy, confusion counts, false positives/negatives, failing token lengths,
+and a bounded failure sample.
 
 Defaults (especially `confidence_margin = 1.0`) are still an educated guess.
 Before the IMK bundle ships, run generated eval at useful limits, add
