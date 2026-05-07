@@ -1,0 +1,84 @@
+#ifndef TYPEFLOW_H
+#define TYPEFLOW_H
+
+#include <stdint.h>
+#include <stddef.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct TfEngine TfEngine;
+
+#define TF_EVENT_LETTER     0
+#define TF_EVENT_BACKSPACE  1
+#define TF_EVENT_END_TOKEN  2
+#define TF_EVENT_LITERAL    3
+
+#define TF_MOD_SHIFT    0x01u
+#define TF_MOD_CONTROL  0x02u
+#define TF_MOD_OPTION   0x04u
+#define TF_MOD_COMMAND  0x08u
+#define TF_MOD_FUNCTION 0x10u
+
+#define TF_CONTEXT_SECURE_INPUT 0x01u
+#define TF_CONTEXT_APP_EXCLUDED 0x02u
+
+typedef struct {
+    uint8_t tag;
+    uint8_t physical;
+    uint8_t modifiers;
+    uint32_t codepoint;
+} TfEvent;
+
+typedef struct {
+    size_t min_token_len;
+    float  confidence_margin;
+    float  dict_exact_weight;
+    float  dict_prefix_weight;
+    float  ngram_only_confidence_margin;
+    float  bigram_weight;
+    float  trigram_weight;
+    uint8_t length_normalize;
+    uint8_t disable_on_internal_caps;
+} TfEngineConfig;
+
+#define TF_ACTION_KEEP    0
+#define TF_ACTION_COMMIT  1
+#define TF_ACTION_REPLACE 2
+#define TF_ACTION_RESET   3
+
+#define TF_LAYOUT_ENGLISH 0
+#define TF_LAYOUT_SECONDARY 1
+
+#define TF_REPLACE_BUF_LEN 4096
+
+typedef struct {
+    uint8_t  tag;
+    uint32_t commit_codepoint;
+    size_t   replace_old_len;
+    size_t   replace_text_len;
+    uint8_t  replace_layout;
+    uint8_t  replace_text[TF_REPLACE_BUF_LEN];
+} TfAction;
+
+TfEngine* typeflow_engine_new_embedded(void);
+TfEngine* typeflow_engine_new_embedded_with_config(TfEngineConfig config);
+TfEngine* typeflow_engine_new_from_data_dir(const char* data_dir_utf8);
+TfEngine* typeflow_engine_new_from_data_dir_with_config(const char* data_dir_utf8, TfEngineConfig config);
+TfEngine* typeflow_engine_new_from_pack_dir(const char* pack_dir_utf8);
+TfEngine* typeflow_engine_new_from_pack_dir_with_config(const char* pack_dir_utf8, TfEngineConfig config);
+void      typeflow_engine_free(TfEngine* engine);
+void      typeflow_engine_reset_token(TfEngine* engine);
+void      typeflow_engine_reset_layout(TfEngine* engine, uint8_t layout);
+void      typeflow_engine_set_host_context(TfEngine* engine, uint32_t flags);
+void      typeflow_engine_force_switch_token(TfEngine* engine, TfAction* out_action);
+uint8_t   typeflow_engine_current_layout(TfEngine* engine);
+void      typeflow_engine_process(TfEngine* engine, TfEvent event, TfAction* out_action);
+void      typeflow_engine_default_config(TfEngineConfig* out_config);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif
