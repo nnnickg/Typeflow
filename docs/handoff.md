@@ -15,8 +15,8 @@ read this end-to-end and you'll have everything.
   Hosts decide what counts as `EndToken` (space, tab, return, punctuation
   outside the letter set, focus loss, etc.). `InputEvent::HostBypass` covers
   modifier shortcuts.
-- `Layout` is now `English` / `Secondary`; the old internal `Russian` variant
-  name is gone.
+- `Layout` is now `English` / `Secondary`; language-specific layout enum
+  variants are gone.
 - `HostContext` lets Swift/IMK bypass the engine for secure input fields and
   excluded apps.
 - `LanguagePack` now carries the keyboard map, language id/display/script,
@@ -36,6 +36,8 @@ read this end-to-end and you'll have everything.
 - Unit tests cover synthetic in-memory bundles, pack parser failures, malformed
   n-gram/FST artifacts, weird Unicode literals, host bypass, and devops/security
   false positives.
+- `docs/invariants.md` defines the core/host contract for token state,
+  actions, FFI ownership, and calibration boundaries.
 
 ### Data pipeline (typeflow-data) — works
 
@@ -44,8 +46,8 @@ read this end-to-end and you'll have everything.
 runs), processes everything, and writes four artifacts to
 `crates/typeflow-core/data/`. Those artifacts are compile-time inputs embedded
 into release binaries with `include_bytes!`. The embedded pair is English plus
-Ukrainian; Russian is now an external language-pack workflow. The raw subtitle
-cache is never needed at runtime.
+Ukrainian; other secondary languages use the external language-pack workflow.
+The raw subtitle cache is never needed at runtime.
 
 `cargo run --release -p typeflow-data -- build-pack <spec.toml> --out <dir>`
 builds an external pack directory (`pack.toml`, `ngrams.bin`, `dict.fst`) from
@@ -177,13 +179,14 @@ If you're debugging engine behaviour:
 
 If you're building the IMK bundle:
 
+- `docs/invariants.md` — read this first. It is the host contract.
 - `crates/typeflow-ffi/include/typeflow.h` — exact ABI to consume.
 - `crates/typeflow-ffi/src/lib.rs` — Rust side of the bridge; understand
   `TfEvent` / `TfAction` / `typeflow_engine_process` before writing Swift.
 - `crates/typeflow-ffi/tests/abi_smoke.rs` — public ABI host-buffer simulation
   that Swift should mirror.
-- `docs/engine.md#the-action-protocol-host-contract` — the action protocol
-  the Swift side must implement faithfully or undo (Cmd-Z) breaks.
+- `docs/engine.md#the-action-protocol-host-contract` — extra explanation for
+  the action protocol. The invariants doc is the source of truth.
 
 If you're tuning thresholds:
 
@@ -201,7 +204,7 @@ If you're tuning thresholds:
    data (~10 MB binary) or load from `Bundle.main.resourcePath` as files? File
    loading is cheaper to update; embedding is simpler.
 3. **Dictionary expansion.** hermitdave's lists include only attested surface
-   forms from OPUS. For rare Ukrainian/Russian inflections this misses obvious words.
+   forms from OPUS. For rare secondary-language inflections this misses obvious words.
    Worth merging in Hunspell expansions before the regression corpus pass?
 4. **Score calibration target.** Are we tuning for max accuracy, or for max
    *user-perceived correctness* (which weighs false-positive switches as worse

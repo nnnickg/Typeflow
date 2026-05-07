@@ -65,6 +65,8 @@ external pack directory. Contains:
 - `Engine::process(InputEvent) -> EngineOutput` — the only loop the host runs.
 - `Action` — what the host should do in response: `Keep`, `Commit(char)`,
   `ReplaceToken { old_len, replacement, layout }`, `ResetToken`.
+- `docs/invariants.md` — the stable core/host contract. If this conflicts
+  with a CLI convenience behavior, the invariants doc wins.
 - `data::LanguageBundle` — n-gram models + FST dictionaries, normally loaded
   from `embedded()` via `include_bytes!`. `from_secondary_pack_dir(path)` loads
   an installed pack for the non-English side. `from_data_dir(path)` remains a
@@ -132,7 +134,8 @@ and `cdylib` (`libtypeflow_ffi.dylib`).
 `TfEvent` supports physical-key letters, literals by Unicode codepoint,
 backspace, and end-token boundaries. The 4096-byte fixed `replace_text` buffer
 in `TfAction` keeps the FFI lifetime-free: no Vec passed across the boundary,
-Swift just copies bytes.
+Swift just copies bytes. See `docs/invariants.md` for the required ownership,
+event, and action semantics.
 
 ### `macos/` (placeholder)
 

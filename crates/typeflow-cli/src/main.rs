@@ -712,9 +712,7 @@ fn physical_keys_for_word(engine: &Engine, word: &str) -> Option<String> {
 fn parse_layout(value: &str) -> Result<Layout, String> {
     match value.trim().to_ascii_lowercase().as_str() {
         "en" | "eng" | "english" => Ok(Layout::English),
-        "uk" | "ukr" | "ukrainian" | "ru" | "rus" | "russian" | "secondary" => {
-            Ok(Layout::Secondary)
-        }
+        "uk" | "ukr" | "ukrainian" | "secondary" => Ok(Layout::Secondary),
         other => Err(format!("unknown expected layout: {other}")),
     }
 }
