@@ -91,13 +91,25 @@ secondary = "uk"
 
 [apps]
 
-# Bundle IDs where the engine should stay silent.
+# Terminal-like surfaces are disabled by built-in Rust host policy because many
+# terminals accept inserted text but ignore replacement ranges. That includes
+# Terminal.app, iTerm2, common terminal apps, and embedded terminal panes when
+# macOS exposes terminal-like accessibility metadata.
+
+# Bundle IDs where Typeflow should stay completely silent.
+# No automatic conversion. No standalone Option conversion.
 # The CLI ignores apps because it has no foreground app context. The macOS IMK
-# bundle enforces this list before sending key events to the engine.
-exclude_bundle_ids = [
-    # "com.googlecode.iterm2",
+# bundle enforces these lists before sending key events to the engine.
+disable_bundle_ids = [
+    # "com.apple.Safari",
+]
+
+# Bundle IDs where automatic conversion is disabled but standalone Option
+# conversion is still allowed in normal, non-secure text fields. After
+# standalone Option conversion, subsequent keys commit in the selected manual
+# layout, but Typeflow still will not auto-score or auto-replace in these apps.
+disable_auto_bundle_ids = [
     # "dev.zed.Zed",
-    # "com.apple.Terminal",
     # "com.microsoft.VSCode",
     # "com.jetbrains.intellij",
 ]

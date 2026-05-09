@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import Carbon
 import InputMethodKit
 import os
@@ -8,51 +9,60 @@ private let logger = Logger(
     subsystem: "io.github.nnnickg.typeflow.inputmethod.Typeflow",
     category: "InputController"
 )
+private let maxVisibleTailUTF16Length = 1024
 
 @objc(TypeflowInputController)
 final class TypeflowInputController: IMKInputController {
-    private let hostConfig: TypeflowHostConfig
+    private let hostConfig: TypeflowHostConfig?
     private let engine: TypeflowEngine?
-    private var hostContextFlags: UInt32 = 0
+    private var hostPolicyLogKey = ""
+    private var hostPolicyCacheKey = ""
+    private var cachedHostPolicy: TypeflowHostInputPolicy?
+    private var accessibilityCacheKey = ""
+    private var accessibilityCacheExpiresAt: TimeInterval = 0
+    private var accessibilityCache = AccessibilitySnapshot.empty
+    private var accessibilityTrustLogged = false
     private var pendingOptionManualConvert = false
     private var manualConvertCancelled = false
     private var trackedClientID: ObjectIdentifier?
     private var expectedSelectedLocation: Int?
 
     override init!(server: IMKServer!, delegate: Any!, client inputClient: Any!) {
-        let loadedConfig = TypeflowHostConfig.load()
-        hostConfig = loadedConfig
-        let engineSource: String?
-        let engineError: String?
+        var loadedConfig: TypeflowHostConfig?
+        var loadedEngine: TypeflowEngine?
+        var engineSource: String?
+        var engineError: String?
         do {
-            let initializedEngine = try TypeflowEngine(hostConfig: loadedConfig)
-            engine = initializedEngine
+            let config = try TypeflowHostConfig.load()
+            loadedConfig = config
+            let initializedEngine = try TypeflowEngine(hostConfig: config)
+            loadedEngine = initializedEngine
             engineSource = initializedEngine.sourceDescription
             engineError = nil
         } catch {
-            engine = nil
             engineSource = nil
             engineError = String(describing: error)
         }
+        hostConfig = loadedConfig
+        engine = loadedEngine
         super.init(server: server, delegate: delegate, client: inputClient)
         if let engineError {
-            logger.error("failed to initialize Typeflow engine: \(engineError, privacy: .public)")
-        } else {
+            logger.error("Typeflow disabled: \(engineError, privacy: .public)")
+        } else if let loadedConfig {
             logger.notice(
-                "initialized input controller source=\(engineSource ?? "unknown", privacy: .public) config=\(loadedConfig.sourcePath == nil ? "defaults" : "loaded", privacy: .public) excludedApps=\(loadedConfig.excludedBundleIDs.count, privacy: .public) manualConvert=option"
+                "initialized input controller source=\(engineSource ?? "unknown", privacy: .public) config=\(loadedConfig.sourcePath == nil ? "defaults" : "loaded", privacy: .public) disabledBundles=\(loadedConfig.disabledBundleIDCount, privacy: .public) autoDisabledBundles=\(loadedConfig.autoDisabledBundleIDCount, privacy: .public) manualConvert=option"
             )
         }
     }
 
     override func activateServer(_ sender: Any!) {
         logger.debug("activated input controller")
-        _ = updateHostContext(client: sender)
         resetTrackedHostState()
         engine?.resetToken()
     }
 
     override func deactivateServer(_ sender: Any!) {
-        hostContextFlags = 0
+        hostPolicyLogKey = ""
         resetPendingManualConvert()
         resetTrackedHostState()
         engine?.resetToken()
@@ -99,7 +109,7 @@ final class TypeflowInputController: IMKInputController {
             return false
         }
         cancelPendingManualConvert()
-        if updateHostContext(client: sender) {
+        if updateHostContext(client: sender).keyProcessingDisabled {
             return false
         }
         logger.debug(
@@ -110,23 +120,29 @@ final class TypeflowInputController: IMKInputController {
             return false
         }
 
-        let modifiers = ffiModifiers(from: modifierFlags)
+        let modifiers = ffiModifiers(from: modifierFlags, keyCode: keyCode)
         if shouldBypassHost(modifierFlags) {
             _ = try? engine.processHostBypass(modifiers: modifiers)
             return false
         }
 
         switch Int(keyCode) {
-        case kVK_Delete:
-            _ = try? engine.processBackspace()
-            recordExpectedSelectionAfterHostBackspace(client)
-            return false
         case kVK_Return, kVK_Tab, kVK_Escape:
             _ = try? engine.endToken()
             expectedSelectedLocation = nil
             return false
         default:
             break
+        }
+
+        if Int(keyCode) == kVK_Delete {
+            if shouldBypassForHostSelection(client) {
+                _ = try? engine.processHostBypass(modifiers: modifiers)
+                return false
+            }
+            _ = try? engine.processBackspace()
+            recordExpectedSelectionAfterHostBackspace(client)
+            return false
         }
 
         if shouldBypassNonTextKey(keyCode: keyCode, characters: characters) {
@@ -190,13 +206,18 @@ final class TypeflowInputController: IMKInputController {
             cancelPendingManualConvert()
             return false
         }
+        guard engine != nil else {
+            resetPendingManualConvert()
+            return false
+        }
 
         let optionDown = event.modifierFlags.contains(.option)
         logger.debug(
             "manualConvert optionEvent keyCode=\(event.keyCode, privacy: .private) down=\(optionDown, privacy: .private) client=\(String(describing: type(of: sender)), privacy: .private)"
         )
 
-        if updateHostContext(client: sender) {
+        let hostContext = updateHostContext(client: sender)
+        if hostContext.manualConversionDisabled {
             resetPendingManualConvert()
             return false
         }
@@ -251,9 +272,10 @@ final class TypeflowInputController: IMKInputController {
         case let .commit(character):
             logger.debug("action=commit")
             let selected = client.selectedRange()
-            client.insertText(String(character), replacementRange: insertionRange)
+            let text = String(character)
+            client.insertText(text, replacementRange: insertionRange)
             if selected.location != NSNotFound, selected.length == 0 {
-                expectedSelectedLocation = selected.location + 1
+                expectedSelectedLocation = selected.location + text.utf16.count
             } else {
                 expectedSelectedLocation = nil
             }
@@ -270,7 +292,7 @@ final class TypeflowInputController: IMKInputController {
             }
             let range = NSRange(location: selected.location - oldLength, length: oldLength)
             client.insertText(replacement, replacementRange: range)
-            expectedSelectedLocation = range.location + replacement.count
+            expectedSelectedLocation = range.location + replacement.utf16.count
             return true
         }
     }
@@ -292,32 +314,187 @@ final class TypeflowInputController: IMKInputController {
         }
     }
 
-    private func updateHostContext(client sender: Any!) -> Bool {
-        var flags: UInt32 = 0
-        let secureInput = IsSecureEventInputEnabled()
-        let bundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-        let appExcluded = bundleID.map { hostConfig.excludedBundleIDs.contains($0) } ?? false
+    private struct HostContextSnapshot {
+        let keyProcessingDisabled: Bool
+        let manualConversionDisabled: Bool
+    }
 
-        if secureInput {
-            flags |= UInt32(TF_CONTEXT_SECURE_INPUT)
+    private func updateHostContext(client sender: Any!) -> HostContextSnapshot {
+        let facts = hostSurfaceFacts(client: sender)
+        let policyKey = hostPolicyKey(for: facts)
+        let policy: TypeflowHostInputPolicy
+        if policyKey == hostPolicyCacheKey, let cachedHostPolicy {
+            policy = cachedHostPolicy
+        } else {
+            policy = hostConfig?.resolveInputPolicy(facts: facts) ?? TypeflowHostInputPolicy(
+                flags: UInt32(TF_HOST_POLICY_AUTOMATIC_PROCESSING_DISABLED)
+                    | UInt32(TF_HOST_POLICY_MANUAL_CONVERSION_DISABLED),
+                reason: UInt8(TF_HOST_POLICY_REASON_UNAVAILABLE_HOST_CONFIG)
+            )
+            hostPolicyCacheKey = policyKey
+            cachedHostPolicy = policy
         }
-        if appExcluded {
-            flags |= UInt32(TF_CONTEXT_APP_EXCLUDED)
+        var flags: UInt32 = 0
+
+        if policy.secureInput {
+            flags |= typeflow_ffi_context_secure_input()
+        }
+        if policy.manualConversionDisabled {
+            flags |= typeflow_ffi_context_automatic_processing_disabled()
+        } else if policy.automaticProcessingDisabled {
+            flags |= typeflow_ffi_context_automatic_switching_disabled()
         }
 
         engine?.setHostContext(flags: flags)
-        if flags != 0 {
+        if policy.manualConversionDisabled {
             expectedSelectedLocation = nil
         }
 
-        if flags != hostContextFlags {
+        let logKey = [
+            String(flags),
+            String(policy.flags),
+            String(policy.reason),
+            facts.bundleID ?? "",
+            facts.inputClientClass ?? "",
+            facts.focusedElementIdentifier ?? "",
+            facts.focusedElementRole ?? "",
+        ].joined(separator: "|")
+
+        if logKey != hostPolicyLogKey {
             logger.debug(
-                "hostContext secure=\(secureInput, privacy: .private) appExcluded=\(appExcluded, privacy: .private) bundleID=\(bundleID ?? "unknown", privacy: .private)"
+                "hostPolicy reason=\(policy.reasonDescription, privacy: .public) secure=\(policy.secureInput, privacy: .private) autoDisabled=\(policy.automaticProcessingDisabled, privacy: .private) manualDisabled=\(policy.manualConversionDisabled, privacy: .private) terminal=\(policy.terminalSurface, privacy: .private) bundleID=\(facts.bundleID ?? "unknown", privacy: .private) client=\(facts.inputClientClass ?? "unknown", privacy: .private) axRole=\(facts.focusedElementRole ?? "unknown", privacy: .private) axSubrole=\(facts.focusedElementSubrole ?? "unknown", privacy: .private) axID=\(facts.focusedElementIdentifier ?? "unknown", privacy: .private)"
             )
-            hostContextFlags = flags
+            hostPolicyLogKey = logKey
         }
 
-        return flags != 0
+        return HostContextSnapshot(
+            keyProcessingDisabled: policy.manualConversionDisabled,
+            manualConversionDisabled: policy.manualConversionDisabled
+        )
+    }
+
+    private func hostPolicyKey(for facts: TypeflowHostSurfaceFacts) -> String {
+        [
+            facts.secureInput ? "1" : "0",
+            facts.bundleID ?? "",
+            facts.inputClientClass ?? "",
+            facts.focusedElementRole ?? "",
+            facts.focusedElementSubrole ?? "",
+            facts.focusedElementRoleDescription ?? "",
+            facts.focusedElementIdentifier ?? "",
+            facts.focusedElementDescription ?? "",
+        ].joined(separator: "|")
+    }
+
+    private func hostSurfaceFacts(client sender: Any!) -> TypeflowHostSurfaceFacts {
+        let app = NSWorkspace.shared.frontmostApplication
+        let clientClass = sender.map { String(describing: type(of: $0)) }
+        let ax = cachedAccessibilitySnapshot(for: app, clientClass: clientClass)
+        return TypeflowHostSurfaceFacts(
+            secureInput: IsSecureEventInputEnabled(),
+            bundleID: app?.bundleIdentifier,
+            applicationName: app?.localizedName,
+            inputClientClass: clientClass,
+            focusedElementRole: ax.focusedElementRole,
+            focusedElementSubrole: ax.focusedElementSubrole,
+            focusedElementRoleDescription: ax.focusedElementRoleDescription,
+            focusedElementIdentifier: ax.focusedElementIdentifier,
+            focusedElementDescription: ax.focusedElementDescription,
+            focusedWindowTitle: ax.focusedWindowTitle
+        )
+    }
+
+    private func cachedAccessibilitySnapshot(
+        for app: NSRunningApplication?,
+        clientClass: String?
+    ) -> AccessibilitySnapshot {
+        guard AXIsProcessTrusted() else {
+            if !accessibilityTrustLogged {
+                logger.debug("accessibility not trusted; embedded terminal surface detection unavailable")
+                accessibilityTrustLogged = true
+            }
+            return .empty
+        }
+
+        let pid = app?.processIdentifier ?? 0
+        let key = "\(pid)|\(clientClass ?? "")"
+        let now = ProcessInfo.processInfo.systemUptime
+        if key == accessibilityCacheKey, now < accessibilityCacheExpiresAt {
+            return accessibilityCache
+        }
+
+        let snapshot = accessibilitySnapshot(for: app)
+        accessibilityCacheKey = key
+        accessibilityCacheExpiresAt = now + 0.10
+        accessibilityCache = snapshot
+        return snapshot
+    }
+
+    private struct AccessibilitySnapshot {
+        let focusedElementRole: String?
+        let focusedElementSubrole: String?
+        let focusedElementRoleDescription: String?
+        let focusedElementIdentifier: String?
+        let focusedElementDescription: String?
+        let focusedWindowTitle: String?
+
+        static let empty = AccessibilitySnapshot(
+            focusedElementRole: nil,
+            focusedElementSubrole: nil,
+            focusedElementRoleDescription: nil,
+            focusedElementIdentifier: nil,
+            focusedElementDescription: nil,
+            focusedWindowTitle: nil
+        )
+    }
+
+    private func accessibilitySnapshot(for app: NSRunningApplication?) -> AccessibilitySnapshot {
+        guard let app else {
+            return .empty
+        }
+
+        let appElement = AXUIElementCreateApplication(app.processIdentifier)
+        _ = AXUIElementSetMessagingTimeout(appElement, 0.01)
+        let focusedElement = copyAXElement(appElement, attribute: kAXFocusedUIElementAttribute as CFString)
+        let focusedWindow = copyAXElement(appElement, attribute: kAXFocusedWindowAttribute as CFString)
+        if let focusedElement {
+            _ = AXUIElementSetMessagingTimeout(focusedElement, 0.01)
+        }
+        if let focusedWindow {
+            _ = AXUIElementSetMessagingTimeout(focusedWindow, 0.01)
+        }
+
+        return AccessibilitySnapshot(
+            focusedElementRole: focusedElement.flatMap { copyAXString($0, attribute: kAXRoleAttribute as CFString) },
+            focusedElementSubrole: focusedElement.flatMap { copyAXString($0, attribute: kAXSubroleAttribute as CFString) },
+            focusedElementRoleDescription: focusedElement.flatMap { copyAXString($0, attribute: kAXRoleDescriptionAttribute as CFString) },
+            focusedElementIdentifier: focusedElement.flatMap { copyAXString($0, attribute: kAXIdentifierAttribute as CFString) },
+            focusedElementDescription: focusedElement.flatMap { copyAXString($0, attribute: kAXDescriptionAttribute as CFString) },
+            focusedWindowTitle: focusedWindow.flatMap { copyAXString($0, attribute: kAXTitleAttribute as CFString) }
+        )
+    }
+
+    private func copyAXElement(_ element: AXUIElement, attribute: CFString) -> AXUIElement? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success,
+              let value,
+              CFGetTypeID(value) == AXUIElementGetTypeID()
+        else {
+            return nil
+        }
+        // Swift requires a forced downcast for CoreFoundation AX types; the
+        // CFTypeID guard above is the runtime type check.
+        return (value as! AXUIElement)
+    }
+
+    private func copyAXString(_ element: AXUIElement, attribute: CFString) -> String? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success,
+              let value
+        else {
+            return nil
+        }
+        return value as? String
     }
 
     private func cancelPendingManualConvert() {
@@ -372,9 +549,17 @@ final class TypeflowInputController: IMKInputController {
     private func resetTrackedHostState() {
         trackedClientID = nil
         expectedSelectedLocation = nil
+        hostPolicyCacheKey = ""
+        cachedHostPolicy = nil
+        accessibilityCacheKey = ""
+        accessibilityCacheExpiresAt = 0
+        accessibilityCache = .empty
     }
 
-    private func visibleTail(in client: IMKTextInput, maxLength: Int = 128) -> String? {
+    private func visibleTail(
+        in client: IMKTextInput,
+        maxLength: Int = maxVisibleTailUTF16Length
+    ) -> String? {
         let selected = client.selectedRange()
         guard selected.location != NSNotFound, selected.length == 0, selected.location > 0 else {
             return nil
@@ -430,9 +615,11 @@ final class TypeflowInputController: IMKInputController {
         scalar.value < 0x20 || scalar.value == 0x7F
     }
 
-    private func ffiModifiers(from flags: NSEvent.ModifierFlags) -> UInt8 {
+    private func ffiModifiers(from flags: NSEvent.ModifierFlags, keyCode: UInt16? = nil) -> UInt8 {
         var modifiers: UInt8 = 0
-        if flags.contains(.shift) || flags.contains(.capsLock) {
+        let shiftDown = flags.contains(.shift)
+        let capsLockAffectsKey = keyCode.map { flags.contains(.capsLock) && isAnsiLetterKey($0) } ?? false
+        if shiftDown != capsLockAffectsKey {
             modifiers |= UInt8(TF_MOD_SHIFT)
         }
         if flags.contains(.control) {
@@ -445,6 +632,40 @@ final class TypeflowInputController: IMKInputController {
             modifiers |= UInt8(TF_MOD_COMMAND)
         }
         return modifiers
+    }
+
+    private func isAnsiLetterKey(_ keyCode: UInt16) -> Bool {
+        switch Int(keyCode) {
+        case kVK_ANSI_A,
+             kVK_ANSI_B,
+             kVK_ANSI_C,
+             kVK_ANSI_D,
+             kVK_ANSI_E,
+             kVK_ANSI_F,
+             kVK_ANSI_G,
+             kVK_ANSI_H,
+             kVK_ANSI_I,
+             kVK_ANSI_J,
+             kVK_ANSI_K,
+             kVK_ANSI_L,
+             kVK_ANSI_M,
+             kVK_ANSI_N,
+             kVK_ANSI_O,
+             kVK_ANSI_P,
+             kVK_ANSI_Q,
+             kVK_ANSI_R,
+             kVK_ANSI_S,
+             kVK_ANSI_T,
+             kVK_ANSI_U,
+             kVK_ANSI_V,
+             kVK_ANSI_W,
+             kVK_ANSI_X,
+             kVK_ANSI_Y,
+             kVK_ANSI_Z:
+            return true
+        default:
+            return false
+        }
     }
 
     private func singleScalar(from text: String?) -> UnicodeScalar? {

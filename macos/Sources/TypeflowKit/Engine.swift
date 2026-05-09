@@ -41,6 +41,7 @@ public enum TypeflowAction: Equatable {
 
 public final class TypeflowEngine {
     private let raw: OpaquePointer
+    private var scratchAction = typeflow_ffi_empty_action()
     public let sourceDescription: String
 
     public init() throws {
@@ -52,26 +53,12 @@ public final class TypeflowEngine {
     }
 
     public init(hostConfig: TypeflowHostConfig) throws {
-        let config = hostConfig.engine
         let sourceDescription = hostConfig.engineSourceDescription
-        let engine: OpaquePointer?
-
-        if let dataDirectory = hostConfig.dataDirectory, !dataDirectory.isEmpty {
-            engine = dataDirectory.withCString {
-                typeflow_engine_new_from_data_dir_with_config($0, config)
-            }
-        } else if hostConfig.normalizedSecondaryLanguage == "uk" {
-            engine = typeflow_engine_new_embedded_with_config(config)
-        } else if let packPath = hostConfig.selectedPackPath {
-            engine = packPath.withCString {
-                typeflow_engine_new_from_pack_dir_with_config($0, config)
-            }
-        } else {
-            engine = nil
-        }
+        let engine = typeflow_engine_new_from_host_config(hostConfig.raw)
 
         guard let engine else {
-            throw TypeflowError.engineCreationFailedFromConfig(sourceDescription)
+            let error = TypeflowHostConfig.lastErrorMessage() ?? "unknown error"
+            throw TypeflowError.engineCreationFailedFromConfig("\(sourceDescription): \(error)")
         }
         raw = engine
         self.sourceDescription = sourceDescription
@@ -130,25 +117,22 @@ public final class TypeflowEngine {
     }
 
     public func forceSwitchToken() throws -> TypeflowAction {
-        var action = typeflow_ffi_empty_action()
-        typeflow_engine_force_switch_token(raw, &action)
-        return try Self.decode(action: &action)
+        typeflow_engine_force_switch_token(raw, &scratchAction)
+        return try Self.decode(action: &scratchAction)
     }
 
     public func convertVisibleToken(_ token: String) throws -> TypeflowAction {
-        var action = typeflow_ffi_empty_action()
         token.withCString {
-            typeflow_engine_convert_visible_token(raw, $0, &action)
+            typeflow_engine_convert_visible_token(raw, $0, &scratchAction)
         }
-        return try Self.decode(action: &action)
+        return try Self.decode(action: &scratchAction)
     }
 
     public func convertVisibleTail(_ tail: String) throws -> TypeflowAction {
-        var action = typeflow_ffi_empty_action()
         tail.withCString {
-            typeflow_engine_convert_visible_tail(raw, $0, &action)
+            typeflow_engine_convert_visible_tail(raw, $0, &scratchAction)
         }
-        return try Self.decode(action: &action)
+        return try Self.decode(action: &scratchAction)
     }
 
     public func replaceVisiblePrefix(
@@ -157,7 +141,6 @@ public final class TypeflowEngine {
         modifiers: UInt8,
         targetLayout: TypeflowLayout
     ) throws -> TypeflowAction {
-        var action = typeflow_ffi_empty_action()
         prefix.withCString {
             typeflow_engine_replace_visible_prefix_with_key(
                 raw,
@@ -165,10 +148,10 @@ public final class TypeflowEngine {
                 physicalKey,
                 modifiers,
                 targetLayout.rawValue,
-                &action
+                &scratchAction
             )
         }
-        return try Self.decode(action: &action)
+        return try Self.decode(action: &scratchAction)
     }
 
     public func replaceVisibleTail(
@@ -177,7 +160,6 @@ public final class TypeflowEngine {
         modifiers: UInt8,
         targetLayout: TypeflowLayout
     ) throws -> TypeflowAction {
-        var action = typeflow_ffi_empty_action()
         tail.withCString {
             typeflow_engine_replace_visible_tail_with_key(
                 raw,
@@ -185,16 +167,15 @@ public final class TypeflowEngine {
                 physicalKey,
                 modifiers,
                 targetLayout.rawValue,
-                &action
+                &scratchAction
             )
         }
-        return try Self.decode(action: &action)
+        return try Self.decode(action: &scratchAction)
     }
 
     private func process(event: TfEvent) throws -> TypeflowAction {
-        var action = typeflow_ffi_empty_action()
-        typeflow_engine_process(raw, event, &action)
-        return try Self.decode(action: &action)
+        typeflow_engine_process(raw, event, &scratchAction)
+        return try Self.decode(action: &scratchAction)
     }
 
     private static func decode(action: inout TfAction) throws -> TypeflowAction {
@@ -230,8 +211,11 @@ public final class TypeflowEngine {
 
     private static func replacementString(from action: inout TfAction) throws -> String {
         let length = Int(action.replace_text_len)
-        let bytes = withUnsafeBytes(of: &action.replace_text) { rawBuffer in
-            Array(rawBuffer.prefix(length))
+        let bytes = try withUnsafeBytes(of: &action.replace_text) { rawBuffer in
+            guard length <= rawBuffer.count else {
+                throw TypeflowError.invalidReplacementUTF8
+            }
+            return Array(rawBuffer.prefix(length))
         }
         guard let string = String(bytes: bytes, encoding: .utf8) else {
             throw TypeflowError.invalidReplacementUTF8

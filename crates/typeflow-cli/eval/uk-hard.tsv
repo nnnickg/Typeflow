@@ -1,0 +1,37 @@
+# Curated embedded-secondary calibration cases.
+# Format: keys<TAB>expected-layout
+#
+# This file is intentionally separate from generated dictionary eval. It covers
+# host/user pain points and technical false-positive traps that a frequency-list
+# corpus will not model well.
+
+[fnf	secondary
+'dhj	secondary
+ghsdbn	secondary
+ckjdj	secondary
+lheu	secondary
+vjdf	secondary
+ghjcnj	secondary
+gthit	secondary
+
+http	english
+https://example.com	english
+user@example.com	english
+snake_case	english
+camelCase	english
+HTTP	english
+HTTPS	english
+CLOUDACCESSKEYIDLIKEVALUE1234	english
+arn:aws:iam::000000000000:role/ExampleRole	english
+kubectl	english
+terraform	english
+deployment.apps	english
+prometheus	english
+grafana	english
+kubernetes	english
+CloudWatch	english
+OAuth2	english
+OIDC	english
+JWT	english
+sha256	english
+hmac	english

@@ -46,6 +46,7 @@ build_id = "secondary-2026-05-07"
 
 [keyboard]
 # 34 chars each: a-z, then ` [ ] ; ' , . \
+# Each char must be one non-combining UTF-16 code unit.
 unshifted = "..."
 shifted = "..."
 ```
@@ -61,6 +62,7 @@ filters words through `alphabet`, then builds the FST dictionary.
 
 ## Limits
 
-The current engine has 34 physical key positions. Languages needing dead keys,
-Option layers, composition, or keys outside `a-z` plus `` ` [ ] ; ' , . \ `` need
-the engine key model expanded first.
+The current engine has 34 physical key positions and one scalar output per key
+state. Languages needing dead keys, Option layers, composition, non-BMP key
+outputs, combining marks, or keys outside `a-z` plus `` ` [ ] ; ' , . \ `` need
+the engine/ABI key model expanded first.

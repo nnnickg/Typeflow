@@ -1,6 +1,6 @@
 # Artifact And Pack Compatibility
 
-This document defines what version `2` means for embedded artifacts and
+This document defines what version `3` means for embedded artifacts and
 external secondary-language packs.
 
 ## Embedded Artifacts
@@ -50,7 +50,7 @@ dict.fst
 `pack.toml` contains:
 
 ```toml
-format_version = 2
+format_version = 3
 id = "secondary"
 display_name = "Secondary"
 script = "Cyrillic"
@@ -66,9 +66,20 @@ shifted = "..."
 The manifest may also contain `source_corpus`, `source_dictionary`, and
 `build_id` metadata.
 
-## Format Version 2
+## Artifact Licensing
 
-`PACK_FORMAT_VERSION = 2` means:
+Embedded artifacts and external packs are generated data, not MIT/Apache source
+code. The checked-in embedded artifacts are derived from OPUS OpenSubtitles2018
+and `hermitdave/FrequencyWords`; see `../DATA-LICENSE.md` and `../NOTICE.md`
+for attribution and redistribution notes.
+
+External packs inherit the licenses and redistribution terms of their corpus and
+dictionary inputs. Pack authors should fill `source_corpus` and
+`source_dictionary` in `pack.toml` and ship attribution next to the pack.
+
+## Format Version 3
+
+`PACK_FORMAT_VERSION = 3` means:
 
 - `pack.toml` uses the fields above.
 - `ngrams` and `dict` paths are relative paths contained inside the pack
@@ -80,6 +91,9 @@ The manifest may also contain `source_corpus`, `source_dictionary`, and
 - `id = "en"` is invalid for secondary packs.
 - Keyboard rows, when provided, must contain exactly `PhysicalKey::COUNT`
   characters.
+- Each keyboard-row character must be a single non-combining UTF-16 code unit.
+  The current FFI/AppKit replacement protocol uses host text ranges directly,
+  so non-BMP and combining output require a future ABI/model expansion.
 
 The loader rejects any manifest whose `format_version` is not exactly
 `PACK_FORMAT_VERSION`.

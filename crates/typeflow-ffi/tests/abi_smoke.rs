@@ -1,12 +1,14 @@
 use std::ffi::CString;
 
 use typeflow_ffi::{
-    TF_ACTION_COMMIT, TF_ACTION_KEEP, TF_ACTION_REPLACE, TF_ACTION_RESET, TF_EVENT_BACKSPACE,
-    TF_EVENT_LETTER, TF_EVENT_LITERAL, TF_LAYOUT_ENGLISH, TF_LAYOUT_SECONDARY, TF_REPLACE_BUF_LEN,
-    TfAction, TfEngineConfig, TfEvent, typeflow_engine_convert_visible_tail,
-    typeflow_engine_current_layout, typeflow_engine_default_config, typeflow_engine_free,
-    typeflow_engine_new_embedded, typeflow_engine_new_embedded_with_config,
-    typeflow_engine_process, typeflow_engine_replace_visible_tail_with_key,
+    TF_ACTION_COMMIT, TF_ACTION_KEEP, TF_ACTION_REPLACE, TF_ACTION_RESET,
+    TF_CONTEXT_AUTOMATIC_SWITCHING_DISABLED, TF_EVENT_BACKSPACE, TF_EVENT_LETTER, TF_EVENT_LITERAL,
+    TF_LAYOUT_ENGLISH, TF_LAYOUT_SECONDARY, TF_REPLACE_BUF_LEN, TfAction, TfEngineConfig, TfEvent,
+    typeflow_engine_convert_visible_tail, typeflow_engine_current_layout,
+    typeflow_engine_default_config, typeflow_engine_free, typeflow_engine_new_embedded,
+    typeflow_engine_new_embedded_with_config, typeflow_engine_process,
+    typeflow_engine_replace_visible_tail_with_key, typeflow_engine_reset_layout,
+    typeflow_engine_set_host_context,
 };
 
 fn blank_action() -> TfAction {
@@ -141,6 +143,45 @@ fn public_abi_literals_and_backspace_stay_in_sync() {
 }
 
 #[test]
+fn public_abi_auto_switching_disabled_commits_current_layout() {
+    let engine = typeflow_engine_new_embedded();
+    assert!(!engine.is_null());
+
+    unsafe {
+        typeflow_engine_set_host_context(engine, TF_CONTEXT_AUTOMATIC_SWITCHING_DISABLED);
+    }
+
+    let mut committed = String::new();
+    for physical in [6, 7, 18, 3, 1, 13] {
+        let action = process(engine, letter(physical));
+        apply_action(&action, &mut committed);
+    }
+    assert_eq!(committed, "ghsdbn");
+    assert_eq!(
+        unsafe { typeflow_engine_current_layout(engine) },
+        TF_LAYOUT_ENGLISH
+    );
+
+    unsafe {
+        typeflow_engine_reset_layout(engine, TF_LAYOUT_SECONDARY);
+    }
+    committed.clear();
+    for physical in [6, 7, 18, 3, 1, 13] {
+        let action = process(engine, letter(physical));
+        apply_action(&action, &mut committed);
+    }
+    assert_eq!(committed, "привіт");
+    assert_eq!(
+        unsafe { typeflow_engine_current_layout(engine) },
+        TF_LAYOUT_SECONDARY
+    );
+
+    unsafe {
+        typeflow_engine_free(engine);
+    }
+}
+
+#[test]
 fn public_abi_accepts_explicit_config() {
     let mut config = TfEngineConfig {
         min_token_len: 0,
@@ -175,13 +216,13 @@ fn public_abi_visible_tail_keeps_punctuation_position_letters() {
     let engine = typeflow_engine_new_embedded();
     assert!(!engine.is_null());
 
-    let tail = CString::new("hello [eqy").unwrap();
+    let tail = CString::new("hello [fn").unwrap();
     let mut action = blank_action();
     unsafe {
         typeflow_engine_replace_visible_tail_with_key(
             engine,
             tail.as_ptr(),
-            25,
+            5,
             0,
             TF_LAYOUT_SECONDARY,
             &mut action,
@@ -189,20 +230,49 @@ fn public_abi_visible_tail_keeps_punctuation_position_letters() {
     }
 
     assert_eq!(action.tag, TF_ACTION_REPLACE);
-    assert_eq!(action.replace_old_len, 4);
+    assert_eq!(action.replace_old_len, 3);
     assert_eq!(action.replace_layout, TF_LAYOUT_SECONDARY);
-    assert_eq!(replacement_text(&action), "хуйня");
+    assert_eq!(replacement_text(&action), "хата");
 
-    let tail = CString::new("hello [eqyz").unwrap();
+    let tail = CString::new("hello [fnf").unwrap();
     let mut action = blank_action();
     unsafe {
         typeflow_engine_convert_visible_tail(engine, tail.as_ptr(), &mut action);
     }
 
     assert_eq!(action.tag, TF_ACTION_REPLACE);
-    assert_eq!(action.replace_old_len, 5);
+    assert_eq!(action.replace_old_len, 4);
     assert_eq!(action.replace_layout, TF_LAYOUT_SECONDARY);
-    assert_eq!(replacement_text(&action), "хуйня");
+    assert_eq!(replacement_text(&action), "хата");
+
+    let tail = CString::new("hello ’dh").unwrap();
+    let mut action = blank_action();
+    unsafe {
+        typeflow_engine_replace_visible_tail_with_key(
+            engine,
+            tail.as_ptr(),
+            9,
+            0,
+            TF_LAYOUT_SECONDARY,
+            &mut action,
+        );
+    }
+
+    assert_eq!(action.tag, TF_ACTION_REPLACE);
+    assert_eq!(action.replace_old_len, 3);
+    assert_eq!(action.replace_layout, TF_LAYOUT_SECONDARY);
+    assert_eq!(replacement_text(&action), "євро");
+
+    let tail = CString::new("hello ’dhj").unwrap();
+    let mut action = blank_action();
+    unsafe {
+        typeflow_engine_convert_visible_tail(engine, tail.as_ptr(), &mut action);
+    }
+
+    assert_eq!(action.tag, TF_ACTION_REPLACE);
+    assert_eq!(action.replace_old_len, 4);
+    assert_eq!(action.replace_layout, TF_LAYOUT_SECONDARY);
+    assert_eq!(replacement_text(&action), "євро");
 
     unsafe {
         typeflow_engine_free(engine);

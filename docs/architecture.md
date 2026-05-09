@@ -62,9 +62,17 @@ external pack directory. Contains:
   English-token boundary heuristic for normal punctuation after resolved
   English words. Modifier shortcuts (Cmd/Ctrl/Opt) come in as `HostBypass`.
   The host decides what counts as `EndToken` (typically space/tab/return).
-- `HostContext` — persistent host-level state: secure input fields and
-  excluded foreground apps. While either is set the engine returns
-  `Action::Keep` and clears its token.
+- `HostSurfaceFacts` / `HostInputPolicy` — Swift supplies host facts such as
+  secure-input state, bundle id, input-client class, and focused accessibility
+  metadata. Rust classifies the surface. Terminal-like surfaces, secure fields,
+  and fully disabled apps block both automatic replacement and standalone Option
+  conversion. Auto-disabled apps block only automatic processing.
+- `HostContext` — persistent engine bypass state derived from host policy.
+  Secure input, terminal-like surfaces, fully disabled apps, and unavailable
+  host config are full bypasses: normal key processing returns `Action::Keep`
+  and clears its token. Apps in `disable_auto_bundle_ids` use automatic-switching
+  disabled mode instead: Rust still commits keys in the current layout, but it
+  does not score or replace automatically.
 - `Engine::process(InputEvent) -> EngineOutput` — the only loop the host runs.
 - `Action` — what the host should do in response: `Keep`, `Commit(char)`,
   `ReplaceToken { old_len, replacement, layout }`, `ResetToken`.
@@ -163,38 +171,38 @@ Current files:
   adds tiny C helpers for zeroed actions/events.
 - `Sources/TypeflowKit/Engine.swift` wraps the opaque `TfEngine*` lifecycle and
   decodes `TfAction`.
-- `Sources/TypeflowKit/HostConfig.swift` loads the host-relevant subset of
-  `~/.config/typeflow/config.toml`: engine knobs, active secondary language,
-  pack/data directories, and excluded app bundle IDs. Data/pack environment
-  variables override TOML, matching CLI precedence.
+- `Sources/TypeflowKit/HostConfig.swift` owns only an opaque Rust
+  `TfHostConfig*`. Rust parses and resolves `~/.config/typeflow/config.toml`,
+  environment overrides, app disable policy, engine tuning, language id, and
+  data/pack paths through the FFI. Swift only supplies host facts such as the
+  frontmost macOS bundle id and secure-input state.
 - `Sources/TypeflowKit/KeyCodeMap.swift` maps macOS ANSI virtual keycodes to
   Rust physical key indexes.
 - `Sources/TypeflowSmoke/main.swift` verifies `ghsdbn` becomes `привіт` through
   the Rust static archive.
 - `Sources/TypeflowInputMethod/InputController.swift` subclasses
-  `IMKInputController`, checks secure-input/app-exclusion host context,
+  `IMKInputController`, collects host-surface facts, applies Rust input policy,
   handles raw keyDown and flagsChanged events, dispatches keyDown events to the
   Rust engine, binds standalone Option press/release to manual conversion, and
   applies `TfAction` to `IMKTextInput`.
 - `Sources/TypeflowInputMethod/main.swift` starts the `IMKServer`.
 - `Sources/TypeflowRegister/main.swift` calls `TISRegisterInputSource` after
-  install, enables the parent input method plus its visible Typeflow mode, and
-  writes the `com.apple.HIToolbox` `AppleEnabledInputSources` records that
-  System Settings reads.
-- `Resources/Info.plist` defines a mode-enabled input method bundle with one
-  visible Typeflow mode. The `InputModeID` is `Typeflow`; the selectable TIS source id is
-  `io.github.nnnickg.typeflow.inputmethod.Typeflow.Main`. The bundle id
-  intentionally contains `.inputmethod.` because TIS depends on that old naming
-  convention.
+  install, enables/selects the Typeflow input method, and writes the
+  `com.apple.HIToolbox` `AppleEnabledInputSources` records that System Settings
+  reads.
+- `Resources/Info.plist` defines the Typeflow input method bundle. The
+  selectable TIS source id is `io.github.nnnickg.typeflow.inputmethod.Typeflow`.
+  The bundle id intentionally contains `.inputmethod.` because TIS depends on
+  that old naming convention.
 
 `make -C macos bundle` builds and ad-hoc signs `Typeflow.app`.
 `make -C macos install-user` installs it under `~/Library/Input Methods/` and
 registers/enables it with TIS. Local manual host testing has verified real text
-input, external pack loading, app exclusions, and standalone Option manual
+  input, external pack loading, app disable policy, and standalone Option manual
 conversion. Remaining IMK validation work:
 
 1. Run a broader app matrix: TextEdit, browser fields, Notes, Mail, Slack, and
-   code editors when not excluded.
+   code editors when not disabled.
 2. Re-test secure/password fields. The host checks Carbon secure event input,
    but not every app is equally disciplined.
 3. Keep an eye on IMK dispatch mode. Standalone Option requires raw
@@ -209,10 +217,10 @@ conversion. Remaining IMK validation work:
 2. Host translates keyDown events to a `TfEvent` (or constructs an `InputEvent`
    directly in Rust). Standalone Option does not become a `TfEvent`; it calls
    `typeflow_engine_force_switch_token`.
-3. The macOS host creates the engine from `~/.config/typeflow/config.toml`.
-   `language.secondary = "uk"` uses embedded Ukrainian; any other secondary
-   language loads from the installed pack directory. Dev builds can point at a
-   rebuilt data directory.
+3. The macOS host asks Rust to create the engine from the resolved
+   `TfHostConfig`. `language.secondary = "uk"` uses embedded Ukrainian; any
+   other secondary language loads from the installed pack directory. Dev builds
+   can point at a rebuilt data directory.
 4. `Engine::process(event)`:
    - Pushes the event onto the internal token (a `Vec<LetterEvent>`) unless
      the token has exceeded `max_token_len` and is bypassing until a boundary.

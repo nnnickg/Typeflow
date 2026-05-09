@@ -19,6 +19,7 @@ use typeflow_core::data::{
     LanguageBundle, LanguagePack, LanguagePackManifest, PACK_DICT_FILE, PACK_MANIFEST_FILE,
     PACK_NGRAMS_FILE,
 };
+use typeflow_core::host_config::{self, HostEnvironment, ResolvedHostConfig};
 use typeflow_core::{
     Action, Decision, Engine, EngineConfig, InputEvent, LayoutCandidates, LayoutScore,
     ScoreAnalysis, has_dictionary_evidence,
@@ -142,67 +143,28 @@ fn load_config(explicit: Option<&Path>) -> Result<ConfigSource, String> {
     Config::load(explicit)
 }
 
-fn configured_data_dir(config: &Config) -> Option<PathBuf> {
-    if let Ok(env_path) = env::var("TYPEFLOW_DATA_DIR") {
-        return Some(PathBuf::from(env_path));
-    }
-    config.data.directory.clone()
-}
-
 fn configured_pack_dir(config: &Config) -> Option<PathBuf> {
-    if let Ok(env_path) = env::var("TYPEFLOW_PACK_DIR") {
-        return Some(PathBuf::from(env_path));
-    }
-    config
-        .packs
-        .directory
-        .clone()
-        .or_else(config::default_pack_dir)
+    host_config::configured_pack_dir(config)
 }
 
 fn build_engine(config: &Config) -> Result<Engine, String> {
-    let bundle = load_language_bundle(config)?;
-    let engine_config: EngineConfig = config.engine.into();
-    engine_config
-        .validate()
-        .map_err(|e| format!("invalid engine config: {e}"))?;
-    Ok(Engine::new(engine_config, bundle))
+    let resolved = resolve_runtime_config(config)?;
+    let bundle = resolved.load_language_bundle()?;
+    Ok(Engine::new(resolved.engine, bundle))
 }
 
-fn load_language_bundle(config: &Config) -> Result<LanguageBundle, String> {
-    if let Some(dir) = configured_data_dir(config) {
-        return LanguageBundle::from_data_dir(&dir)
-            .map_err(|e| format!("load bundle from {}: {e}", dir.display()));
-    }
-
-    let secondary_id = normalized_secondary_id(config);
-    if secondary_id == "uk" {
-        return LanguageBundle::embedded().map_err(|e| format!("load embedded bundle: {e}"));
-    }
-
-    if let Some(pack_dir) = configured_pack_dir(config) {
-        let candidate = pack_dir.join(&secondary_id);
-        if candidate.join(PACK_MANIFEST_FILE).is_file() {
-            return LanguageBundle::from_secondary_pack_dir(&candidate)
-                .map_err(|e| format!("load pack {}: {e}", candidate.display()));
-        }
-    }
-
-    let pack_dir = configured_pack_dir(config)
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|| "<unknown: HOME is unset>".to_owned());
-    Err(format!(
-        "language pack '{secondary_id}' is not installed in {pack_dir}; run `typeflow pack install <PACK_DIR>`"
-    ))
+fn resolve_runtime_config(config: &Config) -> Result<ResolvedHostConfig, String> {
+    ResolvedHostConfig::from_source(
+        ConfigSource {
+            config: config.clone(),
+            path: None,
+        },
+        &HostEnvironment::from_process(),
+    )
 }
 
 fn normalized_secondary_id(config: &Config) -> String {
-    let id = config.language.secondary.trim();
-    if id.is_empty() {
-        "uk".to_owned()
-    } else {
-        id.to_owned()
-    }
+    host_config::normalized_secondary_id(config)
 }
 
 fn cmd_type(args: &[String], explicit_config: Option<&Path>) -> Result<(), String> {

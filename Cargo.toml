@@ -15,3 +15,8 @@ homepage = "https://github.com/nnnickg/typeflow"
 
 [workspace.dependencies]
 criterion = "0.8.2"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+strip = "symbols"

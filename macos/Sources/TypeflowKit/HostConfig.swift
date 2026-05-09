@@ -1,302 +1,269 @@
 import Foundation
 import TypeflowFFI
 
-public struct TypeflowHostConfig {
-    public var engine: TfEngineConfig
-    public var secondaryLanguage: String
-    public var packDirectory: String?
-    public var dataDirectory: String?
-    public var excludedBundleIDs: Set<String>
-    public var sourcePath: String?
+public enum TypeflowHostConfigError: Error, CustomStringConvertible {
+    case loadFailed(String)
 
-    public static func load() -> Self {
-        load(environment: ProcessInfo.processInfo.environment)
+    public var description: String {
+        switch self {
+        case let .loadFailed(message):
+            return "failed to load Typeflow host config: \(message)"
+        }
+    }
+}
+
+public struct TypeflowHostSurfaceFacts {
+    public var secureInput: Bool
+    public var bundleID: String?
+    public var applicationName: String?
+    public var inputClientClass: String?
+    public var focusedElementRole: String?
+    public var focusedElementSubrole: String?
+    public var focusedElementRoleDescription: String?
+    public var focusedElementIdentifier: String?
+    public var focusedElementDescription: String?
+    public var focusedWindowTitle: String?
+
+    public init(
+        secureInput: Bool = false,
+        bundleID: String? = nil,
+        applicationName: String? = nil,
+        inputClientClass: String? = nil,
+        focusedElementRole: String? = nil,
+        focusedElementSubrole: String? = nil,
+        focusedElementRoleDescription: String? = nil,
+        focusedElementIdentifier: String? = nil,
+        focusedElementDescription: String? = nil,
+        focusedWindowTitle: String? = nil
+    ) {
+        self.secureInput = secureInput
+        self.bundleID = bundleID
+        self.applicationName = applicationName
+        self.inputClientClass = inputClientClass
+        self.focusedElementRole = focusedElementRole
+        self.focusedElementSubrole = focusedElementSubrole
+        self.focusedElementRoleDescription = focusedElementRoleDescription
+        self.focusedElementIdentifier = focusedElementIdentifier
+        self.focusedElementDescription = focusedElementDescription
+        self.focusedWindowTitle = focusedWindowTitle
     }
 
-    static func load(environment: [String: String]) -> Self {
-        var config = TypeflowHostConfig.defaults(environment: environment)
-        guard let path = explicitConfigPath(environment: environment) ?? defaultConfigPath(environment: environment),
-              FileManager.default.fileExists(atPath: path.path)
-        else {
-            config.applyEnvironmentOverrides(environment)
-            return config
+    func withFFI<T>(_ body: (TfHostSurfaceFacts) -> T) -> T {
+        withOptionalCString(bundleID) { bundleIDPointer in
+            withOptionalCString(applicationName) { applicationNamePointer in
+                withOptionalCString(inputClientClass) { inputClientClassPointer in
+                    withOptionalCString(focusedElementRole) { focusedElementRolePointer in
+                        withOptionalCString(focusedElementSubrole) { focusedElementSubrolePointer in
+                            withOptionalCString(focusedElementRoleDescription) { focusedElementRoleDescriptionPointer in
+                                withOptionalCString(focusedElementIdentifier) { focusedElementIdentifierPointer in
+                                    withOptionalCString(focusedElementDescription) { focusedElementDescriptionPointer in
+                                        withOptionalCString(focusedWindowTitle) { focusedWindowTitlePointer in
+                                            body(
+                                                TfHostSurfaceFacts(
+                                                    secure_input: secureInput ? 1 : 0,
+                                                    bundle_id_utf8: bundleIDPointer,
+                                                    application_name_utf8: applicationNamePointer,
+                                                    input_client_class_utf8: inputClientClassPointer,
+                                                    focused_element_role_utf8: focusedElementRolePointer,
+                                                    focused_element_subrole_utf8: focusedElementSubrolePointer,
+                                                    focused_element_role_description_utf8: focusedElementRoleDescriptionPointer,
+                                                    focused_element_identifier_utf8: focusedElementIdentifierPointer,
+                                                    focused_element_description_utf8: focusedElementDescriptionPointer,
+                                                    focused_window_title_utf8: focusedWindowTitlePointer
+                                                )
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func withOptionalCString<T>(
+        _ value: String?,
+        _ body: (UnsafePointer<CChar>?) -> T
+    ) -> T {
+        guard let value, !value.isEmpty else {
+            return body(nil)
+        }
+        return value.withCString(body)
+    }
+}
+
+public struct TypeflowHostInputPolicy {
+    public let flags: UInt32
+    public let reason: UInt8
+
+    public var secureInput: Bool {
+        flags & UInt32(TF_HOST_POLICY_SECURE_INPUT) != 0
+    }
+
+    public var automaticProcessingDisabled: Bool {
+        flags & UInt32(TF_HOST_POLICY_AUTOMATIC_PROCESSING_DISABLED) != 0
+    }
+
+    public var manualConversionDisabled: Bool {
+        flags & UInt32(TF_HOST_POLICY_MANUAL_CONVERSION_DISABLED) != 0
+    }
+
+    public var terminalSurface: Bool {
+        flags & UInt32(TF_HOST_POLICY_TERMINAL_SURFACE) != 0
+    }
+
+    public var reasonDescription: String {
+        switch reason {
+        case UInt8(TF_HOST_POLICY_REASON_NORMAL):
+            return "normal"
+        case UInt8(TF_HOST_POLICY_REASON_SECURE_INPUT):
+            return "secureInput"
+        case UInt8(TF_HOST_POLICY_REASON_TERMINAL_BUNDLE):
+            return "terminalBundle"
+        case UInt8(TF_HOST_POLICY_REASON_TERMINAL_SURFACE):
+            return "terminalSurface"
+        case UInt8(TF_HOST_POLICY_REASON_DISABLED_BUNDLE):
+            return "disabledBundle"
+        case UInt8(TF_HOST_POLICY_REASON_AUTOMATIC_PROCESSING_DISABLED_BUNDLE):
+            return "automaticProcessingDisabledBundle"
+        case UInt8(TF_HOST_POLICY_REASON_UNAVAILABLE_HOST_CONFIG):
+            return "unavailableHostConfig"
+        default:
+            return "unknown(\(reason))"
+        }
+    }
+}
+
+public final class TypeflowHostConfig {
+    let raw: OpaquePointer
+
+    public static func load() throws -> TypeflowHostConfig {
+        guard let loaded = typeflow_host_config_load() else {
+            throw TypeflowHostConfigError.loadFailed(lastErrorMessage() ?? "unknown error")
+        }
+        return TypeflowHostConfig(raw: loaded)
+    }
+
+    static func load(environment: [String: String]) throws -> TypeflowHostConfig {
+        let configPath = environment["TYPEFLOW_CONFIG"].flatMap(nonEmpty)
+        let home = environment["HOME"].flatMap(nonEmpty)
+        let dataDirectory = environment["TYPEFLOW_DATA_DIR"].flatMap(nonEmpty)
+        let packDirectory = environment["TYPEFLOW_PACK_DIR"].flatMap(nonEmpty)
+
+        let loaded = withOptionalCString(configPath) { configPathPointer in
+            withOptionalCString(home) { homePointer in
+                withOptionalCString(dataDirectory) { dataDirectoryPointer in
+                    withOptionalCString(packDirectory) { packDirectoryPointer in
+                        typeflow_host_config_load_with_environment(
+                            configPathPointer,
+                            homePointer,
+                            dataDirectoryPointer,
+                            packDirectoryPointer
+                        )
+                    }
+                }
+            }
         }
 
-        config.sourcePath = path.path
-        guard let text = try? String(contentsOf: path, encoding: .utf8) else {
-            config.applyEnvironmentOverrides(environment)
-            return config
+        guard let loaded else {
+            throw TypeflowHostConfigError.loadFailed(lastErrorMessage() ?? "unknown error")
         }
+        return TypeflowHostConfig(raw: loaded)
+    }
 
-        config.applyTomlSubset(text)
-        config.applyEnvironmentOverrides(environment)
+    static func lastErrorMessage() -> String? {
+        guard let pointer = typeflow_last_error_message() else {
+            return nil
+        }
+        return String(cString: pointer)
+    }
+
+    private init(raw: OpaquePointer) {
+        self.raw = raw
+    }
+
+    deinit {
+        typeflow_host_config_free(raw)
+    }
+
+    public var engine: TfEngineConfig {
+        var config = TfEngineConfig()
+        typeflow_host_config_engine_config(raw, &config)
         return config
     }
 
-    private static func defaults(environment: [String: String]) -> Self {
-        TypeflowHostConfig(
-            engine: TypeflowEngine.defaultConfig(),
-            secondaryLanguage: "uk",
-            packDirectory: defaultPackDirectory(environment: environment),
-            dataDirectory: nil,
-            excludedBundleIDs: [],
-            sourcePath: nil
-        )
+    public var secondaryLanguage: String {
+        string(from: typeflow_host_config_secondary_language(raw)) ?? "uk"
     }
 
-    private static func explicitConfigPath(environment: [String: String]) -> URL? {
-        guard let path = environment["TYPEFLOW_CONFIG"], !path.isEmpty else {
-            return nil
-        }
-        return URL(fileURLWithPath: NSString(string: path).expandingTildeInPath)
+    public var packDirectory: String? {
+        string(from: typeflow_host_config_pack_directory(raw))
     }
 
-    private static func defaultConfigPath(environment: [String: String]) -> URL? {
-        guard let home = environment["HOME"], !home.isEmpty else {
-            return nil
-        }
-        return URL(fileURLWithPath: home)
-            .appendingPathComponent(".config")
-            .appendingPathComponent("typeflow")
-            .appendingPathComponent("config.toml")
+    public var dataDirectory: String? {
+        string(from: typeflow_host_config_data_directory(raw))
     }
 
-    private static func defaultPackDirectory(environment: [String: String]) -> String? {
-        guard let home = environment["HOME"], !home.isEmpty else {
-            return nil
-        }
-        return URL(fileURLWithPath: home)
-            .appendingPathComponent("Library")
-            .appendingPathComponent("Application Support")
-            .appendingPathComponent("Typeflow")
-            .appendingPathComponent("packs")
-            .path
-    }
-
-    private mutating func applyEnvironmentOverrides(_ environment: [String: String]) {
-        if let packDirectory = environment["TYPEFLOW_PACK_DIR"], !packDirectory.isEmpty {
-            self.packDirectory = packDirectory
-        }
-        if let dataDirectory = environment["TYPEFLOW_DATA_DIR"], !dataDirectory.isEmpty {
-            self.dataDirectory = dataDirectory
-        }
+    public var sourcePath: String? {
+        string(from: typeflow_host_config_source_path(raw))
     }
 
     public var engineSourceDescription: String {
-        if let dataDirectory, !dataDirectory.isEmpty {
-            return "data_dir"
-        }
-        if normalizedSecondaryLanguage == "uk" {
-            return "embedded"
-        }
-        return "pack:\(normalizedSecondaryLanguage)"
+        string(from: typeflow_host_config_engine_source(raw)) ?? "embedded"
     }
 
-    public var normalizedSecondaryLanguage: String {
-        let trimmed = secondaryLanguage.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? "uk" : trimmed
+    public var disabledBundleIDCount: Int {
+        Int(typeflow_host_config_disabled_bundle_count(raw))
     }
 
-    public var selectedPackPath: String? {
-        guard let packDirectory, !packDirectory.isEmpty else {
+    public var autoDisabledBundleIDCount: Int {
+        Int(typeflow_host_config_auto_disabled_bundle_count(raw))
+    }
+
+    public func isBundleDisabled(bundleID: String) -> Bool {
+        bundleID.withCString {
+            typeflow_host_config_is_bundle_disabled(raw, $0) != 0
+        }
+    }
+
+    public func isAutomaticProcessingDisabled(bundleID: String) -> Bool {
+        bundleID.withCString {
+            typeflow_host_config_is_automatic_processing_disabled(raw, $0) != 0
+        }
+    }
+
+    public func resolveInputPolicy(facts: TypeflowHostSurfaceFacts) -> TypeflowHostInputPolicy {
+        var policy = TfHostInputPolicy(
+            flags: UInt32(TF_HOST_POLICY_AUTOMATIC_PROCESSING_DISABLED)
+                | UInt32(TF_HOST_POLICY_MANUAL_CONVERSION_DISABLED),
+            reason: UInt8(TF_HOST_POLICY_REASON_UNAVAILABLE_HOST_CONFIG)
+        )
+        facts.withFFI { ffiFacts in
+            typeflow_host_config_resolve_input_policy(raw, ffiFacts, &policy)
+        }
+        return TypeflowHostInputPolicy(flags: policy.flags, reason: policy.reason)
+    }
+
+    private static func nonEmpty(_ value: String) -> String? {
+        value.isEmpty ? nil : value
+    }
+
+    private static func withOptionalCString<T>(
+        _ value: String?,
+        _ body: (UnsafePointer<CChar>?) -> T
+    ) -> T {
+        guard let value else {
+            return body(nil)
+        }
+        return value.withCString(body)
+    }
+
+    private func string(from pointer: UnsafePointer<CChar>?) -> String? {
+        guard let pointer else {
             return nil
         }
-        return URL(fileURLWithPath: NSString(string: packDirectory).expandingTildeInPath)
-            .appendingPathComponent(normalizedSecondaryLanguage)
-            .path
-    }
-
-    private mutating func applyTomlSubset(_ text: String) {
-        var section = ""
-        let lines = Array(text.components(separatedBy: .newlines))
-        var index = 0
-
-        while index < lines.count {
-            let rawLine = stripComment(lines[index]).trimmingCharacters(in: .whitespacesAndNewlines)
-            index += 1
-
-            if rawLine.isEmpty {
-                continue
-            }
-
-            if rawLine.hasPrefix("["), rawLine.hasSuffix("]") {
-                section = String(rawLine.dropFirst().dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
-                continue
-            }
-
-            guard let equals = rawLine.firstIndex(of: "=") else {
-                continue
-            }
-
-            let key = rawLine[..<equals].trimmingCharacters(in: .whitespacesAndNewlines)
-            var value = rawLine[rawLine.index(after: equals)...].trimmingCharacters(in: .whitespacesAndNewlines)
-            if value == "[" || value.hasPrefix("[") && !value.contains("]") {
-                var arrayLines = [String(value)]
-                while index < lines.count {
-                    let next = stripComment(lines[index]).trimmingCharacters(in: .whitespacesAndNewlines)
-                    index += 1
-                    arrayLines.append(next)
-                    if next.contains("]") {
-                        break
-                    }
-                }
-                value = arrayLines.joined(separator: "\n")
-            }
-
-            applyValue(section: section, key: String(key), value: String(value))
-        }
-    }
-
-    private mutating func applyValue(section: String, key: String, value: String) {
-        switch (section, key) {
-        case ("engine", "min_token_len"):
-            if let parsed = parseUInt(value) {
-                engine.min_token_len = parsed
-            }
-        case ("engine", "max_token_len"):
-            if let parsed = parseUInt(value) {
-                engine.max_token_len = parsed
-            }
-        case ("engine", "confidence_margin"):
-            if let parsed = parseFloat(value) {
-                engine.confidence_margin = parsed
-            }
-        case ("engine", "dict_exact_weight"):
-            if let parsed = parseFloat(value) {
-                engine.dict_exact_weight = parsed
-            }
-        case ("engine", "dict_prefix_weight"):
-            if let parsed = parseFloat(value) {
-                engine.dict_prefix_weight = parsed
-            }
-        case ("engine", "ngram_only_confidence_margin"):
-            if let parsed = parseFloat(value) {
-                engine.ngram_only_confidence_margin = parsed
-            }
-        case ("engine", "bigram_weight"):
-            if let parsed = parseFloat(value) {
-                engine.bigram_weight = parsed
-            }
-        case ("engine", "trigram_weight"):
-            if let parsed = parseFloat(value) {
-                engine.trigram_weight = parsed
-            }
-        case ("engine", "length_normalize"):
-            if let parsed = parseBool(value) {
-                engine.length_normalize = parsed ? 1 : 0
-            }
-        case ("engine", "disable_on_internal_caps"):
-            if let parsed = parseBool(value) {
-                engine.disable_on_internal_caps = parsed ? 1 : 0
-            }
-        case ("language", "secondary"):
-            if let parsed = parseString(value) {
-                secondaryLanguage = parsed
-            }
-        case ("packs", "directory"):
-            if let parsed = parseString(value) {
-                packDirectory = parsed
-            }
-        case ("data", "directory"):
-            if let parsed = parseString(value) {
-                dataDirectory = parsed
-            }
-        case ("apps", "exclude_bundle_ids"):
-            excludedBundleIDs = Set(parseStringArray(value))
-        default:
-            break
-        }
-    }
-
-    private func stripComment(_ line: String) -> String {
-        var inString = false
-        var escaped = false
-        var output = ""
-
-        for character in line {
-            if escaped {
-                output.append(character)
-                escaped = false
-                continue
-            }
-            if character == "\\" {
-                output.append(character)
-                escaped = true
-                continue
-            }
-            if character == "\"" {
-                inString.toggle()
-                output.append(character)
-                continue
-            }
-            if character == "#", !inString {
-                break
-            }
-            output.append(character)
-        }
-
-        return output
-    }
-
-    private func parseString(_ value: String) -> String? {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.hasPrefix("\""), trimmed.hasSuffix("\""), trimmed.count >= 2 else {
-            return nil
-        }
-        let inner = trimmed.dropFirst().dropLast()
-        return String(inner)
-    }
-
-    private func parseStringArray(_ value: String) -> [String] {
-        var result: [String] = []
-        var current = ""
-        var inString = false
-        var escaped = false
-
-        for character in value {
-            if escaped {
-                current.append(character)
-                escaped = false
-                continue
-            }
-            if character == "\\" {
-                if inString {
-                    escaped = true
-                }
-                continue
-            }
-            if character == "\"" {
-                if inString {
-                    result.append(current)
-                    current = ""
-                }
-                inString.toggle()
-                continue
-            }
-            if inString {
-                current.append(character)
-            }
-        }
-
-        return result
-    }
-
-    private func parseUInt(_ value: String) -> Int? {
-        Int(value.trimmingCharacters(in: .whitespacesAndNewlines))
-    }
-
-    private func parseFloat(_ value: String) -> Float? {
-        Float(value.trimmingCharacters(in: .whitespacesAndNewlines))
-    }
-
-    private func parseBool(_ value: String) -> Bool? {
-        switch value.trimmingCharacters(in: .whitespacesAndNewlines) {
-        case "true":
-            return true
-        case "false":
-            return false
-        default:
-            return nil
-        }
+        return String(cString: pointer)
     }
 }

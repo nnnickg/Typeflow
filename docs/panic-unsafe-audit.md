@@ -1,6 +1,6 @@
 # Panic And Unsafe Audit
 
-Audit date: 2026-05-07.
+Audit date: 2026-05-09.
 
 ## Commands
 
@@ -27,8 +27,14 @@ rg -n "unsafe" \
   made it a normal `Result` path.
 - Removed the download-cache `file_name().unwrap()` logging path.
 - Removed the impossible keyboard-index `expect` from reverse mapping.
+- Removed production artifact-reader `expect` calls from fixed-size numeric
+  decoding.
+- Guarded the Swift `AXUIElement` CoreFoundation downcast with an explicit
+  `CFTypeID` check at the accessibility boundary.
 - Added shared engine-config validation plus FFI boundary tests for invalid
   config, null engine processing, and null default-config output.
+- Moved host-config parsing/policy decisions behind Rust FFI so Swift no
+  longer carries a duplicate TOML parser or app-policy implementation.
 
 ## FFI Unsafe Boundary
 
@@ -39,7 +45,8 @@ host language. The implementation pattern is:
 - constructors return null on invalid config or data-loading failure;
 - C strings are decoded once through `CStr::from_ptr` after a null check;
 - engine pointers are accessed through `as_ref` / `as_mut` after null checks;
-- `typeflow_engine_free` is the only `Box::from_raw` site;
+- `typeflow_engine_free` and `typeflow_host_config_free` are the only
+  `Box::from_raw` sites;
 - `TfAction` stores replacement text in an inline fixed buffer.
 
 Known contract:
@@ -49,8 +56,9 @@ Known contract:
 - Double-free is undefined behavior.
 - A non-null C string pointer must point to a valid NUL-terminated string for
   the duration of the call.
-- `typeflow_engine_process` requires a writable `TfAction` pointer to return
-  an action.
+- functions that return data through an out pointer require a writable pointer
+  to return data; null out pointers are tolerated and leave caller memory
+  untouched.
 
 These preconditions are documented in the Rust FFI comments and summarized in
 `docs/invariants.md`.
@@ -72,8 +80,8 @@ Reviewed direct indexing sites:
 - `typeflow-data` n-gram window indexing is guarded by `window.len() >= 2`.
 - `human_bytes` unit indexing is bounded by `unit < UNITS.len() - 1`.
 
-## Not Fixed Here
+## Packaging Note
 
-The raw release dylib install name still points into `target`. That is not a
-panic/unsafe issue; it belongs to the macOS packaging step and is tracked in
-`docs/release-verification.md`.
+The raw release dylib install name is a packaging concern, not a panic/unsafe
+issue. The current IMK bundle links the Rust static archive; standalone dylib
+consumers should follow `docs/release-verification.md`.

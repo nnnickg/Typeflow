@@ -99,12 +99,13 @@ pub struct EngineOutput {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct HostContext {
     pub secure_input: bool,
-    pub app_excluded: bool,
+    pub automatic_processing_disabled: bool,
+    pub automatic_switching_disabled: bool,
 }
 
 impl HostContext {
     pub fn bypasses_engine(self) -> bool {
-        self.secure_input || self.app_excluded
+        self.secure_input || self.automatic_processing_disabled
     }
 }
 

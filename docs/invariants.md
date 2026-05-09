@@ -96,12 +96,25 @@ accident.
 
 ## Host Context
 
-- `HostContext.secure_input` and `HostContext.app_excluded` are hard bypass
-  flags.
-- While either flag is true, the engine clears token state and returns
-  `Decision::Bypass` with `Action::Keep`.
-- The host is responsible for setting these flags before sending letter events
-  for secure fields or excluded apps.
+- `HostContext.secure_input` and
+  `HostContext.automatic_processing_disabled` are full bypass flags for normal
+  key processing.
+- While either full bypass flag is true, the engine clears token state and
+  returns `Decision::Bypass` with `Action::Keep`.
+- `HostContext.automatic_switching_disabled` disables automatic layout
+  decisions and replacement, but still commits keys in the current layout. This
+  is the mode used for apps in `apps.disable_auto_bundle_ids`: standalone Option
+  can switch the current layout, and subsequent keys use that layout without
+  automatic scoring.
+- The host is responsible for setting these flags before sending letter events.
+  Secure-input detection is a host signal. App disable policy and
+  terminal-surface policy are evaluated by Rust from `HostSurfaceFacts`,
+  `apps.disable_bundle_ids`, and `apps.disable_auto_bundle_ids`; the macOS host
+  supplies facts, not decisions.
+- Explicit manual conversion may use the visible-tail FFI path in auto-disabled
+  apps because that is a user-requested action rather than automatic processing.
+  Secure input, terminal-like surfaces, and fully disabled apps still bypass
+  everything.
 - Clearing host context does not restore a previous token. The next letter
   starts a fresh token.
 

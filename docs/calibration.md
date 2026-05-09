@@ -56,3 +56,12 @@ Generated eval cannot replace curated cases. Add TSV cases for:
 - mixed-script names;
 - punctuation-position letters;
 - manual-conversion flows once the macOS host exists.
+
+Current repo seed:
+
+```sh
+typeflow eval crates/typeflow-cli/eval/uk-hard.tsv
+```
+
+That file is intentionally small and tied to the embedded secondary language.
+Grow it from real typing failures instead of padding it with synthetic noise.

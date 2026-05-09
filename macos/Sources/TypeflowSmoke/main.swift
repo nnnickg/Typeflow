@@ -1,5 +1,6 @@
 import Foundation
 import Carbon
+import TypeflowFFI
 
 enum SmokeError: Error, CustomStringConvertible {
     case underflow(Int)
@@ -9,7 +10,7 @@ enum SmokeError: Error, CustomStringConvertible {
     case wrongPackDirectory(String?)
     case wrongDataDirectory(String?)
     case wrongSecondaryLanguage(String)
-    case wrongExcludedBundleIDs(Set<String>)
+    case wrongAppPolicy(String)
     case wrongAction(TypeflowAction)
 
     var description: String {
@@ -28,8 +29,8 @@ enum SmokeError: Error, CustomStringConvertible {
             return "unexpected data directory: \(value ?? "nil")"
         case let .wrongSecondaryLanguage(value):
             return "unexpected secondary language: \(value)"
-        case let .wrongExcludedBundleIDs(value):
-            return "unexpected excluded bundle IDs: \(value)"
+        case let .wrongAppPolicy(value):
+            return "unexpected app policy result: \(value)"
         case let .wrongAction(action):
             return "unexpected action: \(action)"
         }
@@ -84,13 +85,18 @@ func verifyHostConfigPrecedence() throws {
     directory = "/config/data"
 
     [apps]
-    exclude_bundle_ids = [
+    disable_bundle_ids = [
         "dev.zed.Zed",
         "com.apple.Terminal",
     ]
+
+    disable_auto_bundle_ids = [
+        "com.apple.Terminal",
+        "com.apple.TextEdit",
+    ]
     """.write(to: configPath, atomically: true, encoding: .utf8)
 
-    let config = TypeflowHostConfig.load(environment: [
+    let config = try TypeflowHostConfig.load(environment: [
         "HOME": root.path,
         "TYPEFLOW_CONFIG": configPath.path,
         "TYPEFLOW_PACK_DIR": "/env/packs",
@@ -106,30 +112,163 @@ func verifyHostConfigPrecedence() throws {
     guard config.secondaryLanguage == "pl" else {
         throw SmokeError.wrongSecondaryLanguage(config.secondaryLanguage)
     }
-    guard config.excludedBundleIDs == Set(["dev.zed.Zed", "com.apple.Terminal"]) else {
-        throw SmokeError.wrongExcludedBundleIDs(config.excludedBundleIDs)
+    guard config.disabledBundleIDCount == 2 else {
+        throw SmokeError.wrongAppPolicy("disabledCount=\(config.disabledBundleIDCount)")
+    }
+    guard config.autoDisabledBundleIDCount == 1 else {
+        throw SmokeError.wrongAppPolicy("autoDisabledCount=\(config.autoDisabledBundleIDCount)")
+    }
+    guard config.isBundleDisabled(bundleID: "dev.zed.Zed") else {
+        throw SmokeError.wrongAppPolicy("dev.zed.Zed not fully disabled")
+    }
+    guard config.isAutomaticProcessingDisabled(bundleID: "dev.zed.Zed") else {
+        throw SmokeError.wrongAppPolicy("dev.zed.Zed automatic processing not disabled")
+    }
+    guard config.isBundleDisabled(bundleID: "com.apple.Terminal") else {
+        throw SmokeError.wrongAppPolicy("com.apple.Terminal not fully disabled")
+    }
+    guard config.isAutomaticProcessingDisabled(bundleID: "com.apple.Terminal") else {
+        throw SmokeError.wrongAppPolicy("com.apple.Terminal automatic processing not disabled")
+    }
+    guard !config.isBundleDisabled(bundleID: "com.apple.TextEdit") else {
+        throw SmokeError.wrongAppPolicy("com.apple.TextEdit fully disabled")
+    }
+    guard config.isAutomaticProcessingDisabled(bundleID: "com.apple.TextEdit") else {
+        throw SmokeError.wrongAppPolicy("com.apple.TextEdit automatic processing not disabled")
+    }
+    guard !config.isAutomaticProcessingDisabled(bundleID: "com.apple.Safari") else {
+        throw SmokeError.wrongAppPolicy("com.apple.Safari automatic processing disabled")
+    }
+
+    let terminalPolicy = config.resolveInputPolicy(
+        facts: TypeflowHostSurfaceFacts(bundleID: "com.googlecode.iterm2")
+    )
+    guard terminalPolicy.automaticProcessingDisabled,
+          terminalPolicy.manualConversionDisabled,
+          terminalPolicy.terminalSurface
+    else {
+        throw SmokeError.wrongAppPolicy("iTerm2 policy=\(terminalPolicy.reasonDescription)")
+    }
+
+    let embeddedTerminalPolicy = config.resolveInputPolicy(
+        facts: TypeflowHostSurfaceFacts(
+            bundleID: "com.apple.Safari",
+            focusedElementIdentifier: "workspace-terminal-panel"
+        )
+    )
+    guard embeddedTerminalPolicy.automaticProcessingDisabled,
+          embeddedTerminalPolicy.manualConversionDisabled,
+          embeddedTerminalPolicy.terminalSurface
+    else {
+        throw SmokeError.wrongAppPolicy(
+            "embeddedTerminal policy=\(embeddedTerminalPolicy.reasonDescription)"
+        )
+    }
+
+    let autoDisabledPolicy = config.resolveInputPolicy(
+        facts: TypeflowHostSurfaceFacts(bundleID: "com.apple.TextEdit")
+    )
+    guard autoDisabledPolicy.automaticProcessingDisabled,
+          !autoDisabledPolicy.manualConversionDisabled,
+          !autoDisabledPolicy.terminalSurface
+    else {
+        throw SmokeError.wrongAppPolicy(
+            "autoDisabled policy=\(autoDisabledPolicy.reasonDescription)"
+        )
+    }
+}
+
+func verifyMissingDefaultHostConfigUsesDefaults() throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("typeflow-smoke-\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer {
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    let config = try TypeflowHostConfig.load(environment: [
+        "HOME": root.path,
+    ])
+
+    guard config.sourcePath == nil else {
+        throw SmokeError.wrongAppPolicy("sourcePath=\(config.sourcePath ?? "nil")")
+    }
+    guard config.secondaryLanguage == "uk" else {
+        throw SmokeError.wrongSecondaryLanguage(config.secondaryLanguage)
+    }
+    guard config.engineSourceDescription == "embedded" else {
+        throw SmokeError.wrongAppPolicy("engineSource=\(config.engineSourceDescription)")
     }
 }
 
 func verifyVisibleTailBridge() throws {
     let engine = try TypeflowEngine()
-    guard let z = TypeflowMacKeyCode.physicalKeyIndex(for: UInt16(kVK_ANSI_Z)) else {
-        throw SmokeError.wrongOutput("unmapped keycode \(kVK_ANSI_Z)")
+    guard let f = TypeflowMacKeyCode.physicalKeyIndex(for: UInt16(kVK_ANSI_F)) else {
+        throw SmokeError.wrongOutput("unmapped keycode \(kVK_ANSI_F)")
+    }
+    guard let j = TypeflowMacKeyCode.physicalKeyIndex(for: UInt16(kVK_ANSI_J)) else {
+        throw SmokeError.wrongOutput("unmapped keycode \(kVK_ANSI_J)")
     }
 
     let replace = try engine.replaceVisibleTail(
-        "hello [eqy",
-        physicalKey: z,
+        "hello [fn",
+        physicalKey: f,
         modifiers: 0,
         targetLayout: .secondary
     )
-    guard replace == .replaceToken(oldLength: 4, replacement: "хуйня", layout: .secondary) else {
+    guard replace == .replaceToken(oldLength: 3, replacement: "хата", layout: .secondary) else {
         throw SmokeError.wrongAction(replace)
     }
 
-    let convert = try engine.convertVisibleTail("hello [eqyz")
-    guard convert == .replaceToken(oldLength: 5, replacement: "хуйня", layout: .secondary) else {
+    let convert = try engine.convertVisibleTail("hello [fnf")
+    guard convert == .replaceToken(oldLength: 4, replacement: "хата", layout: .secondary) else {
         throw SmokeError.wrongAction(convert)
+    }
+
+    let smartQuoteReplace = try engine.replaceVisibleTail(
+        "hello ’dh",
+        physicalKey: j,
+        modifiers: 0,
+        targetLayout: .secondary
+    )
+    guard smartQuoteReplace == .replaceToken(oldLength: 3, replacement: "євро", layout: .secondary) else {
+        throw SmokeError.wrongAction(smartQuoteReplace)
+    }
+
+    let smartQuoteConvert = try engine.convertVisibleTail("hello ’dhj")
+    guard smartQuoteConvert == .replaceToken(oldLength: 4, replacement: "євро", layout: .secondary) else {
+        throw SmokeError.wrongAction(smartQuoteConvert)
+    }
+}
+
+func verifyAutoDisabledManualLayoutMode() throws {
+    let engine = try TypeflowEngine()
+    engine.setHostContext(flags: typeflow_ffi_context_automatic_switching_disabled())
+
+    let keyCodes = [kVK_ANSI_G, kVK_ANSI_H, kVK_ANSI_S, kVK_ANSI_D, kVK_ANSI_B, kVK_ANSI_N]
+    var committed = ""
+    for keyCode in keyCodes.map(UInt16.init) {
+        guard let physical = TypeflowMacKeyCode.physicalKeyIndex(for: keyCode) else {
+            throw SmokeError.wrongOutput("unmapped keycode \(keyCode)")
+        }
+        let action = try engine.process(physicalKey: physical)
+        try apply(action, to: &committed)
+    }
+    guard committed == "ghsdbn" else {
+        throw SmokeError.wrongOutput(committed)
+    }
+
+    engine.resetLayout(.secondary)
+    committed = ""
+    for keyCode in keyCodes.map(UInt16.init) {
+        guard let physical = TypeflowMacKeyCode.physicalKeyIndex(for: keyCode) else {
+            throw SmokeError.wrongOutput("unmapped keycode \(keyCode)")
+        }
+        let action = try engine.process(physicalKey: physical)
+        try apply(action, to: &committed)
+    }
+    guard committed == "привіт" else {
+        throw SmokeError.wrongOutput(committed)
     }
 }
 
@@ -139,7 +278,9 @@ do {
         throw SmokeError.wrongDefaultMaxTokenLen(config.max_token_len)
     }
     try verifyHostConfigPrecedence()
+    try verifyMissingDefaultHostConfigUsesDefaults()
     try verifyVisibleTailBridge()
+    try verifyAutoDisabledManualLayoutMode()
 
     let engine = try TypeflowEngine()
     var committed = ""

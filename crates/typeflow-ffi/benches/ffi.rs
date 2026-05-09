@@ -1,10 +1,13 @@
+use std::ffi::CString;
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use typeflow_ffi::{
     TF_ACTION_COMMIT, TF_ACTION_KEEP, TF_ACTION_REPLACE, TF_ACTION_RESET, TF_EVENT_LETTER,
-    TF_LAYOUT_ENGLISH, TF_REPLACE_BUF_LEN, TfAction, TfEvent, typeflow_engine_free,
-    typeflow_engine_new_embedded, typeflow_engine_process, typeflow_engine_reset_layout,
+    TF_HOST_POLICY_REASON_NORMAL, TF_LAYOUT_ENGLISH, TF_REPLACE_BUF_LEN, TfAction, TfEvent,
+    TfHostInputPolicy, TfHostSurfaceFacts, typeflow_engine_free, typeflow_engine_new_embedded,
+    typeflow_engine_process, typeflow_engine_reset_layout, typeflow_host_config_free,
+    typeflow_host_config_load_defaults, typeflow_host_config_resolve_input_policy,
 };
 
 const MIXED_TOKENS: &[&[u8]] = &[
@@ -28,6 +31,58 @@ fn bench_ffi(c: &mut Criterion) {
         b.iter(|| feed_process_batch(engine, MIXED_TOKENS));
         unsafe {
             typeflow_engine_free(engine);
+        }
+    });
+
+    group.throughput(Throughput::Elements(batch_key_count(MIXED_TOKENS) as u64));
+    group.bench_function("process_mixed_physical_batch_new_action_each_key", |b| {
+        let engine = typeflow_engine_new_embedded();
+        assert!(!engine.is_null());
+        b.iter(|| feed_process_batch_new_action_each_key(engine, MIXED_TOKENS));
+        unsafe {
+            typeflow_engine_free(engine);
+        }
+    });
+
+    group.bench_function("new_embedded_engine_cached", |b| {
+        b.iter(|| {
+            let engine = typeflow_engine_new_embedded();
+            assert!(!engine.is_null());
+            black_box(engine);
+            unsafe {
+                typeflow_engine_free(engine);
+            }
+        });
+    });
+
+    group.bench_function("resolve_host_policy_cached_facts", |b| {
+        let config = typeflow_host_config_load_defaults();
+        assert!(!config.is_null());
+        let bundle = CString::new("dev.zed.Zed").unwrap();
+        let client = CString::new("IMKTextInput").unwrap();
+        let identifier = CString::new("source-editor").unwrap();
+        let facts = TfHostSurfaceFacts {
+            secure_input: 0,
+            bundle_id_utf8: bundle.as_ptr(),
+            application_name_utf8: std::ptr::null(),
+            input_client_class_utf8: client.as_ptr(),
+            focused_element_role_utf8: std::ptr::null(),
+            focused_element_subrole_utf8: std::ptr::null(),
+            focused_element_role_description_utf8: std::ptr::null(),
+            focused_element_identifier_utf8: identifier.as_ptr(),
+            focused_element_description_utf8: std::ptr::null(),
+            focused_window_title_utf8: std::ptr::null(),
+        };
+        let mut policy = TfHostInputPolicy {
+            flags: 0,
+            reason: TF_HOST_POLICY_REASON_NORMAL,
+        };
+        b.iter(|| unsafe {
+            typeflow_host_config_resolve_input_policy(config, facts, &mut policy);
+            black_box(policy);
+        });
+        unsafe {
+            typeflow_host_config_free(config);
         }
     });
 
@@ -67,6 +122,22 @@ fn feed_process_batch(engine: *mut typeflow_core::Engine, tokens: &[&[u8]]) {
             typeflow_engine_reset_layout(engine, TF_LAYOUT_ENGLISH);
         }
         for physical in *token {
+            unsafe {
+                typeflow_engine_process(engine, letter(*physical), &mut action);
+            }
+            black_box(action.tag);
+            black_box(action.replace_text_len);
+        }
+    }
+}
+
+fn feed_process_batch_new_action_each_key(engine: *mut typeflow_core::Engine, tokens: &[&[u8]]) {
+    for token in tokens {
+        unsafe {
+            typeflow_engine_reset_layout(engine, TF_LAYOUT_ENGLISH);
+        }
+        for physical in *token {
+            let mut action = blank_action();
             unsafe {
                 typeflow_engine_process(engine, letter(*physical), &mut action);
             }

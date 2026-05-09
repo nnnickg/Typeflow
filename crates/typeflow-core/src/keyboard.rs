@@ -152,29 +152,57 @@ pub struct KeyboardMap {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct KeyboardMapError {
-    row: &'static str,
-    expected: usize,
-    actual: usize,
+pub enum KeyboardMapError {
+    RowLength {
+        row: &'static str,
+        expected: usize,
+        actual: usize,
+    },
+    UnsupportedCharacter {
+        row: &'static str,
+        index: usize,
+        character: char,
+    },
 }
 
 impl KeyboardMapError {
-    fn new(row: &'static str, actual: usize) -> Self {
-        Self {
+    fn row_length(row: &'static str, actual: usize) -> Self {
+        Self::RowLength {
             row,
             expected: PhysicalKey::COUNT,
             actual,
+        }
+    }
+
+    fn unsupported_character(row: &'static str, index: usize, character: char) -> Self {
+        Self::UnsupportedCharacter {
+            row,
+            index,
+            character,
         }
     }
 }
 
 impl std::fmt::Display for KeyboardMapError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{} keyboard row has {} characters; expected {}",
-            self.row, self.actual, self.expected
-        )
+        match self {
+            Self::RowLength {
+                row,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "{row} keyboard row has {actual} characters; expected {expected}"
+            ),
+            Self::UnsupportedCharacter {
+                row,
+                index,
+                character,
+            } => write!(
+                f,
+                "{row} keyboard row character {index} ({character:?}) is not supported; key outputs must be one non-combining UTF-16 code unit"
+            ),
+        }
     }
 }
 
@@ -249,9 +277,31 @@ fn parse_keyboard_row(
 ) -> Result<[char; PhysicalKey::COUNT], KeyboardMapError> {
     let chars: Vec<char> = value.chars().collect();
     let actual = chars.len();
+    for (index, character) in chars.iter().copied().enumerate() {
+        if !is_supported_key_output(character) {
+            return Err(KeyboardMapError::unsupported_character(
+                row, index, character,
+            ));
+        }
+    }
     chars
         .try_into()
-        .map_err(|_| KeyboardMapError::new(row, actual))
+        .map_err(|_| KeyboardMapError::row_length(row, actual))
+}
+
+fn is_supported_key_output(character: char) -> bool {
+    character.len_utf16() == 1 && !is_combining_mark(character)
+}
+
+fn is_combining_mark(character: char) -> bool {
+    matches!(
+        character as u32,
+        0x0300..=0x036f
+            | 0x1ab0..=0x1aff
+            | 0x1dc0..=0x1dff
+            | 0x20d0..=0x20ff
+            | 0xfe20..=0xfe2f
+    )
 }
 
 const ENGLISH_US_UNSHIFTED: [char; PhysicalKey::COUNT] = [

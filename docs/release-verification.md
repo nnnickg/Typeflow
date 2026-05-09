@@ -60,9 +60,9 @@ staticlib smoke: ghsdbn -> привіт
 
 ## macOS IMK Bundle Build
 
-This verifies the input-method app bundle compiles, has a valid plist
-with a visible Typeflow mode, has a generated icon resource, compiles the TIS
-registration/enabling helper, and is ad-hoc signed:
+This verifies the input-method app bundle compiles, has a valid plist, has a
+generated icon resource, compiles the TIS registration/enabling helper, and is
+ad-hoc signed:
 
 ```sh
 make -C macos bundle
@@ -101,7 +101,7 @@ source is selected or needed.
 
 ## macOS IMK Runtime Smoke
 
-In a non-excluded app/text field with Typeflow selected:
+In a normal app/text field with Typeflow selected:
 
 1. With default embedded Ukrainian config, type `ghsdbn`; expected visible text:
    `привіт`.
@@ -109,19 +109,38 @@ In a non-excluded app/text field with Typeflow selected:
    embedded Ukrainian layout: `реез`.
 3. Install any external secondary pack, set `language.secondary` to that pack
    id, restart Typeflow, and verify normal replacement plus standalone Option
-   manual conversion in a non-excluded app.
+   manual conversion in an app that is not disabled.
 4. Press Option with another key; it should pass through as normal app input and
    must not trigger manual conversion.
-5. Add an app bundle id under `[apps].exclude_bundle_ids`, restart Typeflow, and
-   confirm neither automatic replacement nor standalone Option conversion fires
-   in that app.
+5. Add an app bundle id under `[apps].disable_auto_bundle_ids`, restart
+   Typeflow, and confirm automatic replacement does not fire in that app.
+6. In the same auto-disabled app, tap standalone Option in a normal text field
+   and confirm explicit visible-token conversion still works. Continue typing
+   another word; it should commit in the selected manual layout without
+   automatic replacement.
+7. Add an app bundle id under `[apps].disable_bundle_ids`, restart Typeflow,
+   and confirm neither automatic replacement nor standalone Option conversion
+   fires. Repeat in a password field and confirm it does not fire.
+8. In Terminal.app and iTerm2, type a normally-switching token such as `ghsdbn`.
+   It must stay unchanged. Standalone Option must also pass through without
+   conversion. Repeat in an embedded terminal pane when the host app exposes
+   terminal-like accessibility metadata.
+
+Before calling a release host-stable, run the broader app matrix in
+`docs/host-test-matrix.md`. The Rust and Swift smoke tests cover engine/ABI
+behavior; Slack, Notes, Mail, browsers, and password fields still require real
+host/editor verification.
 
 Known bundle IDs useful for local testing:
 
 ```toml
 [apps]
-exclude_bundle_ids = [
+disable_bundle_ids = [
     "com.googlecode.iterm2",
+    "com.apple.Terminal",
+]
+
+disable_auto_bundle_ids = [
     "dev.zed.Zed",
 ]
 ```
@@ -157,6 +176,7 @@ _typeflow_engine_new_embedded
 _typeflow_engine_new_embedded_with_config
 _typeflow_engine_new_from_data_dir
 _typeflow_engine_new_from_data_dir_with_config
+_typeflow_engine_new_from_host_config
 _typeflow_engine_new_from_pack_dir
 _typeflow_engine_new_from_pack_dir_with_config
 _typeflow_engine_process
@@ -165,6 +185,22 @@ _typeflow_engine_replace_visible_tail_with_key
 _typeflow_engine_reset_layout
 _typeflow_engine_reset_token
 _typeflow_engine_set_host_context
+_typeflow_last_error_message
+_typeflow_host_config_data_directory
+_typeflow_host_config_engine_config
+_typeflow_host_config_engine_source
+_typeflow_host_config_auto_disabled_bundle_count
+_typeflow_host_config_disabled_bundle_count
+_typeflow_host_config_free
+_typeflow_host_config_is_automatic_processing_disabled
+_typeflow_host_config_is_bundle_disabled
+_typeflow_host_config_load
+_typeflow_host_config_load_defaults
+_typeflow_host_config_load_with_environment
+_typeflow_host_config_pack_directory
+_typeflow_host_config_resolve_input_policy
+_typeflow_host_config_secondary_language
+_typeflow_host_config_source_path
 ```
 
 ## Packaging Caveat

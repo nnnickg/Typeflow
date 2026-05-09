@@ -1,7 +1,9 @@
 # Project Status
 
-Current working state. Read this for implementation status, known limitations,
-and the areas that still need validation before a stable release.
+Current working state. Typeflow is pre-alpha software; use it at your own risk,
+keep a normal keyboard layout installed as a fallback, and expect behavior to
+change before a stable release. Read this for implementation status, known
+limitations, and the areas that still need validation before a stable release.
 
 ## What's done
 
@@ -18,8 +20,10 @@ and the areas that still need validation before a stable release.
   modifier shortcuts.
 - `Layout` is now `English` / `Secondary`; language-specific layout enum
   variants are gone.
-- `HostContext` lets Swift/IMK bypass the engine for secure input fields and
-  excluded apps.
+- `HostContext` lets Swift/IMK fully bypass secure input fields, terminal-like
+  surfaces, and fully disabled apps. Apps with only automatic processing
+  disabled still let Rust commit the current manual layout, but automatic
+  scoring/replacement is disabled.
 - `LanguagePack` now carries the keyboard map, language id/display/script,
   keyboard layout id, n-gram model, dictionary FST, manifest validation, and
   runtime metadata. English is still fixed; the second side can be embedded or
@@ -109,31 +113,46 @@ starts an `IMKServer` from `Info.plist`, exposes `TypeflowInputController`,
 receives raw `NSEvent` keyDown/flagsChanged events, maps ANSI keycodes to Rust
 physical key indexes, calls the FFI, and applies
 `TypeflowAction` through `IMKTextInput.insertText(_:replacementRange:)`.
-The Swift host reads the same config path as the CLI (`~/.config/typeflow/config.toml`):
-engine knobs, `language.secondary`, `packs.directory`, `data.directory`, and
-`apps.exclude_bundle_ids`. Environment overrides for data/pack directories take
-precedence over TOML, matching the CLI. `language.secondary = "uk"` uses embedded Ukrainian;
-other values load `~/Library/Application Support/Typeflow/packs/<id>` unless
-overridden. Standalone Option press/release is hardcoded as manual conversion;
-Option+another key cancels the pending manual conversion and passes through as
-normal app input. Do not re-add the `inputText:key:modifiers:client:` path
-without checking standalone Option: macOS chose that decomposed path and stopped
-delivering modifier-only transitions.
+Rust now resolves the macOS host config through `TfHostConfig`: engine knobs,
+`language.secondary`, `packs.directory`, `data.directory`, environment
+overrides, `apps.disable_bundle_ids`, and `apps.disable_auto_bundle_ids`. Swift
+does not parse TOML. It keeps the opaque config handle, asks Rust for resolved
+fields for logging/smoke tests, asks Rust to create the engine from that config,
+and passes host-surface facts to Rust for input-policy classification.
+`language.secondary = "uk"` uses embedded Ukrainian; other values load
+`~/Library/Application Support/Typeflow/packs/<id>` unless overridden.
+Standalone Option press/release is hardcoded as manual conversion; Option+another
+key cancels the pending manual conversion and passes through as normal app
+input. Auto-disabled apps bypass automatic scoring/replacement but still allow
+explicit Option conversion when a normal, non-secure text field exposes a
+visible tail. After explicit conversion, subsequent keys commit in the selected
+manual layout until the user converts back or the engine layout is reset.
+Fully disabled apps and terminal-like surfaces bypass both automatic processing
+and Option conversion. Terminal-like surfaces are detected from Rust-owned
+policy using bundle ids plus focused accessibility metadata supplied by Swift.
+The Rust heuristic intentionally ignores low-signal window titles and app names
+to avoid false-disabling normal text fields. AX metadata is never queried on
+input-source activation, is cached briefly on the key path, and uses a low
+messaging timeout because synchronous Accessibility reads can otherwise freeze
+typing. Embedded terminal-pane detection needs macOS Accessibility trust for the
+Typeflow input method; terminal apps are still blocked by bundle id without AX
+trust.
+Do not re-add the `inputText:key:modifiers:client:` path without checking
+standalone Option: macOS chose that decomposed path and stopped delivering
+modifier-only transitions.
 
 `make -C macos install-user` copies the bundle to `~/Library/Input Methods/`,
-calls `TISRegisterInputSource`, enables the parent input method plus the visible
-Typeflow mode, and writes the `com.apple.HIToolbox`
+calls `TISRegisterInputSource`, enables the Typeflow input method, and writes
+the `com.apple.HIToolbox`
 `AppleEnabledInputSources` entries that System Settings reads. TIS sees:
 
 - `io.github.nnnickg.typeflow.inputmethod.Typeflow`
-  (`TISTypeKeyboardInputMethodModeEnabled`)
-- `io.github.nnnickg.typeflow.inputmethod.Typeflow.Main`
-  (`TISTypeKeyboardInputMode`, language `mul`, input mode `Typeflow`)
 
 Manual host testing has verified:
 
 - External secondary pack loading through `language.secondary`.
-- App exclusions via `apps.exclude_bundle_ids` for iTerm2 and Zed.
+- App disable policy via `apps.disable_bundle_ids` and
+  `apps.disable_auto_bundle_ids`.
 - Normal replacement in real text fields.
 - Standalone Option manual conversion in real text fields.
 
@@ -168,12 +187,13 @@ embedded Ukrainian on macOS.
 
 ### Broader macOS compatibility pass
 
-The bundle works as a single visible Typeflow mode that emits both Latin
-and Cyrillic. It still needs a broader app matrix before calling the macOS host
-stable: TextEdit, Safari/Chrome text fields, Notes, Mail, Slack, VS Code/Zed
-when not excluded, and password fields. Keep ABC installed as the system
-fallback; macOS will not let a user remove every plain keyboard layout while an
-IMK input method is installed.
+The bundle works as a Typeflow input method that emits both Latin and Cyrillic.
+It still needs a broader app matrix before calling the macOS host stable:
+TextEdit, Safari/Chrome text fields, Notes, Mail, Slack, VS Code/Zed when not
+disabled, and password fields. Use `docs/host-test-matrix.md` as the release
+gate for that pass. Keep ABC installed as the system fallback; macOS will not
+let a user remove every plain keyboard layout while an IMK input method is
+installed.
 
 ### Regression corpus + calibration
 
@@ -185,6 +205,9 @@ string is an exact English dictionary word. Those ambiguous generated secondary
 cases are skipped and counted. External TSVs are still supported with
 `keys<TAB>expected-layout`. Eval output now includes accuracy, confusion counts,
 false positives/negatives, failing token lengths, and a bounded failure sample.
+The repo also has a curated embedded-secondary seed corpus at
+`crates/typeflow-cli/eval/uk-hard.tsv` for punctuation-position letters,
+smart-quote pain, and DevOps/security false-positive traps.
 
 Defaults (especially `confidence_margin = 1.0`) are still an educated guess.
 Keep running generated eval at useful limits, add hand-curated hard cases for
@@ -194,9 +217,10 @@ See `docs/calibration.md` for the current ambiguity policy.
 
 ### Host-driven behavior
 
-The macOS host now enforces `apps.exclude_bundle_ids` and checks Carbon secure
-event input before processing key events. Both paths set the FFI host context,
-clear token state, and return the event to the client app unchanged. The host
+The macOS host now enforces `apps.disable_bundle_ids` /
+`apps.disable_auto_bundle_ids` and checks Carbon secure event input before
+processing key events. Those paths set the FFI host context, clear token state,
+and return the event to the client app unchanged. The host
 also loads scoring knobs, active secondary language, pack directory, and data
 directory from the same config file as the CLI.
 
@@ -214,7 +238,7 @@ the pending manual convert and stays a normal app shortcut/input sequence.
    with non-trivial counts, weakening the dict signal on certain tokens.
    Filter step in `typeflow-data` would help.
 3. **Secure-field detection is host-signal limited.** The IMK layer checks
-   Carbon secure event input and app exclusions before processing keys. If an
+   Carbon secure event input and app disable policy before processing keys. If an
    app does not enable secure event input for a sensitive field, Typeflow cannot
    infer that from text content without doing exactly the kind of inspection we
    should avoid.

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{KeyboardMap, KeyboardMapError, Layout};
 
-pub const PACK_FORMAT_VERSION: u32 = 2;
+pub const PACK_FORMAT_VERSION: u32 = 3;
 pub const PACK_MANIFEST_FILE: &str = "pack.toml";
 pub const PACK_NGRAMS_FILE: &str = "ngrams.bin";
 pub const PACK_DICT_FILE: &str = "dict.fst";
@@ -710,6 +710,11 @@ fn require_non_empty(field: &str, value: &str) -> Result<(), BundleError> {
 
 fn validate_pack_id(id: &str) -> Result<(), BundleError> {
     require_non_empty("id", id)?;
+    if id == "en" {
+        return Err(BundleError::InvalidPack(
+            "id 'en' is reserved; English is the fixed primary side".to_owned(),
+        ));
+    }
     if !id
         .chars()
         .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
@@ -861,16 +866,16 @@ impl<'a> ArtifactReader<'a> {
 
     fn read_u32(&mut self) -> Result<u32, NgramDecodeError> {
         let bytes = self.read_exact(4)?;
-        Ok(u32::from_le_bytes(
-            bytes.try_into().expect("u32 byte length"),
-        ))
+        let mut array = [0; 4];
+        array.copy_from_slice(bytes);
+        Ok(u32::from_le_bytes(array))
     }
 
     fn read_f32(&mut self) -> Result<f32, NgramDecodeError> {
         let bytes = self.read_exact(4)?;
-        Ok(f32::from_le_bytes(
-            bytes.try_into().expect("f32 byte length"),
-        ))
+        let mut array = [0; 4];
+        array.copy_from_slice(bytes);
+        Ok(f32::from_le_bytes(array))
     }
 
     fn read_exact(&mut self, len: usize) -> Result<&'a [u8], NgramDecodeError> {
@@ -990,7 +995,7 @@ mod tests {
         fs::write(
             dir.join(PACK_MANIFEST_FILE),
             r#"
-format_version = 2
+format_version = 3
 id = "xx"
 display_name = "Bad"
 script = "Latin"
@@ -1024,6 +1029,15 @@ dict = "dict.fst"
 
         let error = LanguagePackManifest::read_from_dir(&dir).unwrap_err();
         assert!(error.to_string().contains("unsupported pack format"));
+    }
+
+    #[test]
+    fn pack_manifest_rejects_reserved_english_id() {
+        let dir = temp_pack_dir("reserved-en");
+        write_manifest(&dir, "en");
+
+        let error = LanguagePackManifest::read_from_dir(&dir).unwrap_err();
+        assert!(error.to_string().contains("reserved"));
     }
 
     #[test]

@@ -5,6 +5,18 @@
 
 #include "../../../crates/typeflow-ffi/include/typeflow.h"
 
+static inline uint32_t typeflow_ffi_context_secure_input(void) {
+    return TF_CONTEXT_SECURE_INPUT;
+}
+
+static inline uint32_t typeflow_ffi_context_automatic_processing_disabled(void) {
+    return TF_CONTEXT_AUTOMATIC_PROCESSING_DISABLED;
+}
+
+static inline uint32_t typeflow_ffi_context_automatic_switching_disabled(void) {
+    return TF_CONTEXT_AUTOMATIC_SWITCHING_DISABLED;
+}
+
 static inline TfEvent typeflow_ffi_letter_event(uint8_t physical, uint8_t modifiers) {
     TfEvent event;
     event.tag = TF_EVENT_LETTER;

@@ -1,8 +1,16 @@
-use std::ffi::CStr;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use typeflow_core::data::LanguageBundle;
+use typeflow_core::host_config::{
+    Config, ConfigSource, HostEnvironment, HostInputPolicy, HostInputPolicyReason,
+    HostSurfaceFactsView, ResolvedHostConfig,
+};
 use typeflow_core::{
     Action, Engine, EngineConfig, InputEvent, Layout, LetterEvent, MAX_CONFIG_TOKEN_LEN,
     PhysicalKey,
@@ -19,7 +27,21 @@ pub const TF_MOD_OPTION: u8 = 0x04;
 pub const TF_MOD_COMMAND: u8 = 0x08;
 
 pub const TF_CONTEXT_SECURE_INPUT: u32 = 0x01;
-pub const TF_CONTEXT_APP_EXCLUDED: u32 = 0x02;
+pub const TF_CONTEXT_AUTOMATIC_PROCESSING_DISABLED: u32 = 0x02;
+pub const TF_CONTEXT_AUTOMATIC_SWITCHING_DISABLED: u32 = 0x04;
+
+pub const TF_HOST_POLICY_SECURE_INPUT: u32 = 0x01;
+pub const TF_HOST_POLICY_AUTOMATIC_PROCESSING_DISABLED: u32 = 0x02;
+pub const TF_HOST_POLICY_MANUAL_CONVERSION_DISABLED: u32 = 0x04;
+pub const TF_HOST_POLICY_TERMINAL_SURFACE: u32 = 0x08;
+
+pub const TF_HOST_POLICY_REASON_NORMAL: u8 = 0;
+pub const TF_HOST_POLICY_REASON_SECURE_INPUT: u8 = 1;
+pub const TF_HOST_POLICY_REASON_TERMINAL_BUNDLE: u8 = 2;
+pub const TF_HOST_POLICY_REASON_TERMINAL_SURFACE: u8 = 3;
+pub const TF_HOST_POLICY_REASON_DISABLED_BUNDLE: u8 = 4;
+pub const TF_HOST_POLICY_REASON_AUTOMATIC_PROCESSING_DISABLED_BUNDLE: u8 = 5;
+pub const TF_HOST_POLICY_REASON_UNAVAILABLE_HOST_CONFIG: u8 = 255;
 
 pub const TF_ACTION_KEEP: u8 = 0;
 pub const TF_ACTION_COMMIT: u8 = 1;
@@ -65,6 +87,139 @@ pub struct TfAction {
     pub replace_text_len: usize,
     pub replace_layout: u8,
     pub replace_text: [u8; TF_REPLACE_BUF_LEN],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct TfHostSurfaceFacts {
+    pub secure_input: u8,
+    pub bundle_id_utf8: *const c_char,
+    pub application_name_utf8: *const c_char,
+    pub input_client_class_utf8: *const c_char,
+    pub focused_element_role_utf8: *const c_char,
+    pub focused_element_subrole_utf8: *const c_char,
+    pub focused_element_role_description_utf8: *const c_char,
+    pub focused_element_identifier_utf8: *const c_char,
+    pub focused_element_description_utf8: *const c_char,
+    pub focused_window_title_utf8: *const c_char,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct TfHostInputPolicy {
+    pub flags: u32,
+    pub reason: u8,
+}
+
+pub struct TfHostConfig {
+    config: ResolvedHostConfig,
+    source_path: Option<CString>,
+    secondary_language: CString,
+    pack_directory: Option<CString>,
+    data_directory: Option<CString>,
+    engine_source: CString,
+}
+
+thread_local! {
+    static LAST_ERROR: RefCell<Option<CString>> = const { RefCell::new(None) };
+}
+
+static LANGUAGE_BUNDLE_CACHE: OnceLock<Mutex<HashMap<String, Arc<LanguageBundle>>>> =
+    OnceLock::new();
+
+fn set_last_error(message: impl Into<String>) {
+    let message = message.into().replace('\0', "\\0");
+    let error = CString::new(message).ok().or_else(|| {
+        CString::from_vec_with_nul(b"typeflow error contained invalid bytes\0".to_vec()).ok()
+    });
+    if let Some(error) = error {
+        LAST_ERROR.with(|last_error| {
+            *last_error.borrow_mut() = Some(error);
+        });
+    }
+}
+
+fn clear_last_error() {
+    LAST_ERROR.with(|last_error| {
+        *last_error.borrow_mut() = None;
+    });
+}
+
+fn language_bundle_cache() -> &'static Mutex<HashMap<String, Arc<LanguageBundle>>> {
+    LANGUAGE_BUNDLE_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn cached_language_bundle(
+    key: String,
+    load: impl FnOnce() -> Result<LanguageBundle, String>,
+) -> Result<Arc<LanguageBundle>, String> {
+    if let Some(bundle) = language_bundle_cache()
+        .lock()
+        .map_err(|_| "language bundle cache lock poisoned".to_owned())?
+        .get(&key)
+        .cloned()
+    {
+        return Ok(bundle);
+    }
+
+    let loaded = Arc::new(load()?);
+    let mut cache = language_bundle_cache()
+        .lock()
+        .map_err(|_| "language bundle cache lock poisoned".to_owned())?;
+    let bundle = match cache.entry(key) {
+        Entry::Occupied(entry) => Arc::clone(entry.get()),
+        Entry::Vacant(entry) => Arc::clone(entry.insert(loaded)),
+    };
+    Ok(bundle)
+}
+
+fn embedded_bundle() -> Result<Arc<LanguageBundle>, String> {
+    cached_language_bundle("embedded".to_owned(), || {
+        LanguageBundle::embedded().map_err(|error| format!("load embedded data: {error}"))
+    })
+}
+
+fn data_dir_bundle(path: &Path) -> Result<Arc<LanguageBundle>, String> {
+    let key = format!("data:{}", path.display());
+    cached_language_bundle(key, || {
+        LanguageBundle::from_data_dir(path)
+            .map_err(|error| format!("load data directory {}: {error}", path.display()))
+    })
+}
+
+fn pack_dir_bundle(path: &Path) -> Result<Arc<LanguageBundle>, String> {
+    let key = format!("pack:{}", path.display());
+    cached_language_bundle(key, || {
+        LanguageBundle::from_secondary_pack_dir(path)
+            .map_err(|error| format!("load pack {}: {error}", path.display()))
+    })
+}
+
+fn host_config_bundle(config: &ResolvedHostConfig) -> Result<Arc<LanguageBundle>, String> {
+    if let Some(data_directory) = config.data_directory.as_deref() {
+        return data_dir_bundle(data_directory);
+    }
+    if config.secondary_language == "uk" {
+        return embedded_bundle();
+    }
+    let pack_path = config.selected_pack_path().ok_or_else(|| {
+        format!(
+            "no pack directory resolved for secondary language '{}'",
+            config.secondary_language
+        )
+    })?;
+    pack_dir_bundle(&pack_path)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn typeflow_last_error_message() -> *const c_char {
+    LAST_ERROR.with(|last_error| {
+        last_error
+            .borrow()
+            .as_ref()
+            .map(|error| error.as_ptr())
+            .unwrap_or(std::ptr::null())
+    })
 }
 
 impl TfAction {
@@ -138,7 +293,10 @@ fn decode_event(event: TfEvent) -> Option<InputEvent> {
 }
 
 fn default_ffi_config() -> TfEngineConfig {
-    let config = EngineConfig::default();
+    engine_config_to_ffi(EngineConfig::default())
+}
+
+fn engine_config_to_ffi(config: EngineConfig) -> TfEngineConfig {
     TfEngineConfig {
         min_token_len: config.min_token_len,
         max_token_len: config.max_token_len,
@@ -171,17 +329,125 @@ fn engine_config_from_ffi(config: TfEngineConfig) -> Option<EngineConfig> {
     Some(engine_config)
 }
 
-fn new_engine(bundle: LanguageBundle, config: TfEngineConfig) -> *mut Engine {
+fn new_engine(bundle: Arc<LanguageBundle>, config: TfEngineConfig) -> *mut Engine {
     let Some(config) = engine_config_from_ffi(config) else {
         return std::ptr::null_mut();
     };
-    Box::into_raw(Box::new(Engine::new(config, bundle)))
+    Box::into_raw(Box::new(Engine::with_shared_bundle(config, bundle)))
+}
+
+fn new_engine_or_error(bundle: Arc<LanguageBundle>, config: TfEngineConfig) -> *mut Engine {
+    let engine = new_engine(bundle, config);
+    if engine.is_null() {
+        set_last_error("invalid engine config");
+    } else {
+        clear_last_error();
+    }
+    engine
+}
+
+fn host_config_to_ffi(config: ResolvedHostConfig) -> Option<TfHostConfig> {
+    let source_path = optional_path_cstring(config.source_path.as_deref())?;
+    let pack_directory = optional_path_cstring(config.pack_directory.as_deref())?;
+    let data_directory = optional_path_cstring(config.data_directory.as_deref())?;
+    let secondary_language = CString::new(config.secondary_language.as_str()).ok()?;
+    let engine_source = CString::new(config.engine_source_description()).ok()?;
+
+    Some(TfHostConfig {
+        config,
+        source_path,
+        secondary_language,
+        pack_directory,
+        data_directory,
+        engine_source,
+    })
+}
+
+fn optional_path_cstring(path: Option<&Path>) -> Option<Option<CString>> {
+    match path {
+        Some(path) => path_cstring(path).map(Some),
+        None => Some(None),
+    }
+}
+
+fn path_cstring(path: &Path) -> Option<CString> {
+    CString::new(path.to_string_lossy().as_bytes()).ok()
 }
 
 fn host_context_from_flags(flags: u32) -> typeflow_core::HostContext {
     typeflow_core::HostContext {
         secure_input: flags & TF_CONTEXT_SECURE_INPUT != 0,
-        app_excluded: flags & TF_CONTEXT_APP_EXCLUDED != 0,
+        automatic_processing_disabled: flags & TF_CONTEXT_AUTOMATIC_PROCESSING_DISABLED != 0,
+        automatic_switching_disabled: flags & TF_CONTEXT_AUTOMATIC_SWITCHING_DISABLED != 0,
+    }
+}
+
+unsafe fn host_surface_facts_from_ffi<'a>(facts: TfHostSurfaceFacts) -> HostSurfaceFactsView<'a> {
+    HostSurfaceFactsView {
+        secure_input: facts.secure_input != 0,
+        bundle_id: unsafe { borrowed_c_string(facts.bundle_id_utf8) },
+        application_name: unsafe { borrowed_c_string(facts.application_name_utf8) },
+        input_client_class: unsafe { borrowed_c_string(facts.input_client_class_utf8) },
+        focused_element_role: unsafe { borrowed_c_string(facts.focused_element_role_utf8) },
+        focused_element_subrole: unsafe { borrowed_c_string(facts.focused_element_subrole_utf8) },
+        focused_element_role_description: unsafe {
+            borrowed_c_string(facts.focused_element_role_description_utf8)
+        },
+        focused_element_identifier: unsafe {
+            borrowed_c_string(facts.focused_element_identifier_utf8)
+        },
+        focused_element_description: unsafe {
+            borrowed_c_string(facts.focused_element_description_utf8)
+        },
+        focused_window_title: unsafe { borrowed_c_string(facts.focused_window_title_utf8) },
+    }
+}
+
+unsafe fn borrowed_c_string<'a>(value_utf8: *const c_char) -> Option<&'a str> {
+    let value = unsafe { c_str(value_utf8) }?;
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then_some(trimmed)
+}
+
+fn host_input_policy_to_ffi(policy: HostInputPolicy) -> TfHostInputPolicy {
+    let mut flags = 0;
+    if policy.reason == HostInputPolicyReason::SecureInput {
+        flags |= TF_HOST_POLICY_SECURE_INPUT;
+    }
+    if policy.disable_automatic_processing {
+        flags |= TF_HOST_POLICY_AUTOMATIC_PROCESSING_DISABLED;
+    }
+    if policy.disable_manual_conversion {
+        flags |= TF_HOST_POLICY_MANUAL_CONVERSION_DISABLED;
+    }
+    if policy.terminal_surface {
+        flags |= TF_HOST_POLICY_TERMINAL_SURFACE;
+    }
+
+    TfHostInputPolicy {
+        flags,
+        reason: host_input_policy_reason_to_u8(policy.reason),
+    }
+}
+
+fn unavailable_host_config_policy() -> TfHostInputPolicy {
+    TfHostInputPolicy {
+        flags: TF_HOST_POLICY_AUTOMATIC_PROCESSING_DISABLED
+            | TF_HOST_POLICY_MANUAL_CONVERSION_DISABLED,
+        reason: TF_HOST_POLICY_REASON_UNAVAILABLE_HOST_CONFIG,
+    }
+}
+
+fn host_input_policy_reason_to_u8(reason: HostInputPolicyReason) -> u8 {
+    match reason {
+        HostInputPolicyReason::Normal => TF_HOST_POLICY_REASON_NORMAL,
+        HostInputPolicyReason::SecureInput => TF_HOST_POLICY_REASON_SECURE_INPUT,
+        HostInputPolicyReason::TerminalBundle => TF_HOST_POLICY_REASON_TERMINAL_BUNDLE,
+        HostInputPolicyReason::TerminalSurface => TF_HOST_POLICY_REASON_TERMINAL_SURFACE,
+        HostInputPolicyReason::DisabledBundle => TF_HOST_POLICY_REASON_DISABLED_BUNDLE,
+        HostInputPolicyReason::AutomaticProcessingDisabledBundle => {
+            TF_HOST_POLICY_REASON_AUTOMATIC_PROCESSING_DISABLED_BUNDLE
+        }
     }
 }
 
@@ -208,10 +474,13 @@ pub extern "C" fn typeflow_engine_new_embedded() -> *mut Engine {
 /// invalid numeric values.
 #[unsafe(no_mangle)]
 pub extern "C" fn typeflow_engine_new_embedded_with_config(config: TfEngineConfig) -> *mut Engine {
-    let Ok(bundle) = LanguageBundle::embedded() else {
-        return std::ptr::null_mut();
-    };
-    new_engine(bundle, config)
+    match embedded_bundle() {
+        Ok(bundle) => new_engine_or_error(bundle, config),
+        Err(error) => {
+            set_last_error(error);
+            std::ptr::null_mut()
+        }
+    }
 }
 
 /// Allocates a new engine, loading the language bundle from the directory at `data_dir_utf8`.
@@ -244,10 +513,13 @@ pub unsafe extern "C" fn typeflow_engine_new_from_data_dir_with_config(
     let Some(path) = (unsafe { c_path(data_dir_utf8) }) else {
         return std::ptr::null_mut();
     };
-    let Ok(bundle) = LanguageBundle::from_data_dir(&path) else {
-        return std::ptr::null_mut();
-    };
-    new_engine(bundle, config)
+    match data_dir_bundle(&path) {
+        Ok(bundle) => new_engine_or_error(bundle, config),
+        Err(error) => {
+            set_last_error(error);
+            std::ptr::null_mut()
+        }
+    }
 }
 
 /// Allocates a new engine using embedded English plus the secondary pack in `pack_dir_utf8`.
@@ -280,10 +552,50 @@ pub unsafe extern "C" fn typeflow_engine_new_from_pack_dir_with_config(
     let Some(path) = (unsafe { c_path(pack_dir_utf8) }) else {
         return std::ptr::null_mut();
     };
-    let Ok(bundle) = LanguageBundle::from_secondary_pack_dir(&path) else {
+    match pack_dir_bundle(&path) {
+        Ok(bundle) => new_engine_or_error(bundle, config),
+        Err(error) => {
+            set_last_error(error);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Allocates a new engine from a resolved host config.
+///
+/// Rust owns the engine-source decision: data directory wins, embedded
+/// Ukrainian is used for `secondary = "uk"`, otherwise the selected external
+/// pack is loaded from the resolved pack directory.
+///
+/// # Safety
+///
+/// `config` must be a valid live Typeflow host-config pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn typeflow_engine_new_from_host_config(
+    config: *const TfHostConfig,
+) -> *mut Engine {
+    let Some(config) = (unsafe { config.as_ref() }) else {
+        set_last_error("typeflow_engine_new_from_host_config received a null config pointer");
         return std::ptr::null_mut();
     };
-    new_engine(bundle, config)
+    let bundle = match host_config_bundle(&config.config) {
+        Ok(bundle) => bundle,
+        Err(error) => {
+            set_last_error(format!(
+                "failed to load language data for {}: {}",
+                config.config.engine_source_description(),
+                error
+            ));
+            return std::ptr::null_mut();
+        }
+    };
+    let engine = new_engine(bundle, engine_config_to_ffi(config.config.engine));
+    if engine.is_null() {
+        set_last_error("invalid engine config in resolved host config");
+    } else {
+        clear_last_error();
+    }
+    engine
 }
 
 unsafe fn c_path(path_utf8: *const c_char) -> Option<PathBuf> {
@@ -296,6 +608,307 @@ unsafe fn c_str<'a>(value_utf8: *const c_char) -> Option<&'a str> {
     }
     let cstr = unsafe { CStr::from_ptr(value_utf8) };
     cstr.to_str().ok()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn typeflow_host_config_load() -> *mut TfHostConfig {
+    let config = match ResolvedHostConfig::load(None) {
+        Ok(config) => config,
+        Err(error) => {
+            set_last_error(error);
+            return std::ptr::null_mut();
+        }
+    };
+    let Some(config) = host_config_to_ffi(config) else {
+        set_last_error("host config contains a path or language id with an embedded NUL byte");
+        return std::ptr::null_mut();
+    };
+    clear_last_error();
+    Box::into_raw(Box::new(config))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn typeflow_host_config_load_defaults() -> *mut TfHostConfig {
+    let environment = HostEnvironment::from_process();
+    let source = ConfigSource {
+        config: Config::default(),
+        path: None,
+    };
+    let config = match ResolvedHostConfig::from_source(source, &environment) {
+        Ok(config) => config,
+        Err(error) => {
+            set_last_error(error);
+            return std::ptr::null_mut();
+        }
+    };
+    let Some(config) = host_config_to_ffi(config) else {
+        set_last_error(
+            "default host config contains a path or language id with an embedded NUL byte",
+        );
+        return std::ptr::null_mut();
+    };
+    clear_last_error();
+    Box::into_raw(Box::new(config))
+}
+
+/// Loads host config from caller-supplied environment values.
+///
+/// Null pointers mean "unset". This exists so hosts/tests can validate config
+/// precedence without reimplementing config parsing outside Rust.
+///
+/// # Safety
+///
+/// Each non-null pointer must be a valid NUL-terminated UTF-8 C string that
+/// remains alive for the duration of this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn typeflow_host_config_load_with_environment(
+    config_path_utf8: *const c_char,
+    home_utf8: *const c_char,
+    data_dir_utf8: *const c_char,
+    pack_dir_utf8: *const c_char,
+) -> *mut TfHostConfig {
+    let explicit = unsafe { c_path(config_path_utf8) };
+    let environment = HostEnvironment {
+        config_path: None,
+        data_directory: unsafe { c_path(data_dir_utf8) },
+        pack_directory: unsafe { c_path(pack_dir_utf8) },
+        home: unsafe { c_path(home_utf8) },
+    };
+
+    let config = match ResolvedHostConfig::load_with_environment(explicit.as_deref(), &environment)
+    {
+        Ok(config) => config,
+        Err(error) => {
+            set_last_error(error);
+            return std::ptr::null_mut();
+        }
+    };
+    let Some(config) = host_config_to_ffi(config) else {
+        set_last_error("host config contains a path or language id with an embedded NUL byte");
+        return std::ptr::null_mut();
+    };
+    clear_last_error();
+    Box::into_raw(Box::new(config))
+}
+
+/// Frees host config allocated by Typeflow.
+///
+/// # Safety
+///
+/// `config` must be null or a pointer returned by a Typeflow host-config
+/// constructor that has not already been freed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn typeflow_host_config_free(config: *mut TfHostConfig) {
+    if !config.is_null() {
+        unsafe {
+            drop(Box::from_raw(config));
+        }
+    }
+}
+
+/// Writes the resolved engine config into `out_config`.
+///
+/// # Safety
+///
+/// `config` must be null or a valid live Typeflow host-config pointer.
+/// `out_config` must be null or point to writable memory for one `TfEngineConfig`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn typeflow_host_config_engine_config(
+    config: *const TfHostConfig,
+    out_config: *mut TfEngineConfig,
+) {
+    let Some(out) = (unsafe { out_config.as_mut() }) else {
+        return;
+    };
+    *out = unsafe { config.as_ref() }
+        .map(|config| engine_config_to_ffi(config.config.engine))
+        .unwrap_or_else(default_ffi_config);
+}
+
+/// Returns the config file path, or null when defaults were used.
+///
+/// The returned pointer is owned by `config` and remains valid until `config`
+/// is freed.
+///
+/// # Safety
+///
+/// `config` must be null or a valid live Typeflow host-config pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn typeflow_host_config_source_path(
+    config: *const TfHostConfig,
+) -> *const c_char {
+    unsafe { config.as_ref() }
+        .and_then(|config| config.source_path.as_ref())
+        .map(|value| value.as_ptr())
+        .unwrap_or(std::ptr::null())
+}
+
+/// Returns the normalized secondary language id.
+///
+/// The returned pointer is owned by `config` and remains valid until `config`
+/// is freed.
+///
+/// # Safety
+///
+/// `config` must be null or a valid live Typeflow host-config pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn typeflow_host_config_secondary_language(
+    config: *const TfHostConfig,
+) -> *const c_char {
+    unsafe { config.as_ref() }
+        .map(|config| config.secondary_language.as_ptr())
+        .unwrap_or(std::ptr::null())
+}
+
+/// Returns the resolved pack directory, or null when none could be resolved.
+///
+/// # Safety
+///
+/// `config` must be null or a valid live Typeflow host-config pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn typeflow_host_config_pack_directory(
+    config: *const TfHostConfig,
+) -> *const c_char {
+    unsafe { config.as_ref() }
+        .and_then(|config| config.pack_directory.as_ref())
+        .map(|value| value.as_ptr())
+        .unwrap_or(std::ptr::null())
+}
+
+/// Returns the resolved data directory, or null when none is configured.
+///
+/// # Safety
+///
+/// `config` must be null or a valid live Typeflow host-config pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn typeflow_host_config_data_directory(
+    config: *const TfHostConfig,
+) -> *const c_char {
+    unsafe { config.as_ref() }
+        .and_then(|config| config.data_directory.as_ref())
+        .map(|value| value.as_ptr())
+        .unwrap_or(std::ptr::null())
+}
+
+/// Returns `embedded`, `data_dir`, or `pack:<id>`.
+///
+/// # Safety
+///
+/// `config` must be null or a valid live Typeflow host-config pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn typeflow_host_config_engine_source(
+    config: *const TfHostConfig,
+) -> *const c_char {
+    unsafe { config.as_ref() }
+        .map(|config| config.engine_source.as_ptr())
+        .unwrap_or(std::ptr::null())
+}
+
+/// Returns 1 when `bundle_id_utf8` is fully disabled.
+///
+/// # Safety
+///
+/// `config` must be null or a valid live Typeflow host-config pointer.
+/// `bundle_id_utf8` must be null or a valid NUL-terminated UTF-8 string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn typeflow_host_config_is_bundle_disabled(
+    config: *const TfHostConfig,
+    bundle_id_utf8: *const c_char,
+) -> u8 {
+    let Some(config) = (unsafe { config.as_ref() }) else {
+        return 0;
+    };
+    let Some(bundle_id) = (unsafe { c_str(bundle_id_utf8) }) else {
+        return 0;
+    };
+    u8::from(config.config.app_policy.disables_bundle(bundle_id))
+}
+
+/// Returns 1 when automatic processing is disabled for `bundle_id_utf8`.
+///
+/// Fully disabled bundles also disable automatic processing.
+///
+/// # Safety
+///
+/// `config` must be null or a valid live Typeflow host-config pointer.
+/// `bundle_id_utf8` must be null or a valid NUL-terminated UTF-8 string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn typeflow_host_config_is_automatic_processing_disabled(
+    config: *const TfHostConfig,
+    bundle_id_utf8: *const c_char,
+) -> u8 {
+    let Some(config) = (unsafe { config.as_ref() }) else {
+        return 0;
+    };
+    let Some(bundle_id) = (unsafe { c_str(bundle_id_utf8) }) else {
+        return 0;
+    };
+    u8::from(
+        config
+            .config
+            .app_policy
+            .disables_automatic_processing(bundle_id),
+    )
+}
+
+/// Returns the number of fully disabled bundle IDs.
+///
+/// # Safety
+///
+/// `config` must be null or a valid live Typeflow host-config pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn typeflow_host_config_disabled_bundle_count(
+    config: *const TfHostConfig,
+) -> usize {
+    unsafe { config.as_ref() }
+        .map(|config| config.config.app_policy.disable_bundle_count())
+        .unwrap_or(0)
+}
+
+/// Returns the number of bundle IDs with automatic processing disabled.
+///
+/// This count does not include fully disabled bundle IDs; use
+/// `typeflow_host_config_disabled_bundle_count` for that list.
+///
+/// # Safety
+///
+/// `config` must be null or a valid live Typeflow host-config pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn typeflow_host_config_auto_disabled_bundle_count(
+    config: *const TfHostConfig,
+) -> usize {
+    unsafe { config.as_ref() }
+        .map(|config| config.config.app_policy.disable_auto_bundle_count())
+        .unwrap_or(0)
+}
+
+/// Resolves host-surface facts into Typeflow input policy.
+///
+/// Rust owns the policy decision; hosts only provide facts about the current
+/// macOS surface.
+///
+/// # Safety
+///
+/// `config` must be null or a valid live Typeflow host-config pointer. Every
+/// non-null pointer inside `facts` must point to a valid NUL-terminated UTF-8
+/// string that remains alive for this call. `out_policy` must be null or point
+/// to writable memory for one `TfHostInputPolicy`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn typeflow_host_config_resolve_input_policy(
+    config: *const TfHostConfig,
+    facts: TfHostSurfaceFacts,
+    out_policy: *mut TfHostInputPolicy,
+) {
+    let Some(out) = (unsafe { out_policy.as_mut() }) else {
+        return;
+    };
+    let Some(config) = (unsafe { config.as_ref() }) else {
+        *out = unavailable_host_config_policy();
+        return;
+    };
+
+    let facts = unsafe { host_surface_facts_from_ffi(facts) };
+    *out = host_input_policy_to_ffi(config.config.resolve_input_policy_view(&facts));
 }
 
 /// Frees an engine pointer created by `typeflow_engine_new_embedded` or
@@ -354,8 +967,12 @@ pub unsafe extern "C" fn typeflow_engine_reset_layout(engine: *mut Engine, layou
 /// Sets host-level bypass context.
 ///
 /// `TF_CONTEXT_SECURE_INPUT` means a password/secure field is active.
-/// `TF_CONTEXT_APP_EXCLUDED` means the foreground app is user-excluded.
-/// While either is set, the engine returns Keep/Bypass and clears the token.
+/// `TF_CONTEXT_AUTOMATIC_PROCESSING_DISABLED` means automatic processing is
+/// disabled for the foreground app.
+/// `TF_CONTEXT_AUTOMATIC_SWITCHING_DISABLED` means automatic layout switches
+/// are disabled, but the engine still commits keys in the current layout.
+/// Secure input and full automatic-processing disable return Keep/Bypass and
+/// clear the token; automatic-switching disable keeps normal commit behavior.
 ///
 /// # Safety
 ///
@@ -627,11 +1244,31 @@ pub unsafe extern "C" fn typeflow_engine_default_config(out_config: *mut TfEngin
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::{CStr, CString};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use super::{
-        TF_ACTION_COMMIT, TF_ACTION_KEEP, TF_EVENT_LETTER, TF_EVENT_LITERAL, TF_REPLACE_BUF_LEN,
-        TfAction, TfEngineConfig, TfEvent, decode_event, default_ffi_config,
-        engine_config_from_ffi, typeflow_engine_default_config,
-        typeflow_engine_new_embedded_with_config, typeflow_engine_process,
+        TF_ACTION_COMMIT, TF_ACTION_KEEP, TF_ACTION_REPLACE, TF_ACTION_RESET,
+        TF_CONTEXT_AUTOMATIC_PROCESSING_DISABLED, TF_CONTEXT_AUTOMATIC_SWITCHING_DISABLED,
+        TF_CONTEXT_SECURE_INPUT, TF_EVENT_BACKSPACE, TF_EVENT_END_TOKEN, TF_EVENT_LETTER,
+        TF_EVENT_LITERAL, TF_HOST_POLICY_AUTOMATIC_PROCESSING_DISABLED,
+        TF_HOST_POLICY_MANUAL_CONVERSION_DISABLED, TF_HOST_POLICY_REASON_TERMINAL_BUNDLE,
+        TF_HOST_POLICY_REASON_TERMINAL_SURFACE, TF_HOST_POLICY_SECURE_INPUT,
+        TF_HOST_POLICY_TERMINAL_SURFACE, TF_LAYOUT_ENGLISH, TF_LAYOUT_SECONDARY, TF_MOD_COMMAND,
+        TF_MOD_CONTROL, TF_MOD_OPTION, TF_MOD_SHIFT, TF_REPLACE_BUF_LEN, TfAction, TfEngineConfig,
+        TfEvent, TfHostInputPolicy, TfHostSurfaceFacts, decode_event, default_ffi_config,
+        engine_config_from_ffi, typeflow_engine_default_config, typeflow_engine_free,
+        typeflow_engine_new_embedded_with_config, typeflow_engine_new_from_host_config,
+        typeflow_engine_process, typeflow_host_config_auto_disabled_bundle_count,
+        typeflow_host_config_data_directory, typeflow_host_config_disabled_bundle_count,
+        typeflow_host_config_engine_config, typeflow_host_config_engine_source,
+        typeflow_host_config_free, typeflow_host_config_is_automatic_processing_disabled,
+        typeflow_host_config_is_bundle_disabled, typeflow_host_config_load_with_environment,
+        typeflow_host_config_pack_directory, typeflow_host_config_resolve_input_policy,
+        typeflow_host_config_secondary_language, typeflow_host_config_source_path,
+        typeflow_last_error_message,
     };
     use typeflow_core::InputEvent;
 
@@ -772,5 +1409,369 @@ mod tests {
         assert_eq!(action.commit_codepoint, 0);
         assert_eq!(action.replace_old_len, 0);
         assert_eq!(action.replace_text_len, 0);
+    }
+
+    #[test]
+    fn host_config_loads_resolved_values_and_builds_engine() {
+        let dir = temp_dir("host-config");
+        let config_path = dir.join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+[engine]
+min_token_len = 5
+
+[language]
+secondary = " uk "
+
+[packs]
+directory = "/config/packs"
+
+[data]
+directory = "/config/data"
+
+[apps]
+disable_bundle_ids = ["dev.zed.Zed", "com.tinyspeck.slackmacgap"]
+disable_auto_bundle_ids = ["com.tinyspeck.slackmacgap", "com.apple.TextEdit"]
+"#,
+        )
+        .unwrap();
+
+        let path = CString::new(config_path.to_string_lossy().as_bytes()).unwrap();
+        let home = CString::new(dir.to_string_lossy().as_bytes()).unwrap();
+        let data = CString::new("/env/data").unwrap();
+        let packs = CString::new("/env/packs").unwrap();
+        let config = unsafe {
+            typeflow_host_config_load_with_environment(
+                path.as_ptr(),
+                home.as_ptr(),
+                data.as_ptr(),
+                packs.as_ptr(),
+            )
+        };
+        assert!(!config.is_null());
+
+        let mut engine_config = default_ffi_config();
+        unsafe {
+            typeflow_host_config_engine_config(config, &mut engine_config);
+        }
+        assert_eq!(engine_config.min_token_len, 5);
+
+        assert_eq!(
+            unsafe { c_string(typeflow_host_config_source_path(config)) },
+            config_path.to_string_lossy()
+        );
+        assert_eq!(
+            unsafe { c_string(typeflow_host_config_secondary_language(config)) },
+            "uk"
+        );
+        assert_eq!(
+            unsafe { c_string(typeflow_host_config_pack_directory(config)) },
+            "/env/packs"
+        );
+        assert_eq!(
+            unsafe { c_string(typeflow_host_config_data_directory(config)) },
+            "/env/data"
+        );
+        assert_eq!(
+            unsafe { c_string(typeflow_host_config_engine_source(config)) },
+            "data_dir"
+        );
+        assert_eq!(
+            unsafe { typeflow_host_config_disabled_bundle_count(config) },
+            2
+        );
+        assert_eq!(
+            unsafe { typeflow_host_config_auto_disabled_bundle_count(config) },
+            1
+        );
+
+        let zed = CString::new("dev.zed.Zed").unwrap();
+        let slack = CString::new("com.tinyspeck.slackmacgap").unwrap();
+        assert_eq!(
+            unsafe { typeflow_host_config_is_bundle_disabled(config, zed.as_ptr()) },
+            1
+        );
+        assert_eq!(
+            unsafe { typeflow_host_config_is_automatic_processing_disabled(config, zed.as_ptr()) },
+            1
+        );
+        assert_eq!(
+            unsafe { typeflow_host_config_is_bundle_disabled(config, slack.as_ptr()) },
+            1
+        );
+        assert_eq!(
+            unsafe {
+                typeflow_host_config_is_automatic_processing_disabled(config, slack.as_ptr())
+            },
+            1
+        );
+        let textedit = CString::new("com.apple.TextEdit").unwrap();
+        assert_eq!(
+            unsafe { typeflow_host_config_is_bundle_disabled(config, textedit.as_ptr()) },
+            0
+        );
+        assert_eq!(
+            unsafe {
+                typeflow_host_config_is_automatic_processing_disabled(config, textedit.as_ptr())
+            },
+            1
+        );
+
+        // Engine construction fails here because /env/data is intentionally not
+        // a language data directory. The constructor decision still lives in Rust.
+        assert!(unsafe { typeflow_engine_new_from_host_config(config) }.is_null());
+        let error = unsafe { c_string(typeflow_last_error_message()) };
+        assert!(error.contains("failed to load language data"), "{error}");
+
+        unsafe {
+            typeflow_host_config_free(config);
+        }
+    }
+
+    #[test]
+    fn host_config_defaults_create_embedded_engine() {
+        let config = unsafe {
+            typeflow_host_config_load_with_environment(
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+            )
+        };
+        assert!(!config.is_null());
+        assert_eq!(
+            unsafe { c_string(typeflow_host_config_secondary_language(config)) },
+            "uk"
+        );
+        assert_eq!(
+            unsafe { c_string(typeflow_host_config_engine_source(config)) },
+            "embedded"
+        );
+
+        let engine = unsafe { typeflow_engine_new_from_host_config(config) };
+        assert!(!engine.is_null());
+
+        unsafe {
+            typeflow_engine_free(engine);
+            typeflow_host_config_free(config);
+        }
+    }
+
+    #[test]
+    fn host_input_policy_blocks_terminal_bundles_and_surfaces() {
+        let config = unsafe {
+            typeflow_host_config_load_with_environment(
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+            )
+        };
+        assert!(!config.is_null());
+
+        let bundle = CString::new("com.googlecode.iterm2").unwrap();
+        let mut facts = empty_host_surface_facts();
+        facts.bundle_id_utf8 = bundle.as_ptr();
+        let mut policy = TfHostInputPolicy {
+            flags: 0,
+            reason: 0,
+        };
+        unsafe {
+            typeflow_host_config_resolve_input_policy(config, facts, &mut policy);
+        }
+        assert_eq!(policy.reason, TF_HOST_POLICY_REASON_TERMINAL_BUNDLE);
+        assert_ne!(
+            policy.flags & TF_HOST_POLICY_AUTOMATIC_PROCESSING_DISABLED,
+            0
+        );
+        assert_ne!(policy.flags & TF_HOST_POLICY_MANUAL_CONVERSION_DISABLED, 0);
+        assert_ne!(policy.flags & TF_HOST_POLICY_TERMINAL_SURFACE, 0);
+
+        let zed = CString::new("dev.zed.Zed").unwrap();
+        let terminal_identifier = CString::new("workspace-terminal-panel").unwrap();
+        let mut facts = empty_host_surface_facts();
+        facts.bundle_id_utf8 = zed.as_ptr();
+        facts.focused_element_identifier_utf8 = terminal_identifier.as_ptr();
+        unsafe {
+            typeflow_host_config_resolve_input_policy(config, facts, &mut policy);
+        }
+        assert_eq!(policy.reason, TF_HOST_POLICY_REASON_TERMINAL_SURFACE);
+        assert_ne!(
+            policy.flags & TF_HOST_POLICY_AUTOMATIC_PROCESSING_DISABLED,
+            0
+        );
+        assert_ne!(policy.flags & TF_HOST_POLICY_MANUAL_CONVERSION_DISABLED, 0);
+        assert_ne!(policy.flags & TF_HOST_POLICY_TERMINAL_SURFACE, 0);
+
+        unsafe {
+            typeflow_host_config_free(config);
+        }
+    }
+
+    #[test]
+    fn host_input_policy_marks_secure_input() {
+        let config = unsafe {
+            typeflow_host_config_load_with_environment(
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+            )
+        };
+        assert!(!config.is_null());
+
+        let mut facts = empty_host_surface_facts();
+        facts.secure_input = 1;
+        let mut policy = TfHostInputPolicy {
+            flags: 0,
+            reason: 0,
+        };
+        unsafe {
+            typeflow_host_config_resolve_input_policy(config, facts, &mut policy);
+        }
+        assert_ne!(policy.flags & TF_HOST_POLICY_SECURE_INPUT, 0);
+        assert_ne!(
+            policy.flags & TF_HOST_POLICY_AUTOMATIC_PROCESSING_DISABLED,
+            0
+        );
+        assert_ne!(policy.flags & TF_HOST_POLICY_MANUAL_CONVERSION_DISABLED, 0);
+
+        unsafe {
+            typeflow_host_config_free(config);
+        }
+    }
+
+    #[test]
+    fn invalid_host_config_sets_last_error() {
+        let dir = temp_dir("invalid-host-config");
+        let config_path = dir.join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+[apps]
+disable_bundle_ids = [
+    "dev.zed.Zed",
+"#,
+        )
+        .unwrap();
+
+        let path = CString::new(config_path.to_string_lossy().as_bytes()).unwrap();
+        let config = unsafe {
+            typeflow_host_config_load_with_environment(
+                path.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                std::ptr::null(),
+            )
+        };
+        assert!(config.is_null());
+
+        let error = unsafe { c_string(typeflow_last_error_message()) };
+        assert!(error.contains("parse config"), "{error}");
+        assert!(error.contains("unclosed array"), "{error}");
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn public_header_constants_match_rust_abi() {
+        let header = include_str!("../include/typeflow.h");
+        for (name, value) in [
+            ("TF_EVENT_LETTER", TF_EVENT_LETTER as usize),
+            ("TF_EVENT_BACKSPACE", TF_EVENT_BACKSPACE as usize),
+            ("TF_EVENT_END_TOKEN", TF_EVENT_END_TOKEN as usize),
+            ("TF_EVENT_LITERAL", TF_EVENT_LITERAL as usize),
+            ("TF_MOD_SHIFT", TF_MOD_SHIFT as usize),
+            ("TF_MOD_CONTROL", TF_MOD_CONTROL as usize),
+            ("TF_MOD_OPTION", TF_MOD_OPTION as usize),
+            ("TF_MOD_COMMAND", TF_MOD_COMMAND as usize),
+            ("TF_CONTEXT_SECURE_INPUT", TF_CONTEXT_SECURE_INPUT as usize),
+            (
+                "TF_CONTEXT_AUTOMATIC_PROCESSING_DISABLED",
+                TF_CONTEXT_AUTOMATIC_PROCESSING_DISABLED as usize,
+            ),
+            (
+                "TF_CONTEXT_AUTOMATIC_SWITCHING_DISABLED",
+                TF_CONTEXT_AUTOMATIC_SWITCHING_DISABLED as usize,
+            ),
+            (
+                "TF_HOST_POLICY_SECURE_INPUT",
+                TF_HOST_POLICY_SECURE_INPUT as usize,
+            ),
+            (
+                "TF_HOST_POLICY_AUTOMATIC_PROCESSING_DISABLED",
+                TF_HOST_POLICY_AUTOMATIC_PROCESSING_DISABLED as usize,
+            ),
+            (
+                "TF_HOST_POLICY_MANUAL_CONVERSION_DISABLED",
+                TF_HOST_POLICY_MANUAL_CONVERSION_DISABLED as usize,
+            ),
+            (
+                "TF_HOST_POLICY_TERMINAL_SURFACE",
+                TF_HOST_POLICY_TERMINAL_SURFACE as usize,
+            ),
+            ("TF_ACTION_KEEP", TF_ACTION_KEEP as usize),
+            ("TF_ACTION_COMMIT", TF_ACTION_COMMIT as usize),
+            ("TF_ACTION_REPLACE", TF_ACTION_REPLACE as usize),
+            ("TF_ACTION_RESET", TF_ACTION_RESET as usize),
+            ("TF_LAYOUT_ENGLISH", TF_LAYOUT_ENGLISH as usize),
+            ("TF_LAYOUT_SECONDARY", TF_LAYOUT_SECONDARY as usize),
+            ("TF_REPLACE_BUF_LEN", TF_REPLACE_BUF_LEN),
+        ] {
+            assert_eq!(header_define(header, name), value, "{name}");
+        }
+    }
+
+    unsafe fn c_string(pointer: *const std::os::raw::c_char) -> String {
+        assert!(!pointer.is_null());
+        unsafe { CStr::from_ptr(pointer) }
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    fn empty_host_surface_facts() -> TfHostSurfaceFacts {
+        TfHostSurfaceFacts {
+            secure_input: 0,
+            bundle_id_utf8: std::ptr::null(),
+            application_name_utf8: std::ptr::null(),
+            input_client_class_utf8: std::ptr::null(),
+            focused_element_role_utf8: std::ptr::null(),
+            focused_element_subrole_utf8: std::ptr::null(),
+            focused_element_role_description_utf8: std::ptr::null(),
+            focused_element_identifier_utf8: std::ptr::null(),
+            focused_element_description_utf8: std::ptr::null(),
+            focused_window_title_utf8: std::ptr::null(),
+        }
+    }
+
+    fn header_define(header: &str, name: &str) -> usize {
+        let prefix = format!("#define {name}");
+        let line = header
+            .lines()
+            .find(|line| line.starts_with(&prefix))
+            .unwrap_or_else(|| panic!("missing header define {name}"));
+        let value = line[prefix.len()..]
+            .trim()
+            .trim_end_matches('u')
+            .trim_end_matches('U');
+        value
+            .strip_prefix("0x")
+            .map(|hex| usize::from_str_radix(hex, 16))
+            .unwrap_or_else(|| value.parse())
+            .unwrap_or_else(|error| panic!("invalid header define {name}={value}: {error}"))
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "typeflow-ffi-{name}-{}-{suffix}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
     }
 }

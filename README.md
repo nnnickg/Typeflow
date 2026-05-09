@@ -7,12 +7,13 @@ and retypes).
 
 ## Status
 
-Pre-alpha, but usable locally. The Rust engine works end-to-end on real data,
-and `macos/` builds, signs, installs, registers, and runs a working
-InputMethodKit app. Manual host testing has verified normal typing, external
-pack loading, app exclusions, and standalone Option manual conversion in real
-macOS text fields. See [`docs/status.md`](docs/status.md) for the complete
-state-of-the-project snapshot.
+Pre-alpha macOS input method. Use it at your own risk: it can rewrite text as
+you type. Keep a normal keyboard layout installed as a fallback. The Rust engine
+works end-to-end on real data, and `macos/` builds, signs, installs, registers,
+and runs a working InputMethodKit app. Manual host testing has verified normal
+typing, external pack loading, app exclusions, and standalone Option manual
+conversion in real macOS text fields. See [`docs/status.md`](docs/status.md) for
+the complete state-of-the-project snapshot.
 
 ## Workspace
 
@@ -61,7 +62,8 @@ crates/typeflow-core/data/
 The cache is not needed at runtime. Keep it only to avoid re-downloading when
 rebuilding the model.
 
-Data-source attribution and license notes are in [`NOTICE.md`](NOTICE.md).
+Data-source attribution and generated-artifact license notes are in
+[`NOTICE.md`](NOTICE.md) and [`DATA-LICENSE.md`](DATA-LICENSE.md).
 
 ### 2. Build and run the CLI
 
@@ -181,5 +183,6 @@ Code is licensed under either of:
 at your option.
 
 The embedded language-model artifacts are generated from third-party corpora
-and frequency lists. See [`NOTICE.md`](NOTICE.md) for data-source attribution
-and license notes.
+and frequency lists. They are data artifacts, not MIT/Apache source code. See
+[`DATA-LICENSE.md`](DATA-LICENSE.md) and [`NOTICE.md`](NOTICE.md) for
+redistribution terms and attribution.

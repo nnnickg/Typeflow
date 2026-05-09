@@ -1,5 +1,6 @@
 pub mod data;
 mod engine;
+pub mod host_config;
 mod keyboard;
 mod score;
 mod types;
@@ -513,7 +514,7 @@ mod tests {
     }
 
     #[test]
-    fn host_context_bypasses_secure_and_excluded_inputs() {
+    fn host_context_bypasses_secure_and_auto_disabled_inputs() {
         let mut engine = engine();
         for event in letters(&[PhysicalKey::G, PhysicalKey::H, PhysicalKey::B]) {
             engine.process(InputEvent::Letter(event));
@@ -522,7 +523,8 @@ mod tests {
 
         engine.set_host_context(HostContext {
             secure_input: true,
-            app_excluded: false,
+            automatic_processing_disabled: false,
+            automatic_switching_disabled: false,
         });
         let output = engine.process(InputEvent::Letter(LetterEvent::new(PhysicalKey::D)));
 
@@ -532,10 +534,51 @@ mod tests {
 
         engine.set_host_context(HostContext {
             secure_input: false,
-            app_excluded: true,
+            automatic_processing_disabled: true,
+            automatic_switching_disabled: false,
         });
         let output = engine.process(InputEvent::Letter(LetterEvent::new(PhysicalKey::D)));
         assert_eq!(output.action, Action::Keep);
+    }
+
+    #[test]
+    fn auto_switching_disabled_commits_current_layout_without_replacement() {
+        let mut engine = engine();
+        engine.set_host_context(HostContext {
+            secure_input: false,
+            automatic_processing_disabled: false,
+            automatic_switching_disabled: true,
+        });
+
+        let rendered = run_cli_like_token(&mut engine, "ghsdbn");
+
+        assert_eq!(rendered, "ghsdbn");
+        assert_eq!(engine.current_layout(), Layout::English);
+
+        engine.reset_layout(Layout::Secondary);
+        let rendered = run_cli_like_token(&mut engine, "ghsdbn");
+
+        assert_eq!(rendered, "привіт");
+        assert_eq!(engine.current_layout(), Layout::Secondary);
+    }
+
+    #[test]
+    fn host_context_mode_change_clears_in_flight_token() {
+        let mut engine = engine();
+
+        for event in letters(&[PhysicalKey::G, PhysicalKey::H, PhysicalKey::S]) {
+            engine.process(InputEvent::Letter(event));
+        }
+        assert_eq!(engine.token_len(), 3);
+
+        engine.set_host_context(HostContext {
+            secure_input: false,
+            automatic_processing_disabled: false,
+            automatic_switching_disabled: true,
+        });
+
+        assert_eq!(engine.token_len(), 0);
+        assert!(engine.host_context().automatic_switching_disabled);
     }
 
     #[test]
@@ -622,6 +665,13 @@ mod tests {
         .unwrap();
         assert_eq!(custom.render(PhysicalKey::A, false), 'a');
         assert_eq!(custom.render(PhysicalKey::Period, true), '>');
+
+        let unsupported = KeyboardMap::from_rows(
+            "😀bcdefghijklmnopqrstuvwxyz`[];',.\\",
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZ~{}:\"<>|",
+        )
+        .unwrap_err();
+        assert!(unsupported.to_string().contains("not supported"));
     }
 
     #[test]
@@ -746,16 +796,21 @@ mod tests {
     fn visible_tail_keeps_punctuation_position_letters_in_token() {
         let mut engine = engine();
 
-        assert_eq!(engine.visible_token_suffix("hello [eqy"), Some("[eqy"));
+        assert_eq!(engine.visible_token_suffix("hello [fn"), Some("[fn"));
+        assert_eq!(engine.visible_token_suffix("hello —[fn"), Some("[fn"));
+        assert_eq!(engine.visible_token_suffix("hello …[fn"), Some("[fn"));
+        assert_eq!(engine.visible_token_suffix("hello\u{00a0}[fn"), Some("[fn"));
+        assert_eq!(engine.visible_token_suffix("hello\u{200b}[fn"), Some("[fn"));
+        assert_eq!(engine.visible_token_suffix("hello ✓"), None);
         assert_eq!(
-            engine.convert_visible_tail("hello [eqyz"),
-            Some((Layout::Secondary, "хуйня".to_owned(), 5))
+            engine.convert_visible_tail("hello [fnf"),
+            Some((Layout::Secondary, "хата".to_owned(), 4))
         );
 
         let action = engine
             .replace_visible_tail_with_key(
-                "hello [eqy",
-                LetterEvent::new(PhysicalKey::Z),
+                "hello [fn",
+                LetterEvent::new(PhysicalKey::F),
                 Layout::Secondary,
             )
             .unwrap();
@@ -763,8 +818,31 @@ mod tests {
         assert_eq!(
             action,
             Action::ReplaceToken {
-                old_len: 4,
-                replacement: "хуйня".to_owned(),
+                old_len: 3,
+                replacement: "хата".to_owned(),
+                layout: Layout::Secondary,
+            }
+        );
+
+        assert_eq!(engine.visible_token_suffix("hello ’dh"), Some("’dh"));
+        assert_eq!(
+            engine.convert_visible_tail("hello ’dhj"),
+            Some((Layout::Secondary, "євро".to_owned(), 4))
+        );
+
+        let action = engine
+            .replace_visible_tail_with_key(
+                "hello ’dh",
+                LetterEvent::new(PhysicalKey::J),
+                Layout::Secondary,
+            )
+            .unwrap();
+
+        assert_eq!(
+            action,
+            Action::ReplaceToken {
+                old_len: 3,
+                replacement: "євро".to_owned(),
                 layout: Layout::Secondary,
             }
         );

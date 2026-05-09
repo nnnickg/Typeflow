@@ -1,13 +1,15 @@
+use std::sync::Arc;
+
 use crate::data::LanguageBundle;
 use crate::score::{has_dictionary_evidence, score_layout};
 use crate::{
     Action, Decision, EngineConfig, EngineOutput, HostContext, InputEvent, Layout,
-    LayoutCandidates, LetterEvent, ScoreAnalysis,
+    LayoutCandidates, LetterEvent, PhysicalKey, ScoreAnalysis,
 };
 
 pub struct Engine {
     config: EngineConfig,
-    bundle: LanguageBundle,
+    bundle: Arc<LanguageBundle>,
     token: Vec<LetterEvent>,
     candidates: LayoutCandidates,
     score_cache: Option<ScoreAnalysis>,
@@ -19,6 +21,10 @@ pub struct Engine {
 
 impl Engine {
     pub fn new(config: EngineConfig, bundle: LanguageBundle) -> Self {
+        Self::with_shared_bundle(config, Arc::new(bundle))
+    }
+
+    pub fn with_shared_bundle(config: EngineConfig, bundle: Arc<LanguageBundle>) -> Self {
         Self {
             config,
             bundle,
@@ -41,7 +47,7 @@ impl Engine {
     }
 
     pub fn bundle(&self) -> &LanguageBundle {
-        &self.bundle
+        self.bundle.as_ref()
     }
 
     pub fn token_len(&self) -> usize {
@@ -99,10 +105,15 @@ impl Engine {
     }
 
     pub fn set_host_context(&mut self, context: HostContext) {
-        self.host_context = context;
-        if context.bypasses_engine() {
-            self.reset_token();
+        if self.host_context == context {
+            if context.bypasses_engine() {
+                self.reset_token();
+            }
+            return;
         }
+
+        self.host_context = context;
+        self.reset_token();
     }
 
     pub fn process(&mut self, event: InputEvent) -> EngineOutput {
@@ -159,7 +170,7 @@ impl Engine {
 
         let letters = token
             .chars()
-            .map(|character| self.bundle.letter_event_from_char(character))
+            .map(|character| self.visible_letter_event_from_char(character))
             .collect::<Option<Vec<_>>>()?;
         let english = crate::render_letters_with_bundle(&letters, Layout::English, &self.bundle);
         let secondary =
@@ -215,7 +226,7 @@ impl Engine {
     ) -> Option<Action> {
         let mut letters = visible_prefix
             .chars()
-            .map(|character| self.bundle.letter_event_from_char(character))
+            .map(|character| self.visible_letter_event_from_char(character))
             .collect::<Option<Vec<_>>>()?;
         let prefix_candidates = crate::render_candidates_with_bundle(&letters, &self.bundle);
         self.token_start_layout = infer_visible_layout(visible_prefix, &prefix_candidates)
@@ -278,6 +289,10 @@ impl Engine {
             self.token_start_layout = self.layout;
         }
 
+        if self.should_commit_auto_disabled_separator(event) {
+            self.reset_token();
+            return (Action::Commit(commit_char), Decision::Bypass);
+        }
         if self.should_commit_english_separator(event) {
             self.reset_token();
             return (Action::Commit(commit_char), Decision::Keep);
@@ -291,6 +306,10 @@ impl Engine {
 
         self.token.push(event);
         self.push_candidate_chars(event);
+
+        if self.host_context.automatic_switching_disabled {
+            return (Action::Commit(commit_char), Decision::Bypass);
+        }
 
         if self.token.len() < self.config.min_token_len {
             return (Action::Commit(commit_char), Decision::Keep);
@@ -338,6 +357,9 @@ impl Engine {
         self.candidates.english.pop();
         self.candidates.secondary.pop();
         self.score_cache = None;
+        if self.host_context.automatic_switching_disabled {
+            return (Action::Keep, Decision::Bypass);
+        }
         let decision = self.reconcile_layout_after_token_change();
         (Action::Keep, decision)
     }
@@ -444,6 +466,14 @@ impl Engine {
         self.decide(&score) == Decision::Use(Layout::English)
     }
 
+    fn should_commit_auto_disabled_separator(&self, event: LetterEvent) -> bool {
+        if !self.host_context.automatic_switching_disabled || self.layout != Layout::English {
+            return false;
+        }
+
+        is_english_separator_key_char(self.bundle.render(event, Layout::English))
+    }
+
     fn snapshot(&mut self, action: Action, decision: Decision) -> EngineOutput {
         let candidates = self.candidates.clone();
         let score = self.score_current();
@@ -478,7 +508,13 @@ impl Engine {
 
     fn is_visible_token_character(&self, character: char) -> bool {
         !is_literal_bypass_char(character)
-            && self.bundle.letter_event_from_char(character).is_some()
+            && self.visible_letter_event_from_char(character).is_some()
+    }
+
+    fn visible_letter_event_from_char(&self, character: char) -> Option<LetterEvent> {
+        self.bundle
+            .letter_event_from_char(character)
+            .or_else(|| host_normalized_letter_event(character))
     }
 }
 
@@ -500,6 +536,23 @@ fn infer_visible_layout(token: &str, candidates: &LayoutCandidates) -> Option<La
         Some(Layout::Secondary)
     } else {
         None
+    }
+}
+
+fn host_normalized_letter_event(character: char) -> Option<LetterEvent> {
+    match character {
+        // Some hosts, notably Slack, rewrite ASCII quotes after insertion.
+        // Decode those visible forms as the same physical quote key so fallback
+        // replacements still include the complete token.
+        '‘' | '’' => Some(LetterEvent {
+            physical_key: PhysicalKey::Quote,
+            shift: false,
+        }),
+        '“' | '”' => Some(LetterEvent {
+            physical_key: PhysicalKey::Quote,
+            shift: true,
+        }),
+        _ => None,
     }
 }
 
