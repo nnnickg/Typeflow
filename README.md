@@ -11,7 +11,7 @@ Pre-alpha, but usable locally. The Rust engine works end-to-end on real data,
 and `macos/` builds, signs, installs, registers, and runs a working
 InputMethodKit app. Manual host testing has verified normal typing, external
 pack loading, app exclusions, and standalone Option manual conversion in real
-macOS text fields. See [`docs/handoff.md`](docs/handoff.md) for the complete
+macOS text fields. See [`docs/status.md`](docs/status.md) for the complete
 state-of-the-project snapshot.
 
 ## Workspace
@@ -30,7 +30,7 @@ docs/
 ├── invariants.md    core/host contract the macOS layer must obey
 ├── panic-unsafe-audit.md  panic/unsafe audit notes
 ├── release-verification.md  optimized build checks and packaging caveat
-└── handoff.md       current state, outstanding work, open questions
+└── status.md        current state, outstanding work, open questions
 macos/                Swift staticlib smoke + minimal IMK bundle build
 ```
 
@@ -60,6 +60,8 @@ crates/typeflow-core/data/
 
 The cache is not needed at runtime. Keep it only to avoid re-downloading when
 rebuilding the model.
+
+Data-source attribution and license notes are in [`NOTICE.md`](NOTICE.md).
 
 ### 2. Build and run the CLI
 
@@ -171,9 +173,13 @@ on macOS for every push to `main` and every pull request.
 
 ## License
 
-Licensed under either of:
+Code is licensed under either of:
 
 - Apache License, Version 2.0
 - MIT license
 
 at your option.
+
+The embedded language-model artifacts are generated from third-party corpora
+and frequency lists. See [`NOTICE.md`](NOTICE.md) for data-source attribution
+and license notes.

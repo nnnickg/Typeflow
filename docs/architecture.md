@@ -96,11 +96,13 @@ Inputs:
 
 Outputs:
 
-- `{en,uk}.ngrams.bin` — `bincode`-serialized `CompiledLanguageData`
+- `{en,uk}.ngrams.bin` — Typeflow n-gram artifact `CompiledLanguageData`
   (sorted bigrams + trigrams with log-probabilities + smoothing floors).
 - `{en,uk}.dict.fst` — BurntSushi `fst::Map` (word → frequency).
 - External packs: `pack.toml`, `ngrams.bin`, `dict.fst`. Spec details live in
   `docs/pack-spec.md`.
+
+Data-source attribution and license notes live in `NOTICE.md`.
 
 ### `typeflow-cli`
 

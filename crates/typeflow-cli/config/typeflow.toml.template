@@ -1,4 +1,4 @@
-# Typeflow — local PoC configuration
+# Typeflow configuration
 #
 # All fields are optional. Anything you omit falls back to the compile-time default.
 # The file is searched for in this order (later overrides earlier):

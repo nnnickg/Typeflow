@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+publish = false
 
 [[bin]]
 name = "typeflow"
@@ -12,7 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 typeflow-core = { path = "../typeflow-core" }
-crossterm = "0.28"
-fst = "0.4"
-toml = "0.8"
-serde = { version = "1", features = ["derive"] }
+crossterm = "0.29.0"
+fst = "0.4.7"
+toml = "1.1.2"
+serde = { version = "1.0.228", features = ["derive"] }

@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
+use std::str;
 
 use fst::automaton::{Automaton, Str};
 use fst::{IntoStreamer, Streamer};
@@ -10,16 +11,19 @@ use serde::{Deserialize, Serialize};
 
 use crate::{KeyboardMap, KeyboardMapError, Layout};
 
-pub const PACK_FORMAT_VERSION: u32 = 1;
+pub const PACK_FORMAT_VERSION: u32 = 2;
 pub const PACK_MANIFEST_FILE: &str = "pack.toml";
 pub const PACK_NGRAMS_FILE: &str = "ngrams.bin";
 pub const PACK_DICT_FILE: &str = "dict.fst";
+const NGRAM_MAGIC: &[u8; 8] = b"TFNG0002";
+const MAX_NGRAM_STRING_BYTES: usize = 256;
+const MAX_NGRAM_ENTRIES: usize = 10_000_000;
 
 /// Compact on-disk representation produced by the `typeflow-data` xtask.
 ///
-/// Serialized via `bincode` and shipped under `crates/typeflow-core/data/`.
+/// Encoded as a Typeflow n-gram artifact and shipped under `crates/typeflow-core/data/`.
 /// Sorted vectors keep the format diff-friendly when artifacts are checked into the repo.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct CompiledLanguageData {
     pub language_tag: String,
     pub bigrams: Vec<(String, f32)>,
@@ -27,6 +31,79 @@ pub struct CompiledLanguageData {
     pub bigram_floor: f32,
     pub trigram_floor: f32,
 }
+
+#[derive(Debug)]
+pub enum NgramDecodeError {
+    InvalidMagic,
+    UnexpectedEof {
+        needed: usize,
+        remaining: usize,
+    },
+    InvalidUtf8(str::Utf8Error),
+    LengthTooLarge {
+        field: &'static str,
+        len: usize,
+        max: usize,
+    },
+    TrailingBytes {
+        read: usize,
+        total: usize,
+    },
+}
+
+impl std::fmt::Display for NgramDecodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NgramDecodeError::InvalidMagic => write!(f, "invalid n-gram artifact magic"),
+            NgramDecodeError::UnexpectedEof { needed, remaining } => write!(
+                f,
+                "unexpected end of n-gram artifact: needed {needed} bytes, had {remaining}"
+            ),
+            NgramDecodeError::InvalidUtf8(error) => {
+                write!(f, "invalid UTF-8 in n-gram artifact: {error}")
+            }
+            NgramDecodeError::LengthTooLarge { field, len, max } => write!(
+                f,
+                "n-gram artifact field '{field}' is too large: {len} bytes/items, max {max}"
+            ),
+            NgramDecodeError::TrailingBytes { read, total } => write!(
+                f,
+                "trailing bytes after n-gram artifact: read {read} of {total}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for NgramDecodeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            NgramDecodeError::InvalidUtf8(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum NgramEncodeError {
+    LengthTooLarge {
+        field: &'static str,
+        len: usize,
+        max: usize,
+    },
+}
+
+impl std::fmt::Display for NgramEncodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NgramEncodeError::LengthTooLarge { field, len, max } => write!(
+                f,
+                "n-gram artifact field '{field}' is too large: {len} bytes/items, max {max}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for NgramEncodeError {}
 
 /// Runtime form of `CompiledLanguageData`. Built once at engine creation.
 pub struct LanguageModel {
@@ -56,8 +133,8 @@ impl LanguageModel {
         }
     }
 
-    pub fn from_bincode(bytes: &[u8]) -> Result<Self, bincode::Error> {
-        let compiled: CompiledLanguageData = bincode::deserialize(bytes)?;
+    pub fn from_artifact_bytes(bytes: &[u8]) -> Result<Self, NgramDecodeError> {
+        let compiled = decode_compiled_language_data(bytes)?;
         Ok(Self::from_compiled(compiled))
     }
 
@@ -225,7 +302,7 @@ impl PackMetadata {
         fingerprint = fnv1a64_extend(fingerprint, dict_bytes);
 
         Self {
-            format_version: 1,
+            format_version: PACK_FORMAT_VERSION,
             source_corpus: "OPUS OpenSubtitles2018 mono".to_owned(),
             source_dictionary: "hermitdave/FrequencyWords 2018".to_owned(),
             build_id: "embedded".to_owned(),
@@ -261,7 +338,7 @@ impl LanguagePack {
         D: Into<Cow<'static, [u8]>>,
     {
         let dict_bytes = dict_bytes.into();
-        let compiled: CompiledLanguageData = bincode::deserialize(ngrams)?;
+        let compiled = decode_compiled_language_data(ngrams)?;
         if compiled.language_tag != id {
             return Err(BundleError::LanguageTagMismatch {
                 expected: id.to_owned(),
@@ -320,7 +397,7 @@ pub struct LanguageBundle {
 #[derive(Debug)]
 pub enum BundleError {
     Io(io::Error),
-    Bincode(bincode::Error),
+    Ngram(NgramDecodeError),
     Fst(fst::Error),
     TomlDe(toml::de::Error),
     TomlSer(toml::ser::Error),
@@ -333,7 +410,7 @@ impl std::fmt::Display for BundleError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             BundleError::Io(error) => write!(f, "io error: {error}"),
-            BundleError::Bincode(error) => write!(f, "bincode error: {error}"),
+            BundleError::Ngram(error) => write!(f, "ngram artifact error: {error}"),
             BundleError::Fst(error) => write!(f, "fst error: {error}"),
             BundleError::TomlDe(error) => write!(f, "toml parse error: {error}"),
             BundleError::TomlSer(error) => write!(f, "toml serialize error: {error}"),
@@ -355,9 +432,9 @@ impl From<io::Error> for BundleError {
     }
 }
 
-impl From<bincode::Error> for BundleError {
-    fn from(value: bincode::Error) -> Self {
-        BundleError::Bincode(value)
+impl From<NgramDecodeError> for BundleError {
+    fn from(value: NgramDecodeError) -> Self {
+        BundleError::Ngram(value)
     }
 }
 
@@ -543,7 +620,7 @@ fn synthetic_pack(
         model: synthetic_model(id, words),
         dict: synthetic_fst(words),
         metadata: PackMetadata {
-            format_version: 1,
+            format_version: PACK_FORMAT_VERSION,
             source_corpus: "test".to_owned(),
             source_dictionary: "test".to_owned(),
             build_id: "test".to_owned(),
@@ -673,6 +750,154 @@ fn resolve_pack_file(pack_dir: &Path, relative: &Path) -> Result<PathBuf, Bundle
     Ok(pack_dir.join(relative))
 }
 
+pub fn encode_compiled_language_data(
+    compiled: &CompiledLanguageData,
+) -> Result<Vec<u8>, NgramEncodeError> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(NGRAM_MAGIC);
+    push_string(&mut bytes, "language_tag", compiled.language_tag.as_str())?;
+    bytes.extend_from_slice(&compiled.bigram_floor.to_le_bytes());
+    bytes.extend_from_slice(&compiled.trigram_floor.to_le_bytes());
+    push_entries(&mut bytes, "bigrams", &compiled.bigrams)?;
+    push_entries(&mut bytes, "trigrams", &compiled.trigrams)?;
+    Ok(bytes)
+}
+
+fn push_entries(
+    bytes: &mut Vec<u8>,
+    field: &'static str,
+    entries: &[(String, f32)],
+) -> Result<(), NgramEncodeError> {
+    push_len(bytes, field, entries.len(), MAX_NGRAM_ENTRIES)?;
+    for (key, score) in entries {
+        push_string(bytes, field, key.as_str())?;
+        bytes.extend_from_slice(&score.to_le_bytes());
+    }
+    Ok(())
+}
+
+fn push_string(
+    bytes: &mut Vec<u8>,
+    field: &'static str,
+    value: &str,
+) -> Result<(), NgramEncodeError> {
+    push_len(bytes, field, value.len(), MAX_NGRAM_STRING_BYTES)?;
+    bytes.extend_from_slice(value.as_bytes());
+    Ok(())
+}
+
+fn push_len(
+    bytes: &mut Vec<u8>,
+    field: &'static str,
+    len: usize,
+    max: usize,
+) -> Result<(), NgramEncodeError> {
+    if len > max {
+        return Err(NgramEncodeError::LengthTooLarge { field, len, max });
+    }
+    bytes.extend_from_slice(&(len as u32).to_le_bytes());
+    Ok(())
+}
+
+fn decode_compiled_language_data(bytes: &[u8]) -> Result<CompiledLanguageData, NgramDecodeError> {
+    let mut reader = ArtifactReader::new(bytes);
+    if reader.read_exact(NGRAM_MAGIC.len())? != NGRAM_MAGIC {
+        return Err(NgramDecodeError::InvalidMagic);
+    }
+
+    let language_tag = reader.read_string("language_tag")?;
+    let bigram_floor = reader.read_f32()?;
+    let trigram_floor = reader.read_f32()?;
+    let bigrams = reader.read_entries("bigrams")?;
+    let trigrams = reader.read_entries("trigrams")?;
+    reader.finish()?;
+
+    Ok(CompiledLanguageData {
+        language_tag,
+        bigrams,
+        trigrams,
+        bigram_floor,
+        trigram_floor,
+    })
+}
+
+struct ArtifactReader<'a> {
+    bytes: &'a [u8],
+    position: usize,
+}
+
+impl<'a> ArtifactReader<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, position: 0 }
+    }
+
+    fn read_entries(
+        &mut self,
+        field: &'static str,
+    ) -> Result<Vec<(String, f32)>, NgramDecodeError> {
+        let len = self.read_len(field, MAX_NGRAM_ENTRIES)?;
+        let mut entries = Vec::with_capacity(len.min(4096));
+        for _ in 0..len {
+            entries.push((self.read_string(field)?, self.read_f32()?));
+        }
+        Ok(entries)
+    }
+
+    fn read_string(&mut self, field: &'static str) -> Result<String, NgramDecodeError> {
+        let len = self.read_len(field, MAX_NGRAM_STRING_BYTES)?;
+        let bytes = self.read_exact(len)?;
+        Ok(str::from_utf8(bytes)
+            .map_err(NgramDecodeError::InvalidUtf8)?
+            .to_owned())
+    }
+
+    fn read_len(&mut self, field: &'static str, max: usize) -> Result<usize, NgramDecodeError> {
+        let len = self.read_u32()? as usize;
+        if len > max {
+            return Err(NgramDecodeError::LengthTooLarge { field, len, max });
+        }
+        Ok(len)
+    }
+
+    fn read_u32(&mut self) -> Result<u32, NgramDecodeError> {
+        let bytes = self.read_exact(4)?;
+        Ok(u32::from_le_bytes(
+            bytes.try_into().expect("u32 byte length"),
+        ))
+    }
+
+    fn read_f32(&mut self) -> Result<f32, NgramDecodeError> {
+        let bytes = self.read_exact(4)?;
+        Ok(f32::from_le_bytes(
+            bytes.try_into().expect("f32 byte length"),
+        ))
+    }
+
+    fn read_exact(&mut self, len: usize) -> Result<&'a [u8], NgramDecodeError> {
+        let remaining = self.bytes.len().saturating_sub(self.position);
+        if remaining < len {
+            return Err(NgramDecodeError::UnexpectedEof {
+                needed: len,
+                remaining,
+            });
+        }
+
+        let start = self.position;
+        self.position += len;
+        Ok(&self.bytes[start..self.position])
+    }
+
+    fn finish(self) -> Result<(), NgramDecodeError> {
+        if self.position != self.bytes.len() {
+            return Err(NgramDecodeError::TrailingBytes {
+                read: self.position,
+                total: self.bytes.len(),
+            });
+        }
+        Ok(())
+    }
+}
+
 /// Outcome of a dictionary lookup against a single language's FST.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DictLookup {
@@ -756,7 +981,7 @@ mod tests {
 
     use super::{
         CompiledLanguageData, LanguagePack, LanguagePackManifest, PACK_DICT_FILE,
-        PACK_FORMAT_VERSION, PACK_MANIFEST_FILE, PACK_NGRAMS_FILE,
+        PACK_FORMAT_VERSION, PACK_MANIFEST_FILE, PACK_NGRAMS_FILE, encode_compiled_language_data,
     };
 
     #[test]
@@ -765,7 +990,7 @@ mod tests {
         fs::write(
             dir.join(PACK_MANIFEST_FILE),
             r#"
-format_version = 1
+format_version = 2
 id = "xx"
 display_name = "Bad"
 script = "Latin"
@@ -805,11 +1030,11 @@ dict = "dict.fst"
     fn pack_loader_rejects_malformed_ngram_bytes() {
         let dir = temp_pack_dir("bad-ngrams");
         write_manifest(&dir, "xx");
-        fs::write(dir.join(PACK_NGRAMS_FILE), b"not bincode").unwrap();
+        fs::write(dir.join(PACK_NGRAMS_FILE), b"not a typeflow ngram artifact").unwrap();
         fs::write(dir.join(PACK_DICT_FILE), valid_fst_bytes()).unwrap();
 
         let error = LanguagePack::from_pack_dir(&dir).err().unwrap();
-        assert!(error.to_string().contains("bincode"));
+        assert!(error.to_string().contains("ngram artifact"));
     }
 
     #[test]
@@ -853,7 +1078,7 @@ dict = "{PACK_DICT_FILE}"
     }
 
     fn valid_ngram_bytes(language_tag: &str) -> Vec<u8> {
-        bincode::serialize(&CompiledLanguageData {
+        encode_compiled_language_data(&CompiledLanguageData {
             language_tag: language_tag.to_owned(),
             bigrams: vec![("ab".to_owned(), -0.1)],
             trigrams: vec![("abc".to_owned(), -0.1)],

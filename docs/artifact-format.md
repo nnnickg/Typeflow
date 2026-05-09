@@ -1,6 +1,6 @@
 # Artifact And Pack Compatibility
 
-This document defines what version `1` means for embedded artifacts and
+This document defines what version `2` means for embedded artifacts and
 external secondary-language packs.
 
 ## Embedded Artifacts
@@ -14,7 +14,7 @@ uk.ngrams.bin
 uk.dict.fst
 ```
 
-`*.ngrams.bin` is `bincode`-serialized `CompiledLanguageData`:
+`*.ngrams.bin` is a Typeflow n-gram artifact containing `CompiledLanguageData`:
 
 ```rust
 pub struct CompiledLanguageData {
@@ -34,7 +34,7 @@ compiled into the binary:
 
 - English must deserialize with `language_tag = "en"`.
 - Embedded secondary must deserialize with `language_tag = "uk"`.
-- Any bincode/FST deserialization failure is startup failure.
+- Any n-gram/FST parsing failure is startup failure.
 
 ## External Pack Layout
 
@@ -50,7 +50,7 @@ dict.fst
 `pack.toml` contains:
 
 ```toml
-format_version = 1
+format_version = 2
 id = "secondary"
 display_name = "Secondary"
 script = "Cyrillic"
@@ -66,15 +66,15 @@ shifted = "..."
 The manifest may also contain `source_corpus`, `source_dictionary`, and
 `build_id` metadata.
 
-## Format Version 1
+## Format Version 2
 
-`PACK_FORMAT_VERSION = 1` means:
+`PACK_FORMAT_VERSION = 2` means:
 
 - `pack.toml` uses the fields above.
 - `ngrams` and `dict` paths are relative paths contained inside the pack
   directory.
-- `ngrams.bin` is `CompiledLanguageData` serialized by the current `bincode`
-  configuration.
+- `ngrams.bin` starts with `TFNG0002`, followed by little-endian numeric fields
+  and length-prefixed UTF-8 n-gram strings.
 - `dict.fst` is an `fst::Map<Vec<u8>>`.
 - The n-gram artifact's `language_tag` must exactly match manifest `id`.
 - `id = "en"` is invalid for secondary packs.

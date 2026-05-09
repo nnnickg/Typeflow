@@ -1,7 +1,7 @@
-# Handoff
+# Project Status
 
-Current working state. If you're picking this up cold, read this end-to-end and
-you'll have everything.
+Current working state. Read this for implementation status, known limitations,
+and the areas that still need validation before a stable release.
 
 ## What's done
 
@@ -164,11 +164,11 @@ denied, release workspace tests, benchmark compilation, release CLI/FFI build,
 Swift staticlib smoke, signed IMK bundle build, and release CLI smoke against
 embedded Ukrainian on macOS.
 
-## What's NOT done
+## Not Done Yet
 
 ### Broader macOS compatibility pass
 
-The bundle works locally as a single visible Typeflow mode that emits both Latin
+The bundle works as a single visible Typeflow mode that emits both Latin
 and Cyrillic. It still needs a broader app matrix before calling the macOS host
 stable: TextEdit, Safari/Chrome text fields, Notes, Mail, Slack, VS Code/Zed
 when not excluded, and password fields. Keep ABC installed as the system
@@ -207,8 +207,8 @@ the pending manual convert and stays a normal app shortcut/input sequence.
 ## Outstanding limitations to be aware of
 
 1. **Once flipped, layout sticks.** When the engine switches to secondary
-   mid-token, it stays there for the rest of the token. Probably fine for
-   real use; flag if calibration finds nasty cases.
+   mid-token, it stays there for the rest of the token. Keep watching this in
+   calibration because a bad mid-token flip is expensive for trust.
 2. **Dictionary noise.** OPUS / hermitdave secondary lists may contain Latin proper
    names and English loanwords. Words like "amazon" appear in BOTH dictionaries
    with non-trivial counts, weakening the dict signal on certain tokens.
@@ -220,7 +220,7 @@ the pending manual convert and stays a normal app shortcut/input sequence.
    should avoid.
 4. **Sample asymmetry.** EN n-grams come from ~200 MB of OPUS, secondary packs
    may use different corpus sizes. The smoothed floors and overall scale differ between
-   languages. Probably fine for PoC; revisit if calibration finds bias.
+   languages. Revisit if calibration finds bias.
 
 ## Where to look first
 
@@ -267,7 +267,7 @@ If you're tuning thresholds:
 - `~/.config/typeflow/config.toml` — where to do it.
 - `typeflow config show` — verify what the engine is actually loading.
 
-## Open questions for the next agent / next session
+## Open Questions
 
 1. **Embedding strategy.** Should the IMK bundle ship `include_bytes!`-embedded
    data (~10 MB binary) or load from `Bundle.main.resourcePath` as files? File

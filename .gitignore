@@ -3,11 +3,18 @@ target/
 /.vscode/
 *.swp
 *.DS_Store
+*.log
+.env
+.env.*
+!.env.example
 
 # macOS/Xcode build output
 /DerivedData/
 /build/
 /macos/build/
+*.dSYM/
+*.profraw
+*.profdata
 *.xcuserstate
 *.xcworkspace/xcuserdata/
 *.xcodeproj/xcuserdata/

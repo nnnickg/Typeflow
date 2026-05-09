@@ -9,11 +9,11 @@ use std::time::Instant;
 use anyhow::{Context, Result, bail};
 use flate2::read::GzDecoder;
 use fst::MapBuilder;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use typeflow_core::KeyboardMap;
 use typeflow_core::data::{
     CompiledLanguageData, KeyboardManifest, LanguagePack, LanguagePackManifest, PACK_DICT_FILE,
-    PACK_FORMAT_VERSION, PACK_NGRAMS_FILE,
+    PACK_FORMAT_VERSION, PACK_NGRAMS_FILE, encode_compiled_language_data,
 };
 
 const EN_OPUS_URL: &str = "https://object.pouta.csc.fi/OPUS-OpenSubtitles/v2018/mono/en.txt.gz";
@@ -218,7 +218,7 @@ fn cmd_build_pack(args: &[String]) -> Result<()> {
     let (bigrams, trigrams) = count_ngrams(&corpus_path, &normalizer, plaintext_budget)?;
     let compiled = compile_ngrams(spec.id.as_str(), bigrams, trigrams)?;
     let ngram_path = args.out_dir.join(PACK_NGRAMS_FILE);
-    write_bincode(&ngram_path, &compiled)?;
+    write_ngram_artifact(&ngram_path, &compiled)?;
     eprintln!(
         "   wrote {} ({} bigrams, {} trigrams)",
         ngram_path.display(),
@@ -437,7 +437,7 @@ fn build_language(
     let (bigrams, trigrams) = count_ngrams(&opus_cache, &normalizer, plaintext_budget)?;
     let compiled = compile_ngrams(lang.tag(), bigrams, trigrams)?;
     let ngram_path = data_dir.join(format!("{}.ngrams.bin", lang.tag()));
-    write_bincode(&ngram_path, &compiled)?;
+    write_ngram_artifact(&ngram_path, &compiled)?;
     eprintln!(
         "   wrote {} ({} bigrams, {} trigrams)",
         ngram_path.display(),
@@ -477,14 +477,16 @@ fn download_with_cache(url: &str, dest: &Path) -> Result<()> {
 
     eprintln!("   GET {}", url);
     let started = Instant::now();
-    let response = ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(30 * 60))
+    let agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(30 * 60)))
         .build()
+        .new_agent();
+    let mut response = agent
         .get(url)
         .call()
         .with_context(|| format!("GET {url}"))?;
 
-    let mut reader = response.into_reader();
+    let mut reader = response.body_mut().as_reader();
     let temp = dest.with_extension("partial");
     let mut writer = io::BufWriter::new(File::create(&temp)?);
     let written = io::copy(&mut reader, &mut writer)?;
@@ -627,8 +629,8 @@ fn compile_ngrams(
     })
 }
 
-fn write_bincode<T: Serialize>(path: &Path, value: &T) -> Result<()> {
-    let bytes = bincode::serialize(value)?;
+fn write_ngram_artifact(path: &Path, value: &CompiledLanguageData) -> Result<()> {
+    let bytes = encode_compiled_language_data(value)?;
     fs::write(path, bytes)?;
     Ok(())
 }

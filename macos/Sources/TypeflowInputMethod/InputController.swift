@@ -13,7 +13,6 @@ private let logger = Logger(
 final class TypeflowInputController: IMKInputController {
     private let hostConfig: TypeflowHostConfig
     private let engine: TypeflowEngine?
-    private var loggedFirstKeyDown = false
     private var hostContextFlags: UInt32 = 0
     private var pendingOptionManualConvert = false
     private var manualConvertCancelled = false
@@ -46,7 +45,7 @@ final class TypeflowInputController: IMKInputController {
     }
 
     override func activateServer(_ sender: Any!) {
-        logger.notice("activated input controller")
+        logger.debug("activated input controller")
         _ = updateHostContext(client: sender)
         resetTrackedHostState()
         engine?.resetToken()
@@ -103,12 +102,8 @@ final class TypeflowInputController: IMKInputController {
         if updateHostContext(client: sender) {
             return false
         }
-        if !loggedFirstKeyDown {
-            loggedFirstKeyDown = true
-            logger.notice("received first keyDown event")
-        }
-        logger.notice(
-            "keyDown origin=\(origin, privacy: .public) keyCode=\(keyCode, privacy: .public) hasText=\(characters?.isEmpty == false, privacy: .public) client=\(String(describing: type(of: sender)), privacy: .public)"
+        logger.debug(
+            "keyDown origin=\(origin, privacy: .public) keyCode=\(keyCode, privacy: .private) hasText=\(characters?.isEmpty == false, privacy: .private) client=\(String(describing: type(of: sender)), privacy: .private)"
         )
         guard let client = sender as? IMKTextInput else {
             _ = try? engine.processHostBypass(modifiers: ffiModifiers(from: modifierFlags))
@@ -164,8 +159,8 @@ final class TypeflowInputController: IMKInputController {
         }
 
         let optionDown = event.modifierFlags.contains(.option)
-        logger.notice(
-            "manualConvert optionEvent keyCode=\(event.keyCode, privacy: .public) down=\(optionDown, privacy: .public) client=\(String(describing: type(of: sender)), privacy: .public)"
+        logger.debug(
+            "manualConvert optionEvent keyCode=\(event.keyCode, privacy: .private) down=\(optionDown, privacy: .private) client=\(String(describing: type(of: sender)), privacy: .private)"
         )
 
         if updateHostContext(client: sender) {
@@ -197,7 +192,7 @@ final class TypeflowInputController: IMKInputController {
 
         do {
             _ = apply(try engine.forceSwitchToken(), client: client)
-            logger.notice("manualConvert action=forceSwitch")
+            logger.debug("manualConvert action=forceSwitch")
             return true
         } catch {
             engine.resetToken()
@@ -208,14 +203,14 @@ final class TypeflowInputController: IMKInputController {
     private func apply(_ action: TypeflowAction, client: IMKTextInput) -> Bool {
         switch action {
         case .keep:
-            logger.notice("action=keep")
+            logger.debug("action=keep")
             return false
         case .resetToken:
-            logger.notice("action=resetToken")
+            logger.debug("action=resetToken")
             expectedSelectedLocation = nil
             return false
         case let .commit(character):
-            logger.notice("action=commit")
+            logger.debug("action=commit")
             let selected = client.selectedRange()
             client.insertText(String(character), replacementRange: insertionRange)
             if selected.location != NSNotFound, selected.length == 0 {
@@ -226,12 +221,12 @@ final class TypeflowInputController: IMKInputController {
             return true
         case let .replaceToken(oldLength, replacement, _):
             let selected = client.selectedRange()
-            logger.notice(
-                "action=replaceToken oldLength=\(oldLength, privacy: .public) replacementLength=\(replacement.count, privacy: .public) selected={\(selected.location, privacy: .public),\(selected.length, privacy: .public)}"
+            logger.debug(
+                "action=replaceToken oldLength=\(oldLength, privacy: .private) replacementLength=\(replacement.count, privacy: .private) selected={\(selected.location, privacy: .private),\(selected.length, privacy: .private)}"
             )
             guard selected.location != NSNotFound, selected.length == 0, selected.location >= oldLength else {
                 engine?.resetToken()
-                logger.notice("replaceToken rejected selected range")
+                logger.debug("replaceToken rejected selected range")
                 return false
             }
             let range = NSRange(location: selected.location - oldLength, length: oldLength)
@@ -260,8 +255,8 @@ final class TypeflowInputController: IMKInputController {
         }
 
         if flags != hostContextFlags {
-            logger.notice(
-                "hostContext secure=\(secureInput, privacy: .public) appExcluded=\(appExcluded, privacy: .public) bundleID=\(bundleID ?? "unknown", privacy: .public)"
+            logger.debug(
+                "hostContext secure=\(secureInput, privacy: .private) appExcluded=\(appExcluded, privacy: .private) bundleID=\(bundleID ?? "unknown", privacy: .private)"
             )
             hostContextFlags = flags
         }
@@ -295,14 +290,14 @@ final class TypeflowInputController: IMKInputController {
         guard selected.location != NSNotFound, selected.length == 0 else {
             engine?.resetToken()
             expectedSelectedLocation = nil
-            logger.notice("host selection is not a collapsed caret; bypassing")
+            logger.debug("host selection is not a collapsed caret; bypassing")
             return true
         }
 
         if let expectedSelectedLocation, selected.location != expectedSelectedLocation {
             engine?.resetToken()
-            logger.notice(
-                "host caret moved expected=\(expectedSelectedLocation, privacy: .public) actual=\(selected.location, privacy: .public); token reset"
+            logger.debug(
+                "host caret moved expected=\(expectedSelectedLocation, privacy: .private) actual=\(selected.location, privacy: .private); token reset"
             )
         }
         self.expectedSelectedLocation = selected.location
