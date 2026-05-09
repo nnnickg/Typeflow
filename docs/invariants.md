@@ -27,8 +27,11 @@ accident.
   reverse-maps through the loaded keyboard maps and falls back to literals.
 - Shift is part of `LetterEvent`, not a separate token. Shifted and unshifted
   letters share the same physical key with different `shift`.
-- Ctrl, Option, Command, or Function modified events are host bypass events.
-  The engine must not consume or transform shortcuts.
+- Ctrl, Command, and Option-modified key events are host bypass events. The
+  engine must not consume or transform shortcuts.
+- A host may bind standalone Option press/release to `force_switch_token()` for
+  manual conversion. That modifier transition is host behavior; it is not a
+  letter event and is not encoded as a `TfEvent`.
 
 ## Token State
 

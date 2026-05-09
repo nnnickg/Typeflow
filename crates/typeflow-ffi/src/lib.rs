@@ -14,7 +14,6 @@ pub const TF_MOD_SHIFT: u8 = 0x01;
 pub const TF_MOD_CONTROL: u8 = 0x02;
 pub const TF_MOD_OPTION: u8 = 0x04;
 pub const TF_MOD_COMMAND: u8 = 0x08;
-pub const TF_MOD_FUNCTION: u8 = 0x10;
 
 pub const TF_CONTEXT_SECURE_INPUT: u32 = 0x01;
 pub const TF_CONTEXT_APP_EXCLUDED: u32 = 0x02;
@@ -112,7 +111,7 @@ fn layout_to_u8(layout: Layout) -> u8 {
 }
 
 fn decode_event(event: TfEvent) -> Option<InputEvent> {
-    if event.modifiers & (TF_MOD_CONTROL | TF_MOD_OPTION | TF_MOD_COMMAND | TF_MOD_FUNCTION) != 0 {
+    if event.modifiers & (TF_MOD_CONTROL | TF_MOD_OPTION | TF_MOD_COMMAND) != 0 {
         return Some(InputEvent::HostBypass);
     }
 

@@ -2,10 +2,10 @@ import Carbon
 import Foundation
 
 let typeflowInputMethodID = "io.github.nnnickg.typeflow.inputmethod.Typeflow"
-let typeflowInputModeID = "Typeflow"
-let typeflowModeSourceID = "io.github.nnnickg.typeflow.inputmethod.Typeflow.Ukrainian"
 let hitoolboxDomain = "com.apple.HIToolbox" as CFString
 let enabledInputSourcesKey = "AppleEnabledInputSources" as CFString
+let selectedInputSourcesKey = "AppleSelectedInputSources" as CFString
+let inputSourceUpdateTimeKey = "AppleInputSourceUpdateTime" as CFString
 
 func stringProperty(_ source: TISInputSource, _ key: CFString) -> String? {
     TISGetInputSourceProperty(source, key).map {
@@ -33,18 +33,31 @@ func ensureHIToolboxEnabledRecords() {
 
     entries.append([
         "Bundle ID": typeflowInputMethodID,
-        "Input Mode": typeflowInputModeID,
-        "InputSourceKind": "Input Mode",
-    ])
-
-    entries.append([
-        "Bundle ID": typeflowInputMethodID,
         "InputSourceKind": "Keyboard Input Method",
     ])
 
     CFPreferencesSetAppValue(
         enabledInputSourcesKey,
         entries as CFArray,
+        hitoolboxDomain
+    )
+
+    let selectedEntries = (CFPreferencesCopyAppValue(
+        selectedInputSourcesKey,
+        hitoolboxDomain
+    ) as? [[String: Any]] ?? []).filter { entry in
+        entry["Bundle ID"] as? String != typeflowInputMethodID
+    }
+
+    CFPreferencesSetAppValue(
+        selectedInputSourcesKey,
+        selectedEntries as CFArray,
+        hitoolboxDomain
+    )
+
+    CFPreferencesSetAppValue(
+        inputSourceUpdateTimeKey,
+        Date() as CFDate,
         hitoolboxDomain
     )
 
@@ -79,19 +92,15 @@ guard inputMethodEnableStatus == noErr else {
     exit(1)
 }
 
-guard let mode = findInputSource(id: typeflowModeSourceID) else {
-    FileHandle.standardError.write(Data("registered app, but input mode was not visible to TIS: \(typeflowModeSourceID)\n".utf8))
-    exit(1)
-}
-
-let modeEnableStatus = TISEnableInputSource(mode)
-guard modeEnableStatus == noErr else {
-    FileHandle.standardError.write(Data("TISEnableInputSource failed for \(typeflowModeSourceID): \(modeEnableStatus)\n".utf8))
-    exit(1)
-}
-
 print("enabled input method: \(typeflowInputMethodID)")
-print("enabled input source: \(typeflowModeSourceID)")
 
 ensureHIToolboxEnabledRecords()
 print("updated HIToolbox enabled input sources")
+
+let selectStatus = TISSelectInputSource(inputMethod)
+guard selectStatus == noErr else {
+    FileHandle.standardError.write(Data("TISSelectInputSource failed for \(typeflowInputMethodID): \(selectStatus)\n".utf8))
+    exit(1)
+}
+
+print("selected input source: \(typeflowInputMethodID)")

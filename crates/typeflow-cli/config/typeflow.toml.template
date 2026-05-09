@@ -91,24 +91,19 @@ secondary = "uk"
 [apps]
 
 # Bundle IDs where the engine should stay silent.
-# (RESERVED: parsed but not enforced — the CLI ignores apps entirely; only the
-# eventual macOS IMK bundle will check this list.)
+# The CLI ignores apps because it has no foreground app context. The macOS IMK
+# bundle enforces this list before sending key events to the engine.
 exclude_bundle_ids = [
     # "com.googlecode.iterm2",
+    # "dev.zed.Zed",
     # "com.apple.Terminal",
     # "com.microsoft.VSCode",
     # "com.jetbrains.intellij",
 ]
 
-
-[hotkey]
-
-# Key to manually convert the last word to the opposite layout.
-# Punto-Switcher style escape hatch when the engine guesses wrong.
-# The Rust engine/FFI support forced conversion; the macOS IMK bundle still needs
-# to bind this hotkey.
-# manual_convert = "F19"
-
+# Manual conversion is intentionally not configurable here. The macOS host
+# hardcodes standalone Option press/release. Option+another key passes through
+# as normal app input.
 
 [data]
 

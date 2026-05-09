@@ -27,6 +27,7 @@ APP_BUNDLE := $(BUILD_DIR)/$(APP_NAME).app
 APP_EXECUTABLE := $(APP_BUNDLE)/Contents/MacOS/$(APP_NAME)
 APP_INFO_PLIST := Resources/Info.plist
 APP_PKGINFO := Resources/PkgInfo
+APP_INFO_PLIST_STRINGS := Resources/en.lproj/InfoPlist.strings
 ICON_SOURCE := Resources/Typeflow.png
 ICON_TIFF_DIR := $(BUILD_DIR)/$(APP_NAME)-icon-tiffs
 ICON_MULTI_TIFF := $(BUILD_DIR)/$(APP_NAME)-icons.tiff
@@ -75,22 +76,24 @@ $(APP_ICON_ICNS): $(ICON_SOURCE)
 	tiffutil -cat $(ICON_TIFF_DIR)/icon_16.tiff $(ICON_TIFF_DIR)/icon_32.tiff $(ICON_TIFF_DIR)/icon_48.tiff $(ICON_TIFF_DIR)/icon_128.tiff $(ICON_TIFF_DIR)/icon_256.tiff $(ICON_TIFF_DIR)/icon_512.tiff $(ICON_TIFF_DIR)/icon_1024.tiff -out $(ICON_MULTI_TIFF) >/dev/null 2>/dev/null
 	tiff2icns $(ICON_MULTI_TIFF) $(APP_ICON_ICNS)
 
-$(APP_EXECUTABLE): $(INPUT_METHOD_SOURCES) $(APP_INFO_PLIST) $(APP_PKGINFO) $(APP_ICONS) TypeflowFFI/include/module.modulemap TypeflowFFI/include/typeflow_shim.h rust-staticlib
-	mkdir -p $(APP_BUNDLE)/Contents/MacOS $(APP_BUNDLE)/Contents/Resources $(MODULE_CACHE_DIR)
+$(APP_EXECUTABLE): $(INPUT_METHOD_SOURCES) $(APP_INFO_PLIST) $(APP_INFO_PLIST_STRINGS) $(APP_PKGINFO) $(APP_ICONS) TypeflowFFI/include/module.modulemap TypeflowFFI/include/typeflow_shim.h rust-staticlib
+	mkdir -p $(APP_BUNDLE)/Contents/MacOS $(APP_BUNDLE)/Contents/Resources/en.lproj $(MODULE_CACHE_DIR)
 	cp $(APP_INFO_PLIST) $(APP_BUNDLE)/Contents/Info.plist
+	cp $(APP_INFO_PLIST_STRINGS) $(APP_BUNDLE)/Contents/Resources/en.lproj/InfoPlist.strings
 	cp $(APP_PKGINFO) $(APP_BUNDLE)/Contents/PkgInfo
 	plutil -lint $(APP_BUNDLE)/Contents/Info.plist
 	$(SWIFTC) $(SWIFT_COMMON_FLAGS) $(INPUT_METHOD_SOURCES) $(RUST_LINK_FLAGS) $(IMK_FRAMEWORK_FLAGS) -o $(APP_EXECUTABLE)
 
 bundle: $(APP_EXECUTABLE) $(REGISTER_BIN)
 	plutil -p $(APP_BUNDLE)/Contents/Info.plist >/dev/null
-	$(CODESIGN) --force --sign $(CODESIGN_IDENTITY) $(APP_BUNDLE)
+	$(CODESIGN) --force --sign "$(CODESIGN_IDENTITY)" $(APP_BUNDLE)
 	$(CODESIGN) --verify --strict --verbose=2 $(APP_BUNDLE)
 	file $(APP_EXECUTABLE)
 
 install-user: bundle $(REGISTER_BIN)
 	mkdir -p "$(INPUT_METHODS_DIR)"
 	ditto "$(APP_BUNDLE)" "$(INPUT_METHODS_DIR)/$(APP_NAME).app"
+	xattr -cr "$(INPUT_METHODS_DIR)/$(APP_NAME).app" || true
 	$(REGISTER_BIN) "$(INPUT_METHODS_DIR)/$(APP_NAME).app"
 
 clean:

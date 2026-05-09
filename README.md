@@ -7,10 +7,12 @@ and retypes).
 
 ## Status
 
-Pre-alpha. The Rust engine works end-to-end on real data. `macos/` has a Swift
-staticlib smoke target and a minimal signed IMK app bundle build. The bundle is
-not manually host-tested in TextEdit yet. See [`docs/handoff.md`](docs/handoff.md)
-for the complete state-of-the-project snapshot.
+Pre-alpha, but usable locally. The Rust engine works end-to-end on real data,
+and `macos/` builds, signs, installs, registers, and runs a working
+InputMethodKit app. Manual host testing has verified normal typing, external
+pack loading, app exclusions, and standalone Option manual conversion in real
+macOS text fields. See [`docs/handoff.md`](docs/handoff.md) for the complete
+state-of-the-project snapshot.
 
 ## Workspace
 
@@ -19,7 +21,7 @@ crates/
 ├── typeflow-core/   pure Rust engine; scoring, decision, data types
 ├── typeflow-data/   xtask: downloads OpenSubtitles + hermitdave word lists, builds n-grams + FSTs
 ├── typeflow-cli/    user-facing CLI: type / stream / repl / predict / pack / config
-└── typeflow-ffi/    C ABI bridge for the future Swift/IMK bundle
+└── typeflow-ffi/    C ABI bridge for the Swift/IMK bundle
 docs/
 ├── architecture.md  component layout + data flow
 ├── artifact-format.md  pack/data compatibility policy
@@ -111,6 +113,9 @@ make -C macos bundle
 # Install, register, and enable the input method for the current user.
 make -C macos install-user
 
+# Restart a running copy after reinstall so macOS loads the new binary.
+pkill -x Typeflow
+
 # External-pack workflow. The binary itself stays standalone.
 cargo run --release -p typeflow-data -- build-pack ./secondary.toml --out /tmp/secondary.typeflow-pack
 typeflow pack install /tmp/secondary.typeflow-pack
@@ -138,6 +143,20 @@ typeflow --config /tmp/x.toml type ghsdbn
 ```
 
 See [`docs/engine.md`](docs/engine.md) for what each config field actually controls.
+The macOS input method reads the same config path for engine tuning, active
+secondary language packs, and excluded app bundle IDs. Manual conversion is not
+configurable in TOML: the macOS host hardcodes standalone Option press/release.
+Option+another key is treated as normal app input.
+
+Example app exclusion config:
+
+```toml
+[apps]
+exclude_bundle_ids = [
+    "com.googlecode.iterm2",
+    "dev.zed.Zed",
+]
+```
 
 ## Workspace tests
 

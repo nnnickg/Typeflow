@@ -3,6 +3,7 @@ import TypeflowFFI
 
 public enum TypeflowError: Error, CustomStringConvertible {
     case engineCreationFailed
+    case engineCreationFailedFromConfig(String)
     case invalidCommitCodepoint(UInt32)
     case invalidReplacementUTF8
     case unknownActionTag(UInt8)
@@ -12,6 +13,8 @@ public enum TypeflowError: Error, CustomStringConvertible {
         switch self {
         case .engineCreationFailed:
             return "typeflow_engine_new_embedded returned null"
+        case let .engineCreationFailedFromConfig(source):
+            return "Typeflow engine constructor returned null for \(source)"
         case let .invalidCommitCodepoint(value):
             return "invalid commit codepoint: \(value)"
         case .invalidReplacementUTF8:
@@ -38,12 +41,40 @@ public enum TypeflowAction: Equatable {
 
 public final class TypeflowEngine {
     private let raw: OpaquePointer
+    public let sourceDescription: String
 
     public init() throws {
         guard let engine = typeflow_engine_new_embedded() else {
             throw TypeflowError.engineCreationFailed
         }
         raw = engine
+        sourceDescription = "embedded"
+    }
+
+    public init(hostConfig: TypeflowHostConfig) throws {
+        let config = hostConfig.engine
+        let sourceDescription = hostConfig.engineSourceDescription
+        let engine: OpaquePointer?
+
+        if let dataDirectory = hostConfig.dataDirectory, !dataDirectory.isEmpty {
+            engine = dataDirectory.withCString {
+                typeflow_engine_new_from_data_dir_with_config($0, config)
+            }
+        } else if hostConfig.normalizedSecondaryLanguage == "uk" {
+            engine = typeflow_engine_new_embedded_with_config(config)
+        } else if let packPath = hostConfig.selectedPackPath {
+            engine = packPath.withCString {
+                typeflow_engine_new_from_pack_dir_with_config($0, config)
+            }
+        } else {
+            engine = nil
+        }
+
+        guard let engine else {
+            throw TypeflowError.engineCreationFailedFromConfig(sourceDescription)
+        }
+        raw = engine
+        self.sourceDescription = sourceDescription
     }
 
     deinit {

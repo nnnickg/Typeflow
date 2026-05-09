@@ -60,8 +60,8 @@ staticlib smoke: ghsdbn -> привіт
 
 ## macOS IMK Bundle Build
 
-This verifies the minimal input-method app bundle compiles, has a valid plist
-with a visible Ukrainian mode, has a generated icon resource, compiles the TIS
+This verifies the input-method app bundle compiles, has a valid plist
+with a visible Typeflow mode, has a generated icon resource, compiles the TIS
 registration/enabling helper, and is ad-hoc signed:
 
 ```sh
@@ -83,6 +83,7 @@ To install and register for the current user:
 
 ```sh
 make -C macos install-user
+pkill -x Typeflow
 ```
 
 Expected install helper output includes:
@@ -90,8 +91,39 @@ Expected install helper output includes:
 ```text
 registered input source: /Users/<user>/Library/Input Methods/Typeflow.app
 enabled input method: io.github.nnnickg.typeflow.inputmethod.Typeflow
-enabled input source: io.github.nnnickg.typeflow.inputmethod.Typeflow.Ukrainian
 updated HIToolbox enabled input sources
+selected input source: io.github.nnnickg.typeflow.inputmethod.Typeflow
+```
+
+`pkill -x Typeflow` is only to force macOS to restart a running copy after the
+new bundle is copied. Text Input Services starts it again when the Typeflow input
+source is selected or needed.
+
+## macOS IMK Runtime Smoke
+
+In a non-excluded app/text field with Typeflow selected:
+
+1. With default embedded Ukrainian config, type `ghsdbn`; expected visible text:
+   `привіт`.
+2. Type `http`, then tap standalone Option; expected replacement under the
+   embedded Ukrainian layout: `реез`.
+3. Install any external secondary pack, set `language.secondary` to that pack
+   id, restart Typeflow, and verify normal replacement plus standalone Option
+   manual conversion in a non-excluded app.
+4. Press Option with another key; it should pass through as normal app input and
+   must not trigger manual conversion.
+5. Add an app bundle id under `[apps].exclude_bundle_ids`, restart Typeflow, and
+   confirm neither automatic replacement nor standalone Option conversion fires
+   in that app.
+
+Known bundle IDs useful for local testing:
+
+```toml
+[apps]
+exclude_bundle_ids = [
+    "com.googlecode.iterm2",
+    "dev.zed.Zed",
+]
 ```
 
 ## Release Tests
