@@ -1,4 +1,4 @@
-/target/
+target/
 /.idea/
 /.vscode/
 *.swp
@@ -7,6 +7,7 @@
 # macOS/Xcode build output
 /DerivedData/
 /build/
+/macos/build/
 *.xcuserstate
 *.xcworkspace/xcuserdata/
 *.xcodeproj/xcuserdata/

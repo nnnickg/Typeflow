@@ -96,9 +96,12 @@ impl TfAction {
                 self.replace_text_len = bytes.len();
                 self.replace_layout = layout_to_u8(layout);
                 self.replace_text[..bytes.len()].copy_from_slice(bytes);
-                // Zero only the tail beyond the payload; the Swift side reads
-                // exactly `replace_text_len` bytes so this is defensive only.
-                self.replace_text[bytes.len()..].fill(0);
+                // The ABI is length-delimited; this sentinel is only for
+                // defensive debugging by C callers that accidentally print the
+                // buffer as a string.
+                if bytes.len() < TF_REPLACE_BUF_LEN {
+                    self.replace_text[bytes.len()] = 0;
+                }
             }
             Action::ResetToken => {
                 self.tag = TF_ACTION_RESET;
