@@ -10,42 +10,49 @@ public struct TypeflowHostConfig {
     public var sourcePath: String?
 
     public static func load() -> Self {
-        var config = TypeflowHostConfig.defaults()
-        guard let path = explicitConfigPath() ?? defaultConfigPath(),
+        load(environment: ProcessInfo.processInfo.environment)
+    }
+
+    static func load(environment: [String: String]) -> Self {
+        var config = TypeflowHostConfig.defaults(environment: environment)
+        guard let path = explicitConfigPath(environment: environment) ?? defaultConfigPath(environment: environment),
               FileManager.default.fileExists(atPath: path.path)
         else {
+            config.applyEnvironmentOverrides(environment)
             return config
         }
 
         config.sourcePath = path.path
         guard let text = try? String(contentsOf: path, encoding: .utf8) else {
+            config.applyEnvironmentOverrides(environment)
             return config
         }
 
         config.applyTomlSubset(text)
+        config.applyEnvironmentOverrides(environment)
         return config
     }
 
-    private static func defaults() -> Self {
+    private static func defaults(environment: [String: String]) -> Self {
         TypeflowHostConfig(
             engine: TypeflowEngine.defaultConfig(),
             secondaryLanguage: "uk",
-            packDirectory: ProcessInfo.processInfo.environment["TYPEFLOW_PACK_DIR"] ?? defaultPackDirectory(),
-            dataDirectory: ProcessInfo.processInfo.environment["TYPEFLOW_DATA_DIR"],
+            packDirectory: defaultPackDirectory(environment: environment),
+            dataDirectory: nil,
             excludedBundleIDs: [],
             sourcePath: nil
         )
     }
 
-    private static func explicitConfigPath() -> URL? {
-        guard let path = ProcessInfo.processInfo.environment["TYPEFLOW_CONFIG"], !path.isEmpty else {
+    private static func explicitConfigPath(environment: [String: String]) -> URL? {
+        guard let path = environment["TYPEFLOW_CONFIG"], !path.isEmpty else {
             return nil
         }
         return URL(fileURLWithPath: NSString(string: path).expandingTildeInPath)
     }
 
-    private static func defaultConfigPath() -> URL? {
-        guard let home = ProcessInfo.processInfo.environment["HOME"], !home.isEmpty else {
+    private static func defaultConfigPath(environment: [String: String]) -> URL? {
+        guard let home = environment["HOME"], !home.isEmpty else {
             return nil
         }
         return URL(fileURLWithPath: home)
@@ -54,8 +61,8 @@ public struct TypeflowHostConfig {
             .appendingPathComponent("config.toml")
     }
 
-    private static func defaultPackDirectory() -> String? {
-        guard let home = ProcessInfo.processInfo.environment["HOME"], !home.isEmpty else {
+    private static func defaultPackDirectory(environment: [String: String]) -> String? {
+        guard let home = environment["HOME"], !home.isEmpty else {
             return nil
         }
         return URL(fileURLWithPath: home)
@@ -64,6 +71,15 @@ public struct TypeflowHostConfig {
             .appendingPathComponent("Typeflow")
             .appendingPathComponent("packs")
             .path
+    }
+
+    private mutating func applyEnvironmentOverrides(_ environment: [String: String]) {
+        if let packDirectory = environment["TYPEFLOW_PACK_DIR"], !packDirectory.isEmpty {
+            self.packDirectory = packDirectory
+        }
+        if let dataDirectory = environment["TYPEFLOW_DATA_DIR"], !dataDirectory.isEmpty {
+            self.dataDirectory = dataDirectory
+        }
     }
 
     public var engineSourceDescription: String {

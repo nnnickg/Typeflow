@@ -20,6 +20,7 @@ min_token_len = 4
 # Maximum number of letters tracked as one replaceable token. Longer letter-only
 # runs bypass scoring until a real token boundary so huge identifiers or pasted
 # text cannot turn scoring into quadratic nonsense.
+# Valid range: 1..1024, and must be >= min_token_len.
 # Default: 128
 max_token_len = 128
 

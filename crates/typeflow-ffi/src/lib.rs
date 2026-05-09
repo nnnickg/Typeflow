@@ -3,7 +3,10 @@ use std::os::raw::c_char;
 use std::path::PathBuf;
 
 use typeflow_core::data::LanguageBundle;
-use typeflow_core::{Action, Engine, EngineConfig, InputEvent, Layout, LetterEvent, PhysicalKey};
+use typeflow_core::{
+    Action, Engine, EngineConfig, InputEvent, Layout, LetterEvent, MAX_CONFIG_TOKEN_LEN,
+    PhysicalKey,
+};
 
 pub const TF_EVENT_LETTER: u8 = 0;
 pub const TF_EVENT_BACKSPACE: u8 = 1;
@@ -28,6 +31,7 @@ pub const TF_LAYOUT_SECONDARY: u8 = 1;
 
 pub const TF_REPLACE_BUF_LEN: usize = 4096;
 const TF_MAX_TOKEN_LEN: usize = TF_REPLACE_BUF_LEN / 4;
+const _: () = assert!(TF_MAX_TOKEN_LEN == MAX_CONFIG_TOKEN_LEN);
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -147,25 +151,7 @@ fn default_ffi_config() -> TfEngineConfig {
 }
 
 fn engine_config_from_ffi(config: TfEngineConfig) -> Option<EngineConfig> {
-    let floats = [
-        config.confidence_margin,
-        config.dict_exact_weight,
-        config.dict_prefix_weight,
-        config.ngram_only_confidence_margin,
-        config.bigram_weight,
-        config.trigram_weight,
-    ];
-    if config.min_token_len == 0
-        || config.max_token_len == 0
-        || config.max_token_len > TF_MAX_TOKEN_LEN
-        || floats
-            .iter()
-            .any(|value| !value.is_finite() || *value < 0.0)
-    {
-        return None;
-    }
-
-    Some(EngineConfig {
+    let engine_config = EngineConfig {
         min_token_len: config.min_token_len,
         max_token_len: config.max_token_len,
         confidence_margin: config.confidence_margin,
@@ -176,7 +162,10 @@ fn engine_config_from_ffi(config: TfEngineConfig) -> Option<EngineConfig> {
         trigram_weight: config.trigram_weight,
         length_normalize: config.length_normalize != 0,
         disable_on_internal_caps: config.disable_on_internal_caps != 0,
-    })
+    };
+
+    engine_config.validate().ok()?;
+    Some(engine_config)
 }
 
 fn new_engine(bundle: LanguageBundle, config: TfEngineConfig) -> *mut Engine {
@@ -524,6 +513,18 @@ mod tests {
     fn config_rejects_max_token_len_that_can_overflow_replace_buffer() {
         let mut config = default_ffi_config();
         config.max_token_len = TF_REPLACE_BUF_LEN;
+
+        assert!(engine_config_from_ffi(config).is_none());
+
+        let engine = typeflow_engine_new_embedded_with_config(config);
+        assert!(engine.is_null());
+    }
+
+    #[test]
+    fn config_rejects_min_token_len_above_max_token_len() {
+        let mut config = default_ffi_config();
+        config.min_token_len = 9;
+        config.max_token_len = 8;
 
         assert!(engine_config_from_ffi(config).is_none());
 

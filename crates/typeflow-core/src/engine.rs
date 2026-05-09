@@ -182,6 +182,11 @@ impl Engine {
             self.token_start_layout = self.layout;
         }
 
+        if self.should_commit_english_separator(event) {
+            self.reset_token();
+            return (Action::Commit(commit_char), Decision::Keep);
+        }
+
         if self.token.len() >= self.config.max_token_len {
             self.reset_token();
             self.bypass_until_boundary = true;
@@ -325,6 +330,24 @@ impl Engine {
             || is_acronym_like(&self.token)
     }
 
+    fn should_commit_english_separator(&mut self, event: LetterEvent) -> bool {
+        if self.layout != Layout::English || self.token.len() < self.config.min_token_len {
+            return false;
+        }
+
+        let english = self.bundle.render(event, Layout::English);
+        if !is_english_separator_key_char(english) {
+            return false;
+        }
+
+        if self.should_bypass_token() {
+            return true;
+        }
+
+        let score = self.score_current();
+        self.decide(&score) == Decision::Use(Layout::English)
+    }
+
     fn snapshot(&mut self, action: Action, decision: Decision) -> EngineOutput {
         let candidates = self.candidates.clone();
         let score = self.score_current();
@@ -367,6 +390,27 @@ fn has_internal_caps(token: &[LetterEvent]) -> bool {
 
 fn is_acronym_like(token: &[LetterEvent]) -> bool {
     token.len() >= 2 && token.iter().all(|event| event.shift)
+}
+
+fn is_english_separator_key_char(character: char) -> bool {
+    matches!(
+        character,
+        '`' | '['
+            | ']'
+            | '\\'
+            | ';'
+            | '\''
+            | ','
+            | '.'
+            | '~'
+            | '{'
+            | '}'
+            | '|'
+            | ':'
+            | '"'
+            | '<'
+            | '>'
+    )
 }
 
 /// True for characters that are NOT mapped to any physical key position in

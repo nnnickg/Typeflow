@@ -48,17 +48,20 @@ external pack directory. Contains:
 - `data.rs` — language model, dictionary lookup, embedded artifacts, and pack
   loading/validation.
 - `PhysicalKey` — 34 enum variants (26 ANSI letters + `` ` `` `[` `]` `;` `'` `,` `.` `\`).
-  Bidirectional `from_char` accepts both Latin and Cyrillic input.
+  `PhysicalKey::from_char` maps English-US characters back to key positions;
+  loaded `KeyboardMap`s handle secondary-layout reverse mapping.
 - `KeyboardMap` / `LanguagePack` — runtime data for one side of the pair:
   layout rendering, n-gram model, dictionary FST, manifest validation, and
   model metadata. English is fixed; the secondary side can be embedded or
   loaded from an installed external pack.
 - `InputEvent` — `Letter(LetterEvent)` / `Literal(char)` / `Backspace` /
-  `EndToken` / `HostBypass`. `Literal` is for digits, punctuation, separators,
-  and any other non-letter character; the engine treats it as a hard token
-  boundary that also commits the char. Modifier shortcuts (Cmd/Ctrl/Opt) come
-  in as `HostBypass`. The host decides what counts as `EndToken` (typically
-  space/tab/return).
+  `EndToken` / `HostBypass`. `Literal` is for digits, separators, and
+  characters that are not physical letters in either loaded layout; the engine
+  treats it as a hard token boundary that also commits the char. Punctuation
+  keys that are letters in the secondary layout stay as `LetterEvent`s, with an
+  English-token boundary heuristic for normal punctuation after resolved
+  English words. Modifier shortcuts (Cmd/Ctrl/Opt) come in as `HostBypass`.
+  The host decides what counts as `EndToken` (typically space/tab/return).
 - `HostContext` — persistent host-level state: secure input fields and
   excluded foreground apps. While either is set the engine returns
   `Action::Keep` and clears its token.
@@ -129,7 +132,7 @@ C ABI for the macOS bundle. Exports:
 - `typeflow_engine_new_embedded()` / `typeflow_engine_new_from_data_dir(path)` /
   `typeflow_engine_new_from_pack_dir(path)` / `typeflow_engine_free`
 - `_with_config(...)` constructor variants plus `typeflow_engine_default_config(...)`
-  for hosts that need runtime tuning without duplicating CLI TOML parsing.
+  for hosts that need runtime tuning while keeping config validation in Rust.
 - `typeflow_engine_process(engine, TfEvent, *out TfAction)` — the hot path
 - `typeflow_engine_reset_token` / `typeflow_engine_set_host_context` /
   `typeflow_engine_current_layout`
@@ -156,7 +159,8 @@ Current files:
   decodes `TfAction`.
 - `Sources/TypeflowKit/HostConfig.swift` loads the host-relevant subset of
   `~/.config/typeflow/config.toml`: engine knobs, active secondary language,
-  pack/data directories, and excluded app bundle IDs.
+  pack/data directories, and excluded app bundle IDs. Data/pack environment
+  variables override TOML, matching CLI precedence.
 - `Sources/TypeflowKit/KeyCodeMap.swift` maps macOS ANSI virtual keycodes to
   Rust physical key indexes.
 - `Sources/TypeflowSmoke/main.swift` verifies `ghsdbn` becomes `привіт` through
@@ -213,8 +217,8 @@ conversion. Remaining IMK validation work:
 5. Returns an `EngineOutput { candidates, score, decision, action }`.
 6. Host applies the `action`:
    - `Commit(c)` → insert one char in the current layout.
-   - `ReplaceToken { old_len, replacement, layout }` → delete trailing
-     `old_len` chars, insert `replacement`. Engine just flipped layouts.
+   - `ReplaceToken { old_len, replacement, layout }` → replace the trailing
+     `old_len` chars with `replacement`. Engine just flipped layouts.
    - `ResetToken` / `Keep` → host-side bookkeeping only.
 
 ## Non-goals

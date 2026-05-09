@@ -1,5 +1,12 @@
 use crate::LetterEvent;
 
+/// Maximum configured token length accepted by supported hosts.
+///
+/// FFI replacement payloads use a 4096-byte buffer. Since a Unicode scalar can
+/// occupy up to four UTF-8 bytes, 1024 tracked letters is the largest value
+/// that cannot overflow that payload solely from token length.
+pub const MAX_CONFIG_TOKEN_LEN: usize = 1024;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Layout {
     English,
@@ -124,6 +131,81 @@ pub struct EngineConfig {
     pub length_normalize: bool,
     /// Refuse to switch on tokens with internal capitals (camelCase).
     pub disable_on_internal_caps: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum EngineConfigError {
+    MinTokenLenZero,
+    MaxTokenLenZero,
+    MinTokenLenGreaterThanMaxTokenLen { min: usize, max: usize },
+    MaxTokenLenTooLarge { value: usize, max: usize },
+    InvalidFloat { field: &'static str },
+}
+
+impl std::fmt::Display for EngineConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MinTokenLenZero => write!(f, "min_token_len must be greater than zero"),
+            Self::MaxTokenLenZero => write!(f, "max_token_len must be greater than zero"),
+            Self::MinTokenLenGreaterThanMaxTokenLen { min, max } => write!(
+                f,
+                "min_token_len ({min}) must be less than or equal to max_token_len ({max})"
+            ),
+            Self::MaxTokenLenTooLarge { value, max } => write!(
+                f,
+                "max_token_len ({value}) must be less than or equal to {max}"
+            ),
+            Self::InvalidFloat { field } => {
+                write!(
+                    f,
+                    "{field} must be finite and greater than or equal to zero"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for EngineConfigError {}
+
+impl EngineConfig {
+    pub fn validate(self) -> Result<(), EngineConfigError> {
+        if self.min_token_len == 0 {
+            return Err(EngineConfigError::MinTokenLenZero);
+        }
+        if self.max_token_len == 0 {
+            return Err(EngineConfigError::MaxTokenLenZero);
+        }
+        if self.min_token_len > self.max_token_len {
+            return Err(EngineConfigError::MinTokenLenGreaterThanMaxTokenLen {
+                min: self.min_token_len,
+                max: self.max_token_len,
+            });
+        }
+        if self.max_token_len > MAX_CONFIG_TOKEN_LEN {
+            return Err(EngineConfigError::MaxTokenLenTooLarge {
+                value: self.max_token_len,
+                max: MAX_CONFIG_TOKEN_LEN,
+            });
+        }
+
+        for (field, value) in [
+            ("confidence_margin", self.confidence_margin),
+            ("dict_exact_weight", self.dict_exact_weight),
+            ("dict_prefix_weight", self.dict_prefix_weight),
+            (
+                "ngram_only_confidence_margin",
+                self.ngram_only_confidence_margin,
+            ),
+            ("bigram_weight", self.bigram_weight),
+            ("trigram_weight", self.trigram_weight),
+        ] {
+            if !value.is_finite() || value < 0.0 {
+                return Err(EngineConfigError::InvalidFloat { field });
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl Default for EngineConfig {

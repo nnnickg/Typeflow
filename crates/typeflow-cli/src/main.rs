@@ -163,6 +163,9 @@ fn configured_pack_dir(config: &Config) -> Option<PathBuf> {
 fn build_engine(config: &Config) -> Result<Engine, String> {
     let bundle = load_language_bundle(config)?;
     let engine_config: EngineConfig = config.engine.into();
+    engine_config
+        .validate()
+        .map_err(|e| format!("invalid engine config: {e}"))?;
     Ok(Engine::new(engine_config, bundle))
 }
 

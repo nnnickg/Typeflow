@@ -45,6 +45,10 @@ accident.
   and score cache.
 - `EndToken` clears token state and returns `Action::ResetToken`.
 - `Literal(char)` clears token state and returns `Action::Commit(char)`.
+- Punctuation-looking physical keys that are secondary-layout letters remain
+  `Letter` events. If the active layout is English and the current token has
+  already resolved as English, English punctuation on those keys terminates the
+  token and commits the punctuation character.
 - `Backspace` removes one `LetterEvent` from token state, reconciles the
   inferred layout for the shortened token, and returns `Action::Keep`.
 - Backspace on an empty token is a no-op.
@@ -53,6 +57,8 @@ accident.
 - Hosts must call `EndToken` or `reset_token()` on focus loss, app switch,
   committed whitespace, or any other boundary that makes the previous letters
   no longer replaceable as one contiguous token.
+- Hosts must reset token state when the focused text client changes, selected
+  text is active, or the caret moves away from the replaceable trailing token.
 
 ## Action Protocol
 

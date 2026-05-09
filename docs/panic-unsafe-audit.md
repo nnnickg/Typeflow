@@ -27,8 +27,8 @@ rg -n "unsafe" \
   made it a normal `Result` path.
 - Removed the download-cache `file_name().unwrap()` logging path.
 - Removed the impossible keyboard-index `expect` from reverse mapping.
-- Added FFI boundary tests for invalid config, null engine processing, and null
-  default-config output.
+- Added shared engine-config validation plus FFI boundary tests for invalid
+  config, null engine processing, and null default-config output.
 
 ## FFI Unsafe Boundary
 
@@ -63,8 +63,9 @@ Reviewed direct indexing sites:
   `PhysicalKey` is a closed enum with `COUNT = 34`.
 - `TfAction::write` slices `replace_text` only after checking
   `bytes.len() <= TF_REPLACE_BUF_LEN`.
-- FFI config validation rejects `max_token_len` values that could produce a
-  replacement larger than `TF_REPLACE_BUF_LEN`.
+- Shared engine-config validation rejects zero lengths, `min_token_len` greater
+  than `max_token_len`, non-finite/negative score floats, and `max_token_len`
+  values that could produce an FFI replacement larger than `TF_REPLACE_BUF_LEN`.
 - eval confusion-matrix indexing uses `layout_index`, which only returns `0`
   or `1`.
 - CLI argument indexing is guarded by arity checks before access.
