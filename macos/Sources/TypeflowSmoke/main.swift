@@ -10,6 +10,7 @@ enum SmokeError: Error, CustomStringConvertible {
     case wrongDataDirectory(String?)
     case wrongSecondaryLanguage(String)
     case wrongExcludedBundleIDs(Set<String>)
+    case wrongAction(TypeflowAction)
 
     var description: String {
         switch self {
@@ -29,6 +30,8 @@ enum SmokeError: Error, CustomStringConvertible {
             return "unexpected secondary language: \(value)"
         case let .wrongExcludedBundleIDs(value):
             return "unexpected excluded bundle IDs: \(value)"
+        case let .wrongAction(action):
+            return "unexpected action: \(action)"
         }
     }
 }
@@ -108,12 +111,35 @@ func verifyHostConfigPrecedence() throws {
     }
 }
 
+func verifyVisibleTailBridge() throws {
+    let engine = try TypeflowEngine()
+    guard let z = TypeflowMacKeyCode.physicalKeyIndex(for: UInt16(kVK_ANSI_Z)) else {
+        throw SmokeError.wrongOutput("unmapped keycode \(kVK_ANSI_Z)")
+    }
+
+    let replace = try engine.replaceVisibleTail(
+        "hello [eqy",
+        physicalKey: z,
+        modifiers: 0,
+        targetLayout: .secondary
+    )
+    guard replace == .replaceToken(oldLength: 4, replacement: "хуйня", layout: .secondary) else {
+        throw SmokeError.wrongAction(replace)
+    }
+
+    let convert = try engine.convertVisibleTail("hello [eqyz")
+    guard convert == .replaceToken(oldLength: 5, replacement: "хуйня", layout: .secondary) else {
+        throw SmokeError.wrongAction(convert)
+    }
+}
+
 do {
     let config = TypeflowEngine.defaultConfig()
     guard config.max_token_len == 128 else {
         throw SmokeError.wrongDefaultMaxTokenLen(config.max_token_len)
     }
     try verifyHostConfigPrecedence()
+    try verifyVisibleTailBridge()
 
     let engine = try TypeflowEngine()
     var committed = ""

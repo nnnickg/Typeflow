@@ -138,6 +138,10 @@ C ABI for the macOS bundle. Exports:
 - `typeflow_engine_process(engine, TfEvent, *out TfAction)` — the hot path
 - `typeflow_engine_reset_token` / `typeflow_engine_set_host_context` /
   `typeflow_engine_current_layout`
+- `typeflow_engine_convert_visible_tail` /
+  `typeflow_engine_replace_visible_tail_with_key` — host-visible fallback paths
+  where Swift passes a bounded committed-text tail and Rust owns token suffix
+  extraction.
 
 Header at `crates/typeflow-ffi/include/typeflow.h`. Builds as both `staticlib`
 and `cdylib` (`libtypeflow_ffi.dylib`).

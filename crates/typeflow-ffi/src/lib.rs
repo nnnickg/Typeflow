@@ -287,12 +287,15 @@ pub unsafe extern "C" fn typeflow_engine_new_from_pack_dir_with_config(
 }
 
 unsafe fn c_path(path_utf8: *const c_char) -> Option<PathBuf> {
-    if path_utf8.is_null() {
+    unsafe { c_str(path_utf8) }.map(PathBuf::from)
+}
+
+unsafe fn c_str<'a>(value_utf8: *const c_char) -> Option<&'a str> {
+    if value_utf8.is_null() {
         return None;
     }
-    let cstr = unsafe { CStr::from_ptr(path_utf8) };
-    let path_str = cstr.to_str().ok()?;
-    Some(PathBuf::from(path_str))
+    let cstr = unsafe { CStr::from_ptr(value_utf8) };
+    cstr.to_str().ok()
 }
 
 /// Frees an engine pointer created by `typeflow_engine_new_embedded` or
@@ -384,6 +387,188 @@ pub unsafe extern "C" fn typeflow_engine_force_switch_token(
 
     let output = engine.force_switch_token();
     out.write(output.action);
+}
+
+/// Converts the visible token supplied by the host to the opposite keyboard side.
+///
+/// This is for hosts whose text controls do not keep IME token tracking stable
+/// across selection/delete/replacement operations. The input must be a
+/// null-terminated UTF-8 string. On success, the engine layout is reset to the
+/// replacement side and `out_action` receives a `ReplaceToken` action whose
+/// `old_len` is the input token's character count.
+///
+/// # Safety
+///
+/// `engine` must be a valid live pointer returned by a Typeflow constructor.
+/// `token_utf8` must point to a null-terminated UTF-8 string. `out_action` must
+/// point to writable memory for one `TfAction`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn typeflow_engine_convert_visible_token(
+    engine: *mut Engine,
+    token_utf8: *const c_char,
+    out_action: *mut TfAction,
+) {
+    let Some(engine) = (unsafe { engine.as_mut() }) else {
+        return;
+    };
+    let Some(out) = (unsafe { out_action.as_mut() }) else {
+        return;
+    };
+    out.write(Action::Keep);
+
+    let Some(token) = (unsafe { c_str(token_utf8) }) else {
+        return;
+    };
+    let Some((layout, replacement)) = engine.convert_visible_token(token) else {
+        return;
+    };
+
+    let old_len = token.chars().count();
+    engine.reset_layout(layout);
+    out.write(Action::ReplaceToken {
+        old_len,
+        replacement,
+        layout,
+    });
+}
+
+/// Converts the trailing visible token inside the host-supplied text tail.
+///
+/// The host should pass a bounded slice of committed text immediately before
+/// the caret. Rust owns the token grammar, including punctuation-position keys
+/// that are letters in the active secondary layout.
+///
+/// # Safety
+///
+/// `engine` must be a valid live pointer returned by a Typeflow constructor.
+/// `visible_tail_utf8` must point to a null-terminated UTF-8 string.
+/// `out_action` must point to writable memory for one `TfAction`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn typeflow_engine_convert_visible_tail(
+    engine: *mut Engine,
+    visible_tail_utf8: *const c_char,
+    out_action: *mut TfAction,
+) {
+    let Some(engine) = (unsafe { engine.as_mut() }) else {
+        return;
+    };
+    let Some(out) = (unsafe { out_action.as_mut() }) else {
+        return;
+    };
+    out.write(Action::Keep);
+
+    let Some(visible_tail) = (unsafe { c_str(visible_tail_utf8) }) else {
+        return;
+    };
+    let Some((layout, replacement, old_len)) = engine.convert_visible_tail(visible_tail) else {
+        return;
+    };
+
+    engine.reset_layout(layout);
+    out.write(Action::ReplaceToken {
+        old_len,
+        replacement,
+        layout,
+    });
+}
+
+/// Rebuilds a replacement action from the host's visible committed token prefix
+/// plus the current physical key.
+///
+/// This keeps replacement ranges correct in text controls that report unstable
+/// selection/caret state to IMK. `visible_prefix_utf8` is the host text before
+/// the current key; the returned action replaces exactly that prefix with the
+/// full rendered token for `target_layout`.
+///
+/// # Safety
+///
+/// `engine` must be a valid live pointer returned by a Typeflow constructor.
+/// `visible_prefix_utf8` must point to a null-terminated UTF-8 string.
+/// `out_action` must point to writable memory for one `TfAction`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn typeflow_engine_replace_visible_prefix_with_key(
+    engine: *mut Engine,
+    visible_prefix_utf8: *const c_char,
+    physical: u8,
+    modifiers: u8,
+    target_layout: u8,
+    out_action: *mut TfAction,
+) {
+    let Some(engine) = (unsafe { engine.as_mut() }) else {
+        return;
+    };
+    let Some(out) = (unsafe { out_action.as_mut() }) else {
+        return;
+    };
+    out.write(Action::Keep);
+
+    let Some(visible_prefix) = (unsafe { c_str(visible_prefix_utf8) }) else {
+        return;
+    };
+    let Some(physical_key) = PhysicalKey::from_index(physical) else {
+        return;
+    };
+    let Some(target) = layout_from_u8(target_layout) else {
+        return;
+    };
+
+    let event = LetterEvent {
+        physical_key,
+        shift: modifiers & TF_MOD_SHIFT != 0,
+    };
+    let Some(action) = engine.replace_visible_prefix_with_key(visible_prefix, event, target) else {
+        return;
+    };
+    out.write(action);
+}
+
+/// Rebuilds a replacement action from a bounded host-visible text tail plus the
+/// current physical key.
+///
+/// Rust extracts the trailing token from `visible_tail_utf8` using the loaded
+/// keyboard maps, then returns a `ReplaceToken` action whose `old_len` targets
+/// exactly that trailing token.
+///
+/// # Safety
+///
+/// `engine` must be a valid live pointer returned by a Typeflow constructor.
+/// `visible_tail_utf8` must point to a null-terminated UTF-8 string.
+/// `out_action` must point to writable memory for one `TfAction`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn typeflow_engine_replace_visible_tail_with_key(
+    engine: *mut Engine,
+    visible_tail_utf8: *const c_char,
+    physical: u8,
+    modifiers: u8,
+    target_layout: u8,
+    out_action: *mut TfAction,
+) {
+    let Some(engine) = (unsafe { engine.as_mut() }) else {
+        return;
+    };
+    let Some(out) = (unsafe { out_action.as_mut() }) else {
+        return;
+    };
+    out.write(Action::Keep);
+
+    let Some(visible_tail) = (unsafe { c_str(visible_tail_utf8) }) else {
+        return;
+    };
+    let Some(physical_key) = PhysicalKey::from_index(physical) else {
+        return;
+    };
+    let Some(target) = layout_from_u8(target_layout) else {
+        return;
+    };
+
+    let event = LetterEvent {
+        physical_key,
+        shift: modifiers & TF_MOD_SHIFT != 0,
+    };
+    let Some(action) = engine.replace_visible_tail_with_key(visible_tail, event, target) else {
+        return;
+    };
+    out.write(action);
 }
 
 /// Returns the engine's current inferred layout.

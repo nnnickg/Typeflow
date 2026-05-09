@@ -1,9 +1,12 @@
+use std::ffi::CString;
+
 use typeflow_ffi::{
     TF_ACTION_COMMIT, TF_ACTION_KEEP, TF_ACTION_REPLACE, TF_ACTION_RESET, TF_EVENT_BACKSPACE,
     TF_EVENT_LETTER, TF_EVENT_LITERAL, TF_LAYOUT_ENGLISH, TF_LAYOUT_SECONDARY, TF_REPLACE_BUF_LEN,
-    TfAction, TfEngineConfig, TfEvent, typeflow_engine_current_layout,
-    typeflow_engine_default_config, typeflow_engine_free, typeflow_engine_new_embedded,
-    typeflow_engine_new_embedded_with_config, typeflow_engine_process,
+    TfAction, TfEngineConfig, TfEvent, typeflow_engine_convert_visible_tail,
+    typeflow_engine_current_layout, typeflow_engine_default_config, typeflow_engine_free,
+    typeflow_engine_new_embedded, typeflow_engine_new_embedded_with_config,
+    typeflow_engine_process, typeflow_engine_replace_visible_tail_with_key,
 };
 
 fn blank_action() -> TfAction {
@@ -70,6 +73,11 @@ fn apply_action(action: &TfAction, committed: &mut String) {
         }
         other => panic!("unexpected FFI action tag {other}"),
     }
+}
+
+fn replacement_text(action: &TfAction) -> &str {
+    std::str::from_utf8(&action.replace_text[..action.replace_text_len])
+        .expect("FFI replacement should be valid UTF-8")
 }
 
 #[test]
@@ -156,6 +164,45 @@ fn public_abi_accepts_explicit_config() {
     config.min_token_len = 6;
     let engine = typeflow_engine_new_embedded_with_config(config);
     assert!(!engine.is_null());
+
+    unsafe {
+        typeflow_engine_free(engine);
+    }
+}
+
+#[test]
+fn public_abi_visible_tail_keeps_punctuation_position_letters() {
+    let engine = typeflow_engine_new_embedded();
+    assert!(!engine.is_null());
+
+    let tail = CString::new("hello [eqy").unwrap();
+    let mut action = blank_action();
+    unsafe {
+        typeflow_engine_replace_visible_tail_with_key(
+            engine,
+            tail.as_ptr(),
+            25,
+            0,
+            TF_LAYOUT_SECONDARY,
+            &mut action,
+        );
+    }
+
+    assert_eq!(action.tag, TF_ACTION_REPLACE);
+    assert_eq!(action.replace_old_len, 4);
+    assert_eq!(action.replace_layout, TF_LAYOUT_SECONDARY);
+    assert_eq!(replacement_text(&action), "хуйня");
+
+    let tail = CString::new("hello [eqyz").unwrap();
+    let mut action = blank_action();
+    unsafe {
+        typeflow_engine_convert_visible_tail(engine, tail.as_ptr(), &mut action);
+    }
+
+    assert_eq!(action.tag, TF_ACTION_REPLACE);
+    assert_eq!(action.replace_old_len, 5);
+    assert_eq!(action.replace_layout, TF_LAYOUT_SECONDARY);
+    assert_eq!(replacement_text(&action), "хуйня");
 
     unsafe {
         typeflow_engine_free(engine);

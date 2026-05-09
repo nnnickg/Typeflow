@@ -152,6 +152,102 @@ impl Engine {
         }
     }
 
+    pub fn convert_visible_token(&self, token: &str) -> Option<(Layout, String)> {
+        if token.is_empty() {
+            return None;
+        }
+
+        let letters = token
+            .chars()
+            .map(|character| self.bundle.letter_event_from_char(character))
+            .collect::<Option<Vec<_>>>()?;
+        let english = crate::render_letters_with_bundle(&letters, Layout::English, &self.bundle);
+        let secondary =
+            crate::render_letters_with_bundle(&letters, Layout::Secondary, &self.bundle);
+
+        let target = if token == english && token != secondary {
+            Layout::Secondary
+        } else if token == secondary && token != english {
+            Layout::English
+        } else if token
+            .chars()
+            .any(|character| character.is_ascii_alphabetic())
+        {
+            Layout::Secondary
+        } else {
+            return None;
+        };
+
+        let replacement = match target {
+            Layout::English => english,
+            Layout::Secondary => secondary,
+        };
+
+        (replacement != token).then_some((target, replacement))
+    }
+
+    pub fn visible_token_suffix<'a>(&self, visible_tail: &'a str) -> Option<&'a str> {
+        let mut start = visible_tail.len();
+        let mut found = false;
+
+        for (idx, character) in visible_tail.char_indices().rev() {
+            if !self.is_visible_token_character(character) {
+                break;
+            }
+            start = idx;
+            found = true;
+        }
+
+        found.then_some(&visible_tail[start..])
+    }
+
+    pub fn convert_visible_tail(&self, visible_tail: &str) -> Option<(Layout, String, usize)> {
+        let token = self.visible_token_suffix(visible_tail)?;
+        let (layout, replacement) = self.convert_visible_token(token)?;
+        Some((layout, replacement, token.chars().count()))
+    }
+
+    pub fn replace_visible_prefix_with_key(
+        &mut self,
+        visible_prefix: &str,
+        event: LetterEvent,
+        target: Layout,
+    ) -> Option<Action> {
+        let mut letters = visible_prefix
+            .chars()
+            .map(|character| self.bundle.letter_event_from_char(character))
+            .collect::<Option<Vec<_>>>()?;
+        let prefix_candidates = crate::render_candidates_with_bundle(&letters, &self.bundle);
+        self.token_start_layout = infer_visible_layout(visible_prefix, &prefix_candidates)
+            .unwrap_or(self.token_start_layout);
+
+        letters.push(event);
+        let candidates = crate::render_candidates_with_bundle(&letters, &self.bundle);
+        let replacement = candidates.get(target).to_owned();
+
+        self.token = letters;
+        self.candidates = candidates;
+        self.score_cache = None;
+        self.bypass_until_boundary = false;
+        self.layout = target;
+
+        Some(Action::ReplaceToken {
+            old_len: visible_prefix.chars().count(),
+            replacement,
+            layout: target,
+        })
+    }
+
+    pub fn replace_visible_tail_with_key(
+        &mut self,
+        visible_tail: &str,
+        event: LetterEvent,
+        target: Layout,
+    ) -> Option<Action> {
+        let visible_prefix = self.visible_token_suffix(visible_tail)?;
+        self.replace_visible_prefix_with_key(visible_prefix, event, target)
+    }
+
     /// Single dispatch path shared by `process` and `process_action`. Returns
     /// the host-facing action plus the explanatory decision.
     fn step(&mut self, event: InputEvent) -> (Action, Decision) {
@@ -379,6 +475,11 @@ impl Engine {
         self.score_cache = Some(score);
         score
     }
+
+    fn is_visible_token_character(&self, character: char) -> bool {
+        !is_literal_bypass_char(character)
+            && self.bundle.letter_event_from_char(character).is_some()
+    }
 }
 
 /// Returns true when the token contains a Shift-modified letter at any position
@@ -390,6 +491,16 @@ fn has_internal_caps(token: &[LetterEvent]) -> bool {
 
 fn is_acronym_like(token: &[LetterEvent]) -> bool {
     token.len() >= 2 && token.iter().all(|event| event.shift)
+}
+
+fn infer_visible_layout(token: &str, candidates: &LayoutCandidates) -> Option<Layout> {
+    if token == candidates.english && token != candidates.secondary {
+        Some(Layout::English)
+    } else if token == candidates.secondary && token != candidates.english {
+        Some(Layout::Secondary)
+    } else {
+        None
+    }
 }
 
 fn is_english_separator_key_char(character: char) -> bool {

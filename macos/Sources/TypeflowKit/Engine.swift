@@ -135,6 +135,62 @@ public final class TypeflowEngine {
         return try Self.decode(action: &action)
     }
 
+    public func convertVisibleToken(_ token: String) throws -> TypeflowAction {
+        var action = typeflow_ffi_empty_action()
+        token.withCString {
+            typeflow_engine_convert_visible_token(raw, $0, &action)
+        }
+        return try Self.decode(action: &action)
+    }
+
+    public func convertVisibleTail(_ tail: String) throws -> TypeflowAction {
+        var action = typeflow_ffi_empty_action()
+        tail.withCString {
+            typeflow_engine_convert_visible_tail(raw, $0, &action)
+        }
+        return try Self.decode(action: &action)
+    }
+
+    public func replaceVisiblePrefix(
+        _ prefix: String,
+        physicalKey: UInt8,
+        modifiers: UInt8,
+        targetLayout: TypeflowLayout
+    ) throws -> TypeflowAction {
+        var action = typeflow_ffi_empty_action()
+        prefix.withCString {
+            typeflow_engine_replace_visible_prefix_with_key(
+                raw,
+                $0,
+                physicalKey,
+                modifiers,
+                targetLayout.rawValue,
+                &action
+            )
+        }
+        return try Self.decode(action: &action)
+    }
+
+    public func replaceVisibleTail(
+        _ tail: String,
+        physicalKey: UInt8,
+        modifiers: UInt8,
+        targetLayout: TypeflowLayout
+    ) throws -> TypeflowAction {
+        var action = typeflow_ffi_empty_action()
+        tail.withCString {
+            typeflow_engine_replace_visible_tail_with_key(
+                raw,
+                $0,
+                physicalKey,
+                modifiers,
+                targetLayout.rawValue,
+                &action
+            )
+        }
+        return try Self.decode(action: &action)
+    }
+
     private func process(event: TfEvent) throws -> TypeflowAction {
         var action = typeflow_ffi_empty_action()
         typeflow_engine_process(raw, event, &action)

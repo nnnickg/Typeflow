@@ -702,6 +702,74 @@ mod tests {
         );
     }
 
+    #[test]
+    fn visible_token_conversion_uses_actual_text() {
+        let engine = engine();
+
+        assert_eq!(
+            engine.convert_visible_token("afrn"),
+            Some((Layout::Secondary, "факт".to_owned()))
+        );
+        assert_eq!(
+            engine.convert_visible_token("факт"),
+            Some((Layout::English, "afrn".to_owned()))
+        );
+        assert_eq!(
+            engine.convert_visible_token("ghив"),
+            Some((Layout::Secondary, "прив".to_owned()))
+        );
+    }
+
+    #[test]
+    fn visible_prefix_replacement_uses_host_prefix_length() {
+        let mut engine = engine();
+        let action = engine
+            .replace_visible_prefix_with_key(
+                "ghb",
+                LetterEvent::new(PhysicalKey::D),
+                Layout::Secondary,
+            )
+            .unwrap();
+
+        assert_eq!(
+            action,
+            Action::ReplaceToken {
+                old_len: 3,
+                replacement: "прів".to_owned(),
+                layout: Layout::Secondary,
+            }
+        );
+        assert_eq!(engine.current_layout(), Layout::Secondary);
+    }
+
+    #[test]
+    fn visible_tail_keeps_punctuation_position_letters_in_token() {
+        let mut engine = engine();
+
+        assert_eq!(engine.visible_token_suffix("hello [eqy"), Some("[eqy"));
+        assert_eq!(
+            engine.convert_visible_tail("hello [eqyz"),
+            Some((Layout::Secondary, "хуйня".to_owned(), 5))
+        );
+
+        let action = engine
+            .replace_visible_tail_with_key(
+                "hello [eqy",
+                LetterEvent::new(PhysicalKey::Z),
+                Layout::Secondary,
+            )
+            .unwrap();
+
+        assert_eq!(
+            action,
+            Action::ReplaceToken {
+                old_len: 4,
+                replacement: "хуйня".to_owned(),
+                layout: Layout::Secondary,
+            }
+        );
+    }
+
     fn letters(physical_keys: &[PhysicalKey]) -> Vec<LetterEvent> {
         physical_keys
             .iter()

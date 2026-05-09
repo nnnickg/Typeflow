@@ -115,10 +115,6 @@ final class TypeflowInputController: IMKInputController {
             _ = try? engine.processHostBypass(modifiers: modifiers)
             return false
         }
-        if shouldBypassForHostSelection(client) {
-            _ = try? engine.processHostBypass(modifiers: modifiers)
-            return false
-        }
 
         switch Int(keyCode) {
         case kVK_Delete:
@@ -133,10 +129,26 @@ final class TypeflowInputController: IMKInputController {
             break
         }
 
+        if shouldBypassNonTextKey(keyCode: keyCode, characters: characters) {
+            engine.resetLayout(.english)
+            expectedSelectedLocation = nil
+            return false
+        }
+        if shouldBypassForHostSelection(client) {
+            _ = try? engine.processHostBypass(modifiers: modifiers)
+            return false
+        }
+
         do {
             if let physical = TypeflowMacKeyCode.physicalKeyIndex(for: keyCode) {
                 let action = try engine.process(physicalKey: physical, modifiers: modifiers)
-                return apply(action, client: client)
+                let resolvedAction = try resolveReplacementFromVisibleTail(
+                    action,
+                    physicalKey: physical,
+                    modifiers: modifiers,
+                    client: client
+                )
+                return apply(resolvedAction, client: client)
             }
 
             guard let scalar = singleScalar(from: characters) else {
@@ -149,6 +161,27 @@ final class TypeflowInputController: IMKInputController {
             engine.resetToken()
             return false
         }
+    }
+
+    private func resolveReplacementFromVisibleTail(
+        _ action: TypeflowAction,
+        physicalKey: UInt8,
+        modifiers: UInt8,
+        client: IMKTextInput
+    ) throws -> TypeflowAction {
+        guard case let .replaceToken(_, _, layout) = action,
+              let tail = visibleTail(in: client)
+        else {
+            return action
+        }
+
+        let resolved = try engine?.replaceVisibleTail(
+            tail,
+            physicalKey: physicalKey,
+            modifiers: modifiers,
+            targetLayout: layout
+        )
+        return resolved ?? action
     }
 
     private func processFlagsChanged(_ event: NSEvent, client sender: Any!) -> Bool {
@@ -191,7 +224,13 @@ final class TypeflowInputController: IMKInputController {
         }
 
         do {
-            _ = apply(try engine.forceSwitchToken(), client: client)
+            let action: TypeflowAction
+            if let tail = visibleTail(in: client) {
+                action = try engine.convertVisibleTail(tail)
+            } else {
+                action = try engine.forceSwitchToken()
+            }
+            _ = apply(action, client: client)
             logger.debug("manualConvert action=forceSwitch")
             return true
         } catch {
@@ -225,7 +264,7 @@ final class TypeflowInputController: IMKInputController {
                 "action=replaceToken oldLength=\(oldLength, privacy: .private) replacementLength=\(replacement.count, privacy: .private) selected={\(selected.location, privacy: .private),\(selected.length, privacy: .private)}"
             )
             guard selected.location != NSNotFound, selected.length == 0, selected.location >= oldLength else {
-                engine?.resetToken()
+                rollbackReplacement(action)
                 logger.debug("replaceToken rejected selected range")
                 return false
             }
@@ -233,6 +272,23 @@ final class TypeflowInputController: IMKInputController {
             client.insertText(replacement, replacementRange: range)
             expectedSelectedLocation = range.location + replacement.count
             return true
+        }
+    }
+
+    private func rollbackReplacement(_ action: TypeflowAction) {
+        guard case let .replaceToken(_, _, layout) = action else {
+            engine?.resetToken()
+            return
+        }
+        engine?.resetLayout(opposite(layout))
+    }
+
+    private func opposite(_ layout: TypeflowLayout) -> TypeflowLayout {
+        switch layout {
+        case .english:
+            return .secondary
+        case .secondary:
+            return .english
         }
     }
 
@@ -284,18 +340,18 @@ final class TypeflowInputController: IMKInputController {
             expectedSelectedLocation = selected.location != NSNotFound && selected.length == 0
                 ? selected.location
                 : nil
-            engine?.resetToken()
+            engine?.resetLayout(.english)
         }
 
         guard selected.location != NSNotFound, selected.length == 0 else {
-            engine?.resetToken()
+            engine?.resetLayout(.english)
             expectedSelectedLocation = nil
             logger.debug("host selection is not a collapsed caret; bypassing")
             return true
         }
 
         if let expectedSelectedLocation, selected.location != expectedSelectedLocation {
-            engine?.resetToken()
+            engine?.resetLayout(.english)
             logger.debug(
                 "host caret moved expected=\(expectedSelectedLocation, privacy: .private) actual=\(selected.location, privacy: .private); token reset"
             )
@@ -318,6 +374,22 @@ final class TypeflowInputController: IMKInputController {
         expectedSelectedLocation = nil
     }
 
+    private func visibleTail(in client: IMKTextInput, maxLength: Int = 128) -> String? {
+        let selected = client.selectedRange()
+        guard selected.location != NSNotFound, selected.length == 0, selected.location > 0 else {
+            return nil
+        }
+
+        let length = min(selected.location, maxLength)
+        guard let attributed = client.attributedSubstring(
+            from: NSRange(location: selected.location - length, length: length)
+        ) else {
+            return nil
+        }
+
+        return attributed.string.isEmpty ? nil : attributed.string
+    }
+
     private var insertionRange: NSRange {
         NSRange(location: NSNotFound, length: NSNotFound)
     }
@@ -325,6 +397,37 @@ final class TypeflowInputController: IMKInputController {
     private func shouldBypassHost(_ flags: NSEvent.ModifierFlags) -> Bool {
         let bypass: NSEvent.ModifierFlags = [.control, .option, .command]
         return !flags.intersection(bypass).isEmpty
+    }
+
+    private func shouldBypassNonTextKey(keyCode: UInt16, characters: String?) -> Bool {
+        switch Int(keyCode) {
+        case kVK_UpArrow,
+             kVK_DownArrow,
+             kVK_LeftArrow,
+             kVK_RightArrow,
+             kVK_Home,
+             kVK_End,
+             kVK_PageUp,
+             kVK_PageDown,
+             kVK_ForwardDelete,
+             kVK_Help:
+            return true
+        default:
+            break
+        }
+
+        guard let scalar = singleScalar(from: characters) else {
+            return false
+        }
+        return isFunctionKeyScalar(scalar) || isControlScalar(scalar)
+    }
+
+    private func isFunctionKeyScalar(_ scalar: UnicodeScalar) -> Bool {
+        (0xF700...0xF8FF).contains(Int(scalar.value))
+    }
+
+    private func isControlScalar(_ scalar: UnicodeScalar) -> Bool {
+        scalar.value < 0x20 || scalar.value == 0x7F
     }
 
     private func ffiModifiers(from flags: NSEvent.ModifierFlags) -> UInt8 {

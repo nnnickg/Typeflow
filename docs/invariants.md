@@ -117,6 +117,9 @@ accident.
   `TfAction` pointer. Invalid events decode to `Action::Keep`.
 - `TfAction.replace_text` is an inline UTF-8 byte buffer. The host must copy
   exactly `replace_text_len` bytes and decode them as UTF-8.
+- Visible-tail FFI helpers take bounded committed text immediately before the
+  caret. Rust, not the host, decides the trailing token suffix using the active
+  keyboard maps.
 - `TF_REPLACE_BUF_LEN` bounds replacement payloads. If a replacement ever
   exceeds that buffer, the FFI action writer must fail closed rather than
   exposing partial text.
