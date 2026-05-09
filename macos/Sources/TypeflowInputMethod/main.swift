@@ -1,6 +1,12 @@
 import AppKit
 import Foundation
 import InputMethodKit
+import os
+
+private let logger = Logger(
+    subsystem: "io.github.nnnickg.typeflow.inputmethod.Typeflow",
+    category: "Main"
+)
 
 private let bundle = Bundle.main
 private let connectionName = bundle.object(forInfoDictionaryKey: "InputMethodConnectionName") as? String
@@ -8,11 +14,17 @@ private let connectionName = bundle.object(forInfoDictionaryKey: "InputMethodCon
 private let bundleIdentifier = bundle.bundleIdentifier
     ?? "io.github.nnnickg.typeflow.inputmethod.Typeflow"
 
-private var server: IMKServer? = IMKServer(
+NSApplication.shared.setActivationPolicy(.accessory)
+
+guard let server = IMKServer(
     name: connectionName,
     bundleIdentifier: bundleIdentifier
-)
+) else {
+    logger.error("failed to create IMKServer")
+    exit(1)
+}
 
-NSApplication.shared.setActivationPolicy(.accessory)
-NSApplication.shared.run()
-_ = server
+logger.notice("started IMKServer")
+withExtendedLifetime(server) {
+    NSApplication.shared.run()
+}

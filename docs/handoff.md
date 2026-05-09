@@ -1,7 +1,7 @@
 # Handoff
 
-State of the project as of the last commit. If you're picking this up cold,
-read this end-to-end and you'll have everything.
+Current working state. If you're picking this up cold, read this end-to-end and
+you'll have everything.
 
 ## What's done
 
@@ -84,10 +84,9 @@ cargo bench -p typeflow-ffi
 ### FFI (typeflow-ffi) — surface ready
 
 Header at `crates/typeflow-ffi/include/typeflow.h`. Builds as `staticlib`,
-`cdylib`, and `rlib`. The Swift IMK bundle isn't built yet, but `macos/` now
-has a Swift staticlib smoke target that links `libtypeflow_ffi.a`, calls the C
-ABI, and verifies `ghsdbn -> привіт`. Release hosts should use
-`typeflow_engine_new_embedded()` or
+`cdylib`, and `rlib`. `macos/` has a Swift staticlib smoke target that links
+`libtypeflow_ffi.a`, calls the C ABI, and verifies `ghsdbn -> привіт`. Release
+hosts should use `typeflow_engine_new_embedded()` or
 `typeflow_engine_new_embedded_with_config(...)`.
 `typeflow_engine_new_from_data_dir(...)` is a dev override for testing rebuilt
 model artifacts. `typeflow_engine_new_from_pack_dir(...)` loads embedded English
@@ -96,34 +95,50 @@ plus one installed secondary language pack. FFI exposes `TF_EVENT_LITERAL`,
 `typeflow_engine_default_config(...)`, modifier-bypass bits, and
 `typeflow_engine_set_host_context(...)`.
 
-### macOS bridge (`macos/`) — staticlib smoke + minimal IMK bundle build
+### macOS bridge (`macos/`) — working IMK bundle
 
 `make -C macos smoke` builds the Rust `typeflow-ffi` static archive, compiles
 Swift with the local module map, links against `libtypeflow_ffi.a`, and runs a
 host-buffer smoke test.
 
 `make -C macos bundle` builds and ad-hoc signs `Typeflow.app`. The executable
-starts an `IMKServer` from `Info.plist`, exposes `TypeflowInputController`, maps
-ANSI keycodes to Rust physical key indexes, calls the FFI, and applies
-`TypeflowAction` through `NSTextInputClient.insertText(_:replacementRange:)`.
+starts an `IMKServer` from `Info.plist`, exposes `TypeflowInputController`,
+receives raw `NSEvent` keyDown/flagsChanged events, maps ANSI keycodes to Rust
+physical key indexes, calls the FFI, and applies
+`TypeflowAction` through `IMKTextInput.insertText(_:replacementRange:)`.
+The Swift host reads the same config path as the CLI (`~/.config/typeflow/config.toml`):
+engine knobs, `language.secondary`, `packs.directory`, `data.directory`, and
+`apps.exclude_bundle_ids`. `language.secondary = "uk"` uses embedded Ukrainian;
+other values load `~/Library/Application Support/Typeflow/packs/<id>` unless
+overridden. Standalone Option press/release is hardcoded as manual conversion;
+Option+another key cancels the pending manual conversion and passes through as
+normal app input. Do not re-add the `inputText:key:modifiers:client:` path
+without checking standalone Option: macOS chose that decomposed path and stopped
+delivering modifier-only transitions.
+
 `make -C macos install-user` copies the bundle to `~/Library/Input Methods/`,
 calls `TISRegisterInputSource`, enables the parent input method plus the visible
-Ukrainian mode, and writes the `com.apple.HIToolbox`
+Typeflow mode, and writes the `com.apple.HIToolbox`
 `AppleEnabledInputSources` entries that System Settings reads. TIS sees:
 
 - `io.github.nnnickg.typeflow.inputmethod.Typeflow`
   (`TISTypeKeyboardInputMethodModeEnabled`)
-- `io.github.nnnickg.typeflow.inputmethod.Typeflow.Ukrainian`
-  (`TISTypeKeyboardInputMode`, language `uk`, input mode `Typeflow`)
+- `io.github.nnnickg.typeflow.inputmethod.Typeflow.Main`
+  (`TISTypeKeyboardInputMode`, language `mul`, input mode `Typeflow`)
 
-This is build/register/TIS-discovery verified, not manually host-tested in
-TextEdit yet.
+Manual host testing has verified:
+
+- External secondary pack loading through `language.secondary`.
+- App exclusions via `apps.exclude_bundle_ids` for iTerm2 and Zed.
+- Normal replacement in real text fields.
+- Standalone Option manual conversion in real text fields.
 
 Files:
 
 - `macos/TypeflowFFI/include/module.modulemap`
 - `macos/TypeflowFFI/include/typeflow_shim.h`
 - `macos/Sources/TypeflowKit/Engine.swift`
+- `macos/Sources/TypeflowKit/HostConfig.swift`
 - `macos/Sources/TypeflowKit/KeyCodeMap.swift`
 - `macos/Sources/TypeflowSmoke/main.swift`
 - `macos/Sources/TypeflowInputMethod/InputController.swift`
@@ -143,25 +158,14 @@ embedded Ukrainian on macOS.
 
 ## What's NOT done
 
-### macOS manual IMK validation — not done yet
+### Broader macOS compatibility pass
 
-The bundle builds and registers; the actual system integration still needs a
-real GUI smoke.
-Plan:
-
-1. Run `make -C macos install-user`.
-2. Reopen System Settings → Keyboard → Input Sources. Typeflow should appear as
-   an enabled input mode; search for `Typeflow` if the list is cached.
-3. Type `ghsdbn` in TextEdit and verify `привіт`.
-4. Confirm the one visible Ukrainian mode can emit both Latin and Cyrillic
-   scripts.
-5. If macOS rejects that in real apps, split into two paired input sources.
-
-The non-obvious part: macOS expects each input source to be tied to one primary
-language/script. The current Punto-style approach exposes one Ukrainian mode and
-lets the Rust engine emit either Latin or Cyrillic text. If that fails in real
-apps, fall back to registering two paired input sources and switching between
-them programmatically (KeyKey-style).
+The bundle works locally as a single visible Typeflow mode that emits both Latin
+and Cyrillic. It still needs a broader app matrix before calling the macOS host
+stable: TextEdit, Safari/Chrome text fields, Notes, Mail, Slack, VS Code/Zed
+when not excluded, and password fields. Keep ABC installed as the system
+fallback; macOS will not let a user remove every plain keyboard layout while an
+IMK input method is installed.
 
 ### Regression corpus + calibration
 
@@ -175,23 +179,22 @@ cases are skipped and counted. External TSVs are still supported with
 false positives/negatives, failing token lengths, and a bounded failure sample.
 
 Defaults (especially `confidence_margin = 1.0`) are still an educated guess.
-Before the IMK bundle ships, run generated eval at useful limits, add
-hand-curated hard cases for ambiguous short tokens / code identifiers /
-mixed-script names, then tune until accuracy is north of 95%.
+Keep running generated eval at useful limits, add hand-curated hard cases for
+ambiguous short tokens / code identifiers / mixed-script names, then tune until
+accuracy is north of 95%.
 See `docs/calibration.md` for the current ambiguity policy.
 
-### Host-driven config fields
+### Host-driven behavior
 
-These exist in the config schema, but the macOS host must decide when to call
-the engine/FFI with the corresponding context:
+The macOS host now enforces `apps.exclude_bundle_ids` and checks Carbon secure
+event input before processing key events. Both paths set the FFI host context,
+clear token state, and return the event to the client app unchanged. The host
+also loads scoring knobs, active secondary language, pack directory, and data
+directory from the same config file as the CLI.
 
-- `apps.exclude_bundle_ids` — IMK should set `TF_CONTEXT_APP_EXCLUDED`.
-- `hotkey.manual_convert` — engine/FFI support forced conversion; Swift side
-  still needs a hotkey binding.
-
-The scoring knobs are now available at the FFI layer through `TfEngineConfig`
-and the `_with_config(...)` constructors. The host still has to decide where it
-loads user preferences from.
+Manual convert is hardcoded in the macOS host as a standalone Option
+press/release. It is intentionally not configurable. Option+another key cancels
+the pending manual convert and stays a normal app shortcut/input sequence.
 
 ## Outstanding limitations to be aware of
 
@@ -202,9 +205,11 @@ loads user preferences from.
    names and English loanwords. Words like "amazon" appear in BOTH dictionaries
    with non-trivial counts, weakening the dict signal on certain tokens.
    Filter step in `typeflow-data` would help.
-3. **No focus-loss handling.** When the IMK bundle ships, `deactivateServer:`
-   must reset the engine's token. Otherwise the next focused app inherits a
-   stale buffer and gets weird replacements on its first letters.
+3. **Secure-field detection is host-signal limited.** The IMK layer checks
+   Carbon secure event input and app exclusions before processing keys. If an
+   app does not enable secure event input for a sensitive field, Typeflow cannot
+   infer that from text content without doing exactly the kind of inspection we
+   should avoid.
 4. **Sample asymmetry.** EN n-grams come from ~200 MB of OPUS, secondary packs
    may use different corpus sizes. The smoothed floors and overall scale differ between
    languages. Probably fine for PoC; revisit if calibration finds bias.
@@ -237,7 +242,8 @@ If you're building the IMK bundle:
 - `macos/Sources/TypeflowKit/Engine.swift` — Swift wrapper already calling the
   staticlib through the C ABI.
 - `macos/Sources/TypeflowInputMethod/InputController.swift` — current IMK
-  keyDown/action application path.
+  raw keyDown/flagsChanged event path, host context, standalone Option manual
+  conversion, and action application.
 - `crates/typeflow-ffi/include/typeflow.h` — exact ABI to consume.
 - `crates/typeflow-ffi/src/lib.rs` — Rust side of the bridge; understand
   `TfEvent` / `TfAction` / `typeflow_engine_process` before writing Swift.
@@ -255,19 +261,15 @@ If you're tuning thresholds:
 
 ## Open questions for the next agent / next session
 
-1. **macOS input source registration trick.** Does one visible Ukrainian IMK
-   mode actually let us emit both Latin and Cyrillic in real apps, or do we
-   need the two-paired-sources hack? Worth a 1-day spike before committing to
-   the architecture.
-2. **Embedding strategy.** Should the IMK bundle ship `include_bytes!`-embedded
+1. **Embedding strategy.** Should the IMK bundle ship `include_bytes!`-embedded
    data (~10 MB binary) or load from `Bundle.main.resourcePath` as files? File
    loading is cheaper to update; embedding is simpler.
-3. **Dictionary expansion.** hermitdave's lists include only attested surface
+2. **Dictionary expansion.** hermitdave's lists include only attested surface
    forms from OPUS. For rare secondary-language inflections this misses obvious words.
    Worth merging in Hunspell expansions before the regression corpus pass?
-4. **Score calibration target.** Current policy weights false-positive
+3. **Score calibration target.** Current policy weights false-positive
    switches as worse than false-negative no-switches. Revisit only if real
    typing sessions show manual conversion is too frequent.
-5. **Multi-app config.** Does the user want different thresholds per app
+4. **Multi-app config.** Does the user want different thresholds per app
    (e.g. more conservative in code editors)? Schema-wise it's
    `[apps.com.googlecode.iterm2.engine]` — defer until calibration is done.

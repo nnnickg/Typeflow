@@ -19,7 +19,6 @@ typedef struct TfEngine TfEngine;
 #define TF_MOD_CONTROL  0x02u
 #define TF_MOD_OPTION   0x04u
 #define TF_MOD_COMMAND  0x08u
-#define TF_MOD_FUNCTION 0x10u
 
 #define TF_CONTEXT_SECURE_INPUT 0x01u
 #define TF_CONTEXT_APP_EXCLUDED 0x02u

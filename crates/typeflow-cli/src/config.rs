@@ -16,7 +16,6 @@ pub struct Config {
     pub language: LanguageSection,
     pub packs: PacksSection,
     pub apps: AppsSection,
-    pub hotkey: HotkeySection,
     pub data: DataSection,
 }
 
@@ -94,12 +93,6 @@ pub struct PacksSection {
 #[serde(default)]
 pub struct AppsSection {
     pub exclude_bundle_ids: Vec<String>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(default)]
-pub struct HotkeySection {
-    pub manual_convert: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

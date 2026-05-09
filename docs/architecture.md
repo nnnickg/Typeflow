@@ -7,7 +7,7 @@
                    │  macOS InputMethodKit bundle       │
                    │  (Swift/AppKit IMKInputController) │
                    └─────────────┬──────────────────────┘
-                                 │ keyDown / keyCode / shift
+                                 │ raw keyDown / flagsChanged
                                  ▼
 ┌────────────────────┐   ┌───────────────────────────────┐   ┌────────────────────┐
 │  typeflow-cli      │──▶│  typeflow-core                │◀──│  typeflow-ffi      │
@@ -124,7 +124,7 @@ cargo bench -p typeflow-ffi
 
 ### `typeflow-ffi`
 
-C ABI for the future macOS bundle. Exports:
+C ABI for the macOS bundle. Exports:
 
 - `typeflow_engine_new_embedded()` / `typeflow_engine_new_from_data_dir(path)` /
   `typeflow_engine_new_from_pack_dir(path)` / `typeflow_engine_free`
@@ -145,7 +145,7 @@ event, and action semantics.
 
 ### `macos/`
 
-Staticlib bridge smoke plus the current minimal IMKInputController bundle.
+Staticlib bridge smoke plus the current IMKInputController bundle.
 Current files:
 
 - `Makefile` builds `libtypeflow_ffi.a`, compiles Swift, and runs the smoke.
@@ -154,42 +154,55 @@ Current files:
   adds tiny C helpers for zeroed actions/events.
 - `Sources/TypeflowKit/Engine.swift` wraps the opaque `TfEngine*` lifecycle and
   decodes `TfAction`.
+- `Sources/TypeflowKit/HostConfig.swift` loads the host-relevant subset of
+  `~/.config/typeflow/config.toml`: engine knobs, active secondary language,
+  pack/data directories, and excluded app bundle IDs.
 - `Sources/TypeflowKit/KeyCodeMap.swift` maps macOS ANSI virtual keycodes to
   Rust physical key indexes.
 - `Sources/TypeflowSmoke/main.swift` verifies `ghsdbn` becomes `привіт` through
   the Rust static archive.
 - `Sources/TypeflowInputMethod/InputController.swift` subclasses
-  `IMKInputController`, handles keyDown events, dispatches to the Rust engine,
-  and applies `TfAction` to `NSTextInputClient`.
+  `IMKInputController`, checks secure-input/app-exclusion host context,
+  handles raw keyDown and flagsChanged events, dispatches keyDown events to the
+  Rust engine, binds standalone Option press/release to manual conversion, and
+  applies `TfAction` to `IMKTextInput`.
 - `Sources/TypeflowInputMethod/main.swift` starts the `IMKServer`.
 - `Sources/TypeflowRegister/main.swift` calls `TISRegisterInputSource` after
-  install, enables the parent input method plus its visible Ukrainian mode, and
+  install, enables the parent input method plus its visible Typeflow mode, and
   writes the `com.apple.HIToolbox` `AppleEnabledInputSources` records that
   System Settings reads.
 - `Resources/Info.plist` defines a mode-enabled input method bundle with one
-  visible Ukrainian mode. The `InputModeID` is `Typeflow`; the selectable TIS source id is
-  `io.github.nnnickg.typeflow.inputmethod.Typeflow.Ukrainian`. The bundle id
+  visible Typeflow mode. The `InputModeID` is `Typeflow`; the selectable TIS source id is
+  `io.github.nnnickg.typeflow.inputmethod.Typeflow.Main`. The bundle id
   intentionally contains `.inputmethod.` because TIS depends on that old naming
   convention.
 
 `make -C macos bundle` builds and ad-hoc signs `Typeflow.app`.
 `make -C macos install-user` installs it under `~/Library/Input Methods/` and
-registers/enables it with TIS. It still needs manual host testing. The remaining IMK
-work:
+registers/enables it with TIS. Local manual host testing has verified real text
+input, external pack loading, app exclusions, and standalone Option manual
+conversion. Remaining IMK validation work:
 
-1. Confirm System Settings exposes the source and TextEdit receives correct
-   output.
-2. Validate the single-mode Latin+Cyrillic output path on current macOS.
-3. Add host config handling for excluded apps, secure input, and manual convert.
+1. Run a broader app matrix: TextEdit, browser fields, Notes, Mail, Slack, and
+   code editors when not excluded.
+2. Re-test secure/password fields. The host checks Carbon secure event input,
+   but not every app is equally disciplined.
+3. Keep an eye on IMK dispatch mode. Standalone Option requires raw
+   `handleEvent`/`NSEvent` delivery; the decomposed
+   `inputText:key:modifiers:client:` path does not deliver modifier-only events.
 
 ## Data flow during a keystroke
 
-1. User presses key. macOS sends `keyDown:` to the IMK controller (or in CLI
-   mode, the user types into the REPL).
-2. Host translates the event to a `TfEvent` (or constructs an `InputEvent`
-   directly in Rust).
-3. The host creates the engine from the embedded bundle in release builds. Dev
-   builds can point at a rebuilt data directory.
+1. User presses a key. macOS sends a raw `NSEvent` to the IMK controller (or in
+   CLI mode, the user types into the REPL). Standalone Option arrives as
+   `flagsChanged` and is handled by the host as manual conversion.
+2. Host translates keyDown events to a `TfEvent` (or constructs an `InputEvent`
+   directly in Rust). Standalone Option does not become a `TfEvent`; it calls
+   `typeflow_engine_force_switch_token`.
+3. The macOS host creates the engine from `~/.config/typeflow/config.toml`.
+   `language.secondary = "uk"` uses embedded Ukrainian; any other secondary
+   language loads from the installed pack directory. Dev builds can point at a
+   rebuilt data directory.
 4. `Engine::process(event)`:
    - Pushes the event onto the internal token (a `Vec<LetterEvent>`) unless
      the token has exceeded `max_token_len` and is bypassing until a boundary.
