@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs;
 use std::io;
@@ -30,8 +31,8 @@ pub struct CompiledLanguageData {
 /// Runtime form of `CompiledLanguageData`. Built once at engine creation.
 pub struct LanguageModel {
     pub language_tag: String,
-    pub bigram: HashMap<String, f32>,
-    pub trigram: HashMap<String, f32>,
+    pub bigram: HashMap<u64, f32>,
+    pub trigram: HashMap<u64, f32>,
     pub bigram_floor: f32,
     pub trigram_floor: f32,
 }
@@ -40,8 +41,16 @@ impl LanguageModel {
     pub fn from_compiled(compiled: CompiledLanguageData) -> Self {
         Self {
             language_tag: compiled.language_tag,
-            bigram: compiled.bigrams.into_iter().collect(),
-            trigram: compiled.trigrams.into_iter().collect(),
+            bigram: compiled
+                .bigrams
+                .into_iter()
+                .filter_map(|(key, score)| bigram_key(&key).map(|key| (key, score)))
+                .collect(),
+            trigram: compiled
+                .trigrams
+                .into_iter()
+                .filter_map(|(key, score)| trigram_key(&key).map(|key| (key, score)))
+                .collect(),
             bigram_floor: compiled.bigram_floor,
             trigram_floor: compiled.trigram_floor,
         }
@@ -52,46 +61,49 @@ impl LanguageModel {
         Ok(Self::from_compiled(compiled))
     }
 
-    pub fn bigram_log_prob(&self, bigram: &str) -> f32 {
+    pub fn bigram_log_prob(&self, bigram: u64) -> f32 {
         self.bigram
-            .get(bigram)
+            .get(&bigram)
             .copied()
             .unwrap_or(self.bigram_floor)
     }
 
-    pub fn trigram_log_prob(&self, trigram: &str) -> f32 {
+    pub fn trigram_log_prob(&self, trigram: u64) -> f32 {
         self.trigram
-            .get(trigram)
+            .get(&trigram)
             .copied()
             .unwrap_or(self.trigram_floor)
     }
 
-    pub fn score_bigrams(&self, text: &str) -> f32 {
-        let chars: Vec<char> = text.chars().collect();
-        if chars.len() < 2 {
-            return 0.0;
+    pub fn score_ngrams(&self, text: &str) -> (f32, f32, usize) {
+        let mut bigram = 0.0;
+        let mut trigram = 0.0;
+        let mut count = 0usize;
+        let mut previous_two = '\0';
+        let mut previous_one = '\0';
+
+        for current in text.chars() {
+            count += 1;
+            if count >= 2 {
+                bigram += self.bigram_log_prob(encode_bigram(previous_one, current));
+            }
+            if count >= 3 {
+                trigram +=
+                    self.trigram_log_prob(encode_trigram(previous_two, previous_one, current));
+            }
+            previous_two = previous_one;
+            previous_one = current;
         }
-        chars
-            .windows(2)
-            .map(|window| {
-                let key: String = window.iter().collect();
-                self.bigram_log_prob(&key)
-            })
-            .sum()
+
+        (bigram, trigram, count)
+    }
+
+    pub fn score_bigrams(&self, text: &str) -> f32 {
+        self.score_ngrams(text).0
     }
 
     pub fn score_trigrams(&self, text: &str) -> f32 {
-        let chars: Vec<char> = text.chars().collect();
-        if chars.len() < 3 {
-            return 0.0;
-        }
-        chars
-            .windows(3)
-            .map(|window| {
-                let key: String = window.iter().collect();
-                self.trigram_log_prob(&key)
-            })
-            .sum()
+        self.score_ngrams(text).1
     }
 }
 
@@ -231,20 +243,24 @@ pub struct LanguagePack {
     pub keyboard_layout: String,
     pub keyboard: KeyboardMap,
     pub model: LanguageModel,
-    pub dict: fst::Map<Vec<u8>>,
+    pub dict: fst::Map<Cow<'static, [u8]>>,
     pub metadata: PackMetadata,
 }
 
 impl LanguagePack {
-    pub fn from_bytes(
+    pub fn from_bytes<D>(
         id: &str,
         display_name: &str,
         script: &str,
         keyboard_layout: &str,
         keyboard: KeyboardMap,
         ngrams: &[u8],
-        dict_bytes: Vec<u8>,
-    ) -> Result<Self, BundleError> {
+        dict_bytes: D,
+    ) -> Result<Self, BundleError>
+    where
+        D: Into<Cow<'static, [u8]>>,
+    {
+        let dict_bytes = dict_bytes.into();
         let compiled: CompiledLanguageData = bincode::deserialize(ngrams)?;
         if compiled.language_tag != id {
             return Err(BundleError::LanguageTagMismatch {
@@ -252,7 +268,7 @@ impl LanguagePack {
                 actual: compiled.language_tag,
             });
         }
-        let metadata = PackMetadata::from_bytes(ngrams, dict_bytes.as_slice());
+        let metadata = PackMetadata::from_bytes(ngrams, dict_bytes.as_ref());
         Ok(Self {
             id: id.to_owned(),
             display_name: display_name.to_owned(),
@@ -279,7 +295,7 @@ impl LanguagePack {
             manifest.layout.as_str(),
             keyboard,
             ngrams.as_slice(),
-            dict_bytes,
+            Cow::Owned(dict_bytes),
         )?;
 
         pack.metadata.format_version = manifest.format_version;
@@ -380,8 +396,8 @@ impl LanguageBundle {
         Self::from_bytes(
             en_ngrams,
             secondary_ngrams,
-            en_dict.to_vec(),
-            secondary_dict.to_vec(),
+            Cow::Borrowed(en_dict),
+            Cow::Borrowed(secondary_dict),
         )
     }
 
@@ -412,12 +428,16 @@ impl LanguageBundle {
 
     /// Loads a bundle from in-memory bytes. Suitable for `include_bytes!` use from
     /// downstream crates (CLI / FFI / IMK bundle).
-    pub fn from_bytes(
+    pub fn from_bytes<EnDict, SecondaryDict>(
         en_ngrams: &[u8],
         secondary_ngrams: &[u8],
-        en_dict: Vec<u8>,
-        secondary_dict: Vec<u8>,
-    ) -> Result<Self, BundleError> {
+        en_dict: EnDict,
+        secondary_dict: SecondaryDict,
+    ) -> Result<Self, BundleError>
+    where
+        EnDict: Into<Cow<'static, [u8]>>,
+        SecondaryDict: Into<Cow<'static, [u8]>>,
+    {
         Ok(Self {
             english: LanguagePack::from_bytes(
                 "en",
@@ -456,7 +476,7 @@ impl LanguageBundle {
                 "english-us",
                 KeyboardMap::english_us(),
                 en_ngrams,
-                en_dict.to_vec(),
+                Cow::Borrowed(en_dict),
             )?,
             secondary,
         })
@@ -559,7 +579,7 @@ fn synthetic_model(tag: &str, words: &[(&str, u64)]) -> LanguageModel {
     let bigram_floor = (1.0_f32 / (bigram_total as f32 + bigram_v)).log10();
     let trigram_floor = (1.0_f32 / (trigram_total as f32 + trigram_v)).log10();
 
-    let bigram = bigrams
+    let bigram: HashMap<String, f32> = bigrams
         .into_iter()
         .map(|(key, count)| {
             let p = (count as f32 + 1.0) / (bigram_total as f32 + bigram_v);
@@ -567,7 +587,7 @@ fn synthetic_model(tag: &str, words: &[(&str, u64)]) -> LanguageModel {
         })
         .collect();
 
-    let trigram = trigrams
+    let trigram: HashMap<String, f32> = trigrams
         .into_iter()
         .map(|(key, count)| {
             let p = (count as f32 + 1.0) / (trigram_total as f32 + trigram_v);
@@ -577,15 +597,21 @@ fn synthetic_model(tag: &str, words: &[(&str, u64)]) -> LanguageModel {
 
     LanguageModel {
         language_tag: tag.to_owned(),
-        bigram,
-        trigram,
+        bigram: bigram
+            .into_iter()
+            .filter_map(|(key, score)| bigram_key(&key).map(|key| (key, score)))
+            .collect(),
+        trigram: trigram
+            .into_iter()
+            .filter_map(|(key, score)| trigram_key(&key).map(|key| (key, score)))
+            .collect(),
         bigram_floor,
         trigram_floor,
     }
 }
 
 #[cfg(test)]
-fn synthetic_fst(words: &[(&str, u64)]) -> fst::Map<Vec<u8>> {
+fn synthetic_fst(words: &[(&str, u64)]) -> fst::Map<Cow<'static, [u8]>> {
     let mut sorted: Vec<(&str, u64)> = words.to_vec();
     sorted.sort_by(|a, b| a.0.cmp(b.0));
     let mut builder = fst::MapBuilder::memory();
@@ -593,7 +619,7 @@ fn synthetic_fst(words: &[(&str, u64)]) -> fst::Map<Vec<u8>> {
         builder.insert(word.as_bytes(), count).unwrap();
     }
     let bytes = builder.into_inner().unwrap();
-    fst::Map::new(bytes).unwrap()
+    fst::Map::new(Cow::Owned(bytes)).unwrap()
 }
 
 fn require_non_empty(field: &str, value: &str) -> Result<(), BundleError> {
@@ -660,7 +686,7 @@ pub struct DictLookup {
 
 const PREFIX_SAMPLE_CAP: usize = 256;
 
-pub fn dict_lookup(token: &str, dict: &fst::Map<Vec<u8>>) -> DictLookup {
+pub fn dict_lookup<D: AsRef<[u8]>>(token: &str, dict: &fst::Map<D>) -> DictLookup {
     let mut result = DictLookup::default();
 
     if let Some(count) = dict.get(token.as_bytes()) {
@@ -679,6 +705,35 @@ pub fn dict_lookup(token: &str, dict: &fst::Map<Vec<u8>>) -> DictLookup {
     }
     result.prefix_sample = count;
     result
+}
+
+fn bigram_key(value: &str) -> Option<u64> {
+    let mut chars = value.chars();
+    let first = chars.next()?;
+    let second = chars.next()?;
+    if chars.next().is_some() {
+        return None;
+    }
+    Some(encode_bigram(first, second))
+}
+
+fn trigram_key(value: &str) -> Option<u64> {
+    let mut chars = value.chars();
+    let first = chars.next()?;
+    let second = chars.next()?;
+    let third = chars.next()?;
+    if chars.next().is_some() {
+        return None;
+    }
+    Some(encode_trigram(first, second, third))
+}
+
+fn encode_bigram(first: char, second: char) -> u64 {
+    ((first as u64) << 32) | second as u64
+}
+
+fn encode_trigram(first: char, second: char, third: char) -> u64 {
+    ((first as u64) << 42) | ((second as u64) << 21) | third as u64
 }
 
 fn fnv1a64(bytes: &[u8]) -> u64 {

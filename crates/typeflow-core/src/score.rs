@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use crate::data::{DictLookup, LanguageModel, dict_lookup};
 use crate::{EngineConfig, Layout, LayoutScore};
 
@@ -5,16 +7,14 @@ pub(crate) fn score_layout(
     layout: Layout,
     text: &str,
     model: &LanguageModel,
-    dict: &fst::Map<Vec<u8>>,
+    dict: &fst::Map<Cow<'static, [u8]>>,
     config: &EngineConfig,
 ) -> LayoutScore {
-    let normalized = text.to_lowercase();
-    let score_text = normalized.as_str();
+    let normalized = lowercase_if_needed(text);
+    let score_text = normalized.as_ref();
 
-    let raw_bigram = model.score_bigrams(score_text);
-    let raw_trigram = model.score_trigrams(score_text);
-
-    let char_count = score_text.chars().count() as f32;
+    let (raw_bigram, raw_trigram, char_count) = model.score_ngrams(score_text);
+    let char_count = char_count as f32;
     let (bigram_div, trigram_div) = if config.length_normalize {
         ((char_count - 1.0).max(1.0), (char_count - 2.0).max(1.0))
     } else {
@@ -62,4 +62,38 @@ pub(crate) fn score_layout(
 
 pub fn has_dictionary_evidence(score: LayoutScore) -> bool {
     score.exact_count > 0 || score.prefix_sum.saturating_sub(score.exact_count) > 0
+}
+
+fn lowercase_if_needed(text: &str) -> Cow<'_, str> {
+    let mut output: Option<String> = None;
+
+    let mut resume_from = 0;
+    for (idx, character) in text.char_indices() {
+        let mut lowercase = character.to_lowercase();
+        let first = lowercase.next().unwrap_or(character);
+        let expands = lowercase.next().is_some();
+        if first == character && !expands {
+            continue;
+        }
+
+        let mut normalized = String::with_capacity(text.len());
+        normalized.push_str(&text[..idx]);
+        normalized.push(first);
+        if expands {
+            normalized.extend(character.to_lowercase().skip(1));
+        }
+        resume_from = idx + character.len_utf8();
+        output = Some(normalized);
+        break;
+    }
+
+    let Some(mut normalized) = output else {
+        return Cow::Borrowed(text);
+    };
+
+    for character in text[resume_from..].chars() {
+        normalized.extend(character.to_lowercase());
+    }
+
+    Cow::Owned(normalized)
 }
