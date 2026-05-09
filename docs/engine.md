@@ -76,9 +76,10 @@ keep the current one). Subject to refusal gates *before* this margin check:
    (camelCase / PascalCase) → keep, don't decide.
 4. The whole token is shifted (acronym-like, e.g. `HTTP`) → keep, don't decide.
 
-Digits, punctuation, and identifier separators arrive as `InputEvent::Literal`
-and terminate the current token — they don't reach the margin check at all
-(see "Token boundaries" below).
+Digits and identifier separators arrive as `InputEvent::Literal` and terminate
+the current token — they don't reach the margin check at all. Punctuation keys
+that can also be secondary letters are handled as physical letters until the
+current token has already resolved as English (see "Token boundaries" below).
 
 There is one extra false-positive guard: if the winning candidate has no exact
 or prefix dictionary evidence, it must clear `ngram_only_confidence_margin`
@@ -167,12 +168,21 @@ capitalized words like `Hello` or `Привіт`.
 
 ## Token boundaries
 
-Anything that isn't a language letter (digits, punctuation, separators) is sent
-to the engine as `InputEvent::Literal(char)`. The engine treats a literal as a
-hard token boundary: it clears the current token, emits `Action::Commit(c)`,
-and starts the next token fresh. This keeps `engine.token` and the host's
-committed buffer perfectly in sync regardless of how many literals appear in
-the input stream — backspace through a literal works without desync.
+Anything that is not a physical letter in either loaded layout (digits,
+identifier separators, most symbols) is sent to the engine as
+`InputEvent::Literal(char)`. The engine treats a literal as a hard token
+boundary: it clears the current token, emits `Action::Commit(c)`, and starts
+the next token fresh. This keeps `engine.token` and the host's committed buffer
+in sync regardless of how many literals appear in the input stream — backspace
+through a literal works without desync.
+
+Some punctuation-looking English keys are also real secondary-layout letters:
+`, . ; ' [ ] \` and their shifted forms. Those arrive as `LetterEvent`s so a
+Ukrainian word containing `б`, `ю`, `ж`, `є`, `х`, `ї`, or `ґ` can still be
+classified from physical key input. To avoid gluing normal prose together, when
+the active layout is English and the current token has already resolved as
+English, pressing one of those English punctuation keys commits it as a token
+boundary instead of extending the token.
 
 ## Calibration: how to tune
 

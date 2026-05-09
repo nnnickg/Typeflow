@@ -9,8 +9,9 @@ you'll have everything.
 
 - `PhysicalKey` covers 34 positions (26 ANSI letters + `` ` `` `[` `]` `;`
   `'` `,` `.` `\`). The backslash position exists for Ukrainian `ґ`.
-- `PhysicalKey::from_char` is bidirectional — accepts both Latin and Cyrillic
-  characters and reverse-maps to the underlying physical key.
+- `PhysicalKey::from_char` only covers the fixed English-US side. Text-driven
+  callers that need Cyrillic/custom secondary reverse mapping must use
+  `LanguageBundle::letter_event_from_char`.
 - `InputEvent::Letter / Literal / Backspace / EndToken` is the unified entry.
   Hosts decide what counts as `EndToken` (space, tab, return, punctuation
   outside the letter set, focus loss, etc.). `InputEvent::HostBypass` covers
@@ -31,7 +32,9 @@ you'll have everything.
   flip just because the secondary layout is the less-bad candidate.
 - `disable_on_internal_caps` blocks switching on camelCase / PascalCase tokens.
 - Literal digits/separators bypass the current token (`abc123`, URLs, paths,
-  snake_case).
+  snake_case). Punctuation-position keys remain physical letters for secondary
+  layouts, but English punctuation on those keys terminates a token once the
+  current token has already resolved as English.
 - `force_switch_token()` exists for Punto-style manual correction.
 - Unit tests cover synthetic in-memory bundles, pack parser failures, malformed
   n-gram/FST artifacts, weird Unicode literals, host bypass, and devops/security
@@ -108,7 +111,8 @@ physical key indexes, calls the FFI, and applies
 `TypeflowAction` through `IMKTextInput.insertText(_:replacementRange:)`.
 The Swift host reads the same config path as the CLI (`~/.config/typeflow/config.toml`):
 engine knobs, `language.secondary`, `packs.directory`, `data.directory`, and
-`apps.exclude_bundle_ids`. `language.secondary = "uk"` uses embedded Ukrainian;
+`apps.exclude_bundle_ids`. Environment overrides for data/pack directories take
+precedence over TOML, matching the CLI. `language.secondary = "uk"` uses embedded Ukrainian;
 other values load `~/Library/Application Support/Typeflow/packs/<id>` unless
 overridden. Standalone Option press/release is hardcoded as manual conversion;
 Option+another key cancels the pending manual conversion and passes through as
@@ -132,6 +136,10 @@ Manual host testing has verified:
 - App exclusions via `apps.exclude_bundle_ids` for iTerm2 and Zed.
 - Normal replacement in real text fields.
 - Standalone Option manual conversion in real text fields.
+
+The host also resets token state when the input client changes, selected text
+is active, or the caret location no longer matches the previous action's
+predicted location.
 
 Files:
 

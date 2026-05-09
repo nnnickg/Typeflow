@@ -11,15 +11,15 @@ pub use keyboard::{
 };
 pub use score::has_dictionary_evidence;
 pub use types::{
-    Action, Decision, EngineConfig, EngineOutput, HostContext, InputEvent, Layout,
-    LayoutCandidates, LayoutScore, ScoreAnalysis,
+    Action, Decision, EngineConfig, EngineConfigError, EngineOutput, HostContext, InputEvent,
+    Layout, LayoutCandidates, LayoutScore, MAX_CONFIG_TOKEN_LEN, ScoreAnalysis,
 };
 
 #[cfg(test)]
 mod tests {
     use super::{
-        Action, Decision, Engine, EngineConfig, HostContext, InputEvent, KeyboardMap, Layout,
-        LetterEvent, PhysicalKey,
+        Action, Decision, Engine, EngineConfig, EngineConfigError, HostContext, InputEvent,
+        KeyboardMap, Layout, LetterEvent, MAX_CONFIG_TOKEN_LEN, PhysicalKey,
     };
     use crate::data::LanguageBundle;
 
@@ -53,6 +53,7 @@ mod tests {
                 ("звичка", 150),
                 ("мир", 1000),
                 ("мова", 600),
+                ("баба", 500),
                 ("розкладка", 100),
                 ("клавіатура", 80),
                 ("перемикання", 70),
@@ -75,6 +76,48 @@ mod tests {
         assert_eq!(engine.token_len(), 0);
         assert_eq!(engine.bundle().display_name(Layout::English), "English");
         assert_eq!(engine.bundle().display_name(Layout::Secondary), "Ukrainian");
+    }
+
+    #[test]
+    fn engine_config_rejects_invalid_runtime_values() {
+        assert_eq!(
+            EngineConfig {
+                min_token_len: 0,
+                ..EngineConfig::default()
+            }
+            .validate(),
+            Err(EngineConfigError::MinTokenLenZero)
+        );
+        assert_eq!(
+            EngineConfig {
+                min_token_len: 8,
+                max_token_len: 4,
+                ..EngineConfig::default()
+            }
+            .validate(),
+            Err(EngineConfigError::MinTokenLenGreaterThanMaxTokenLen { min: 8, max: 4 })
+        );
+        assert_eq!(
+            EngineConfig {
+                max_token_len: MAX_CONFIG_TOKEN_LEN + 1,
+                ..EngineConfig::default()
+            }
+            .validate(),
+            Err(EngineConfigError::MaxTokenLenTooLarge {
+                value: MAX_CONFIG_TOKEN_LEN + 1,
+                max: MAX_CONFIG_TOKEN_LEN,
+            })
+        );
+        assert_eq!(
+            EngineConfig {
+                confidence_margin: f32::NAN,
+                ..EngineConfig::default()
+            }
+            .validate(),
+            Err(EngineConfigError::InvalidFloat {
+                field: "confidence_margin",
+            })
+        );
     }
 
     #[test]
@@ -349,6 +392,24 @@ mod tests {
             engine.process(InputEvent::Letter(event));
         }
         assert_eq!(engine.current_layout(), Layout::English);
+    }
+
+    #[test]
+    fn english_punctuation_key_ends_decided_english_token() {
+        let mut engine = engine();
+        let rendered = run_cli_like_token(&mut engine, "hello,ghsdbn");
+
+        assert_eq!(rendered, "hello,привіт");
+        assert_eq!(engine.current_layout(), Layout::Secondary);
+    }
+
+    #[test]
+    fn punctuation_position_keys_can_still_form_secondary_words() {
+        let mut engine = engine();
+        let rendered = run_cli_like_token(&mut engine, ",f,f");
+
+        assert_eq!(rendered, "баба");
+        assert_eq!(engine.current_layout(), Layout::Secondary);
     }
 
     #[test]

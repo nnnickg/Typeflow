@@ -17,6 +17,8 @@ final class TypeflowInputController: IMKInputController {
     private var hostContextFlags: UInt32 = 0
     private var pendingOptionManualConvert = false
     private var manualConvertCancelled = false
+    private var trackedClientID: ObjectIdentifier?
+    private var expectedSelectedLocation: Int?
 
     override init!(server: IMKServer!, delegate: Any!, client inputClient: Any!) {
         let loadedConfig = TypeflowHostConfig.load()
@@ -46,17 +48,20 @@ final class TypeflowInputController: IMKInputController {
     override func activateServer(_ sender: Any!) {
         logger.notice("activated input controller")
         _ = updateHostContext(client: sender)
+        resetTrackedHostState()
         engine?.resetToken()
     }
 
     override func deactivateServer(_ sender: Any!) {
         hostContextFlags = 0
         resetPendingManualConvert()
+        resetTrackedHostState()
         engine?.resetToken()
     }
 
     override func commitComposition(_ sender: Any!) {
         resetPendingManualConvert()
+        resetTrackedHostState()
         engine?.resetToken()
     }
 
@@ -115,13 +120,19 @@ final class TypeflowInputController: IMKInputController {
             _ = try? engine.processHostBypass(modifiers: modifiers)
             return false
         }
+        if shouldBypassForHostSelection(client) {
+            _ = try? engine.processHostBypass(modifiers: modifiers)
+            return false
+        }
 
         switch Int(keyCode) {
         case kVK_Delete:
             _ = try? engine.processBackspace()
+            recordExpectedSelectionAfterHostBackspace(client)
             return false
         case kVK_Return, kVK_Tab, kVK_Escape:
             _ = try? engine.endToken()
+            expectedSelectedLocation = nil
             return false
         default:
             break
@@ -180,6 +191,9 @@ final class TypeflowInputController: IMKInputController {
         guard let client = sender as? IMKTextInput else {
             return false
         }
+        if shouldBypassForHostSelection(client) {
+            return false
+        }
 
         do {
             _ = apply(try engine.forceSwitchToken(), client: client)
@@ -198,10 +212,17 @@ final class TypeflowInputController: IMKInputController {
             return false
         case .resetToken:
             logger.notice("action=resetToken")
+            expectedSelectedLocation = nil
             return false
         case let .commit(character):
             logger.notice("action=commit")
+            let selected = client.selectedRange()
             client.insertText(String(character), replacementRange: insertionRange)
+            if selected.location != NSNotFound, selected.length == 0 {
+                expectedSelectedLocation = selected.location + 1
+            } else {
+                expectedSelectedLocation = nil
+            }
             return true
         case let .replaceToken(oldLength, replacement, _):
             let selected = client.selectedRange()
@@ -213,14 +234,9 @@ final class TypeflowInputController: IMKInputController {
                 logger.notice("replaceToken rejected selected range")
                 return false
             }
-            if deleteBackward(oldLength, client: client) {
-                logger.notice("replaceToken used doCommandBySelector delete path")
-                client.insertText(replacement, replacementRange: insertionRange)
-            } else {
-                logger.notice("replaceToken used absolute replacement range path")
-                let range = NSRange(location: selected.location - oldLength, length: oldLength)
-                client.insertText(replacement, replacementRange: range)
-            }
+            let range = NSRange(location: selected.location - oldLength, length: oldLength)
+            client.insertText(replacement, replacementRange: range)
+            expectedSelectedLocation = range.location + replacement.count
             return true
         }
     }
@@ -239,6 +255,9 @@ final class TypeflowInputController: IMKInputController {
         }
 
         engine?.setHostContext(flags: flags)
+        if flags != 0 {
+            expectedSelectedLocation = nil
+        }
 
         if flags != hostContextFlags {
             logger.notice(
@@ -261,19 +280,47 @@ final class TypeflowInputController: IMKInputController {
         manualConvertCancelled = false
     }
 
-    private func deleteBackward(_ count: Int, client: IMKTextInput) -> Bool {
-        let object = client as AnyObject
-        let commandSelector = NSSelectorFromString("doCommandBySelector:")
-        guard object.responds(to: commandSelector), let method = object.method(for: commandSelector) else {
-            return false
+    private func shouldBypassForHostSelection(_ client: IMKTextInput) -> Bool {
+        let clientID = ObjectIdentifier(client as AnyObject)
+        let selected = client.selectedRange()
+
+        if trackedClientID != clientID {
+            trackedClientID = clientID
+            expectedSelectedLocation = selected.location != NSNotFound && selected.length == 0
+                ? selected.location
+                : nil
+            engine?.resetToken()
         }
 
-        typealias CommandSender = @convention(c) (AnyObject, Selector, Selector) -> Void
-        let send = unsafeBitCast(method, to: CommandSender.self)
-        for _ in 0..<count {
-            send(object, commandSelector, #selector(NSResponder.deleteBackward(_:)))
+        guard selected.location != NSNotFound, selected.length == 0 else {
+            engine?.resetToken()
+            expectedSelectedLocation = nil
+            logger.notice("host selection is not a collapsed caret; bypassing")
+            return true
         }
-        return true
+
+        if let expectedSelectedLocation, selected.location != expectedSelectedLocation {
+            engine?.resetToken()
+            logger.notice(
+                "host caret moved expected=\(expectedSelectedLocation, privacy: .public) actual=\(selected.location, privacy: .public); token reset"
+            )
+        }
+        self.expectedSelectedLocation = selected.location
+        return false
+    }
+
+    private func recordExpectedSelectionAfterHostBackspace(_ client: IMKTextInput) {
+        let selected = client.selectedRange()
+        guard selected.location != NSNotFound, selected.length == 0 else {
+            expectedSelectedLocation = nil
+            return
+        }
+        expectedSelectedLocation = max(0, selected.location - 1)
+    }
+
+    private func resetTrackedHostState() {
+        trackedClientID = nil
+        expectedSelectedLocation = nil
     }
 
     private var insertionRange: NSRange {

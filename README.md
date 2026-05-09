@@ -144,8 +144,10 @@ typeflow --config /tmp/x.toml type ghsdbn
 
 See [`docs/engine.md`](docs/engine.md) for what each config field actually controls.
 The macOS input method reads the same config path for engine tuning, active
-secondary language packs, and excluded app bundle IDs. Manual conversion is not
-configurable in TOML: the macOS host hardcodes standalone Option press/release.
+secondary language packs, and excluded app bundle IDs. `TYPEFLOW_DATA_DIR` and
+`TYPEFLOW_PACK_DIR` override TOML in both the CLI and macOS host. Manual
+conversion is not configurable in TOML: the macOS host hardcodes standalone
+Option press/release.
 Option+another key is treated as normal app input.
 
 Example app exclusion config:

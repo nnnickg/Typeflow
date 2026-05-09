@@ -6,6 +6,10 @@ enum SmokeError: Error, CustomStringConvertible {
     case wrongOutput(String)
     case wrongLayout(TypeflowLayout)
     case wrongDefaultMaxTokenLen(Int)
+    case wrongPackDirectory(String?)
+    case wrongDataDirectory(String?)
+    case wrongSecondaryLanguage(String)
+    case wrongExcludedBundleIDs(Set<String>)
 
     var description: String {
         switch self {
@@ -17,6 +21,14 @@ enum SmokeError: Error, CustomStringConvertible {
             return "expected secondary layout, got \(layout)"
         case let .wrongDefaultMaxTokenLen(value):
             return "expected default max_token_len 128, got \(value)"
+        case let .wrongPackDirectory(value):
+            return "unexpected pack directory: \(value ?? "nil")"
+        case let .wrongDataDirectory(value):
+            return "unexpected data directory: \(value ?? "nil")"
+        case let .wrongSecondaryLanguage(value):
+            return "unexpected secondary language: \(value)"
+        case let .wrongExcludedBundleIDs(value):
+            return "unexpected excluded bundle IDs: \(value)"
         }
     }
 }
@@ -43,11 +55,65 @@ func fail(_ error: Error) -> Never {
     exit(1)
 }
 
+func verifyHostConfigPrecedence() throws {
+    let root = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("typeflow-smoke-\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString)")
+    let configPath = root
+        .appendingPathComponent(".config")
+        .appendingPathComponent("typeflow")
+        .appendingPathComponent("config.toml")
+    try FileManager.default.createDirectory(
+        at: configPath.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+    )
+    defer {
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    try """
+    [language]
+    secondary = "pl"
+
+    [packs]
+    directory = "/config/packs"
+
+    [data]
+    directory = "/config/data"
+
+    [apps]
+    exclude_bundle_ids = [
+        "dev.zed.Zed",
+        "com.apple.Terminal",
+    ]
+    """.write(to: configPath, atomically: true, encoding: .utf8)
+
+    let config = TypeflowHostConfig.load(environment: [
+        "HOME": root.path,
+        "TYPEFLOW_CONFIG": configPath.path,
+        "TYPEFLOW_PACK_DIR": "/env/packs",
+        "TYPEFLOW_DATA_DIR": "/env/data",
+    ])
+
+    guard config.packDirectory == "/env/packs" else {
+        throw SmokeError.wrongPackDirectory(config.packDirectory)
+    }
+    guard config.dataDirectory == "/env/data" else {
+        throw SmokeError.wrongDataDirectory(config.dataDirectory)
+    }
+    guard config.secondaryLanguage == "pl" else {
+        throw SmokeError.wrongSecondaryLanguage(config.secondaryLanguage)
+    }
+    guard config.excludedBundleIDs == Set(["dev.zed.Zed", "com.apple.Terminal"]) else {
+        throw SmokeError.wrongExcludedBundleIDs(config.excludedBundleIDs)
+    }
+}
+
 do {
     let config = TypeflowEngine.defaultConfig()
     guard config.max_token_len == 128 else {
         throw SmokeError.wrongDefaultMaxTokenLen(config.max_token_len)
     }
+    try verifyHostConfigPrecedence()
 
     let engine = try TypeflowEngine()
     var committed = ""
