@@ -21,8 +21,6 @@ private let slowProcessThresholdMs = 2.0
 private let slowHostThresholdMs = 0.75
 private let slowCallThresholdMs = 0.25
 private let hostContextCacheTTLSeconds: TimeInterval = 0.25
-private let selectionPollAfterIdleSeconds: TimeInterval = 0.20
-private let selectionPollIntervalSeconds: TimeInterval = 1.0
 private let accessibilityTrustCacheTTLSeconds: TimeInterval = 1.0
 
 @inline(__always)
@@ -70,10 +68,7 @@ final class TypeflowInputController: IMKInputController {
     private var pendingOptionManualConvert = false
     private var manualConvertCancelled = false
     private var trackedClientID: ObjectIdentifier?
-    private var expectedSelectedLocation: Int?
-    private var deferredToken: DeferredTokenSession?
-    private var lastKeyDownAt: TimeInterval = 0
-    private var lastSelectionCheckAt: TimeInterval = 0
+    private var activeComposition = ""
 
     override init!(server: IMKServer!, delegate: Any!, client inputClient: Any!) {
         var loadedConfig: TypeflowHostConfig?
@@ -118,8 +113,10 @@ final class TypeflowInputController: IMKInputController {
     }
 
     override func commitComposition(_ sender: Any!) {
-        if let client = sender as? IMKTextInput {
-            _ = flushDeferredReplacementWithAuthoritativeSelection(client: client, reason: "commitComposition")
+        if let client = sender as? IMKTextInput,
+           let action = try? engine?.endToken()
+        {
+            _ = applyComposition(action, client: client, reason: "commitComposition")
         }
         resetPendingManualConvert()
         resetTrackedHostState()
@@ -127,7 +124,7 @@ final class TypeflowInputController: IMKInputController {
     }
 
     override func composedString(_ sender: Any!) -> Any! {
-        nil
+        activeComposition.isEmpty ? nil : activeComposition
     }
 
     override func originalString(_ sender: Any!) -> NSAttributedString! {
@@ -135,7 +132,7 @@ final class TypeflowInputController: IMKInputController {
     }
 
     override func selectionRange() -> NSRange {
-        NSRange(location: 0, length: 0)
+        NSRange(location: activeComposition.utf16.count, length: 0)
     }
 
     override func replacementRange() -> NSRange {
@@ -174,8 +171,6 @@ final class TypeflowInputController: IMKInputController {
         origin: String
     ) -> Bool {
         let processStarted = ProcessInfo.processInfo.systemUptime
-        let previousKeyDownAt = lastKeyDownAt
-        lastKeyDownAt = processStarted
         defer {
             logPerformance(name: "processKey", started: processStarted, thresholdMs: slowProcessThresholdMs)
         }
@@ -189,140 +184,74 @@ final class TypeflowInputController: IMKInputController {
         )
 
         let modifiers = ffiModifiers(from: modifierFlags, keyCode: keyCode)
-        if shouldBypassHost(modifierFlags) {
-            if let client = sender as? IMKTextInput {
-                _ = flushDeferredReplacementWithAuthoritativeSelection(client: client, reason: "hostBypass")
-            }
-            _ = try? measured("ffi.processHostBypass", thresholdMs: slowCallThresholdMs) {
-                try engine.processHostBypass(modifiers: modifiers)
-            }
-            resetDeferredSession(reason: "hostBypass")
-            return false
-        }
-
-        switch Int(keyCode) {
-        case kVK_Return, kVK_Tab, kVK_Escape:
-            if let client = sender as? IMKTextInput {
-                _ = flushDeferredReplacementWithAuthoritativeSelection(client: client, reason: "endToken")
-            }
-            _ = try? measured("ffi.endToken", thresholdMs: slowCallThresholdMs) {
-                try engine.endToken()
-            }
-            expectedSelectedLocation = nil
-            resetDeferredSession(reason: "endToken")
-            return false
-        default:
-            break
-        }
-
-        if shouldBypassNonTextKey(keyCode: keyCode, characters: characters) {
-            if let client = sender as? IMKTextInput {
-                _ = flushDeferredReplacementWithAuthoritativeSelection(client: client, reason: "nonText")
-            }
-            engine.resetLayout(.english)
-            expectedSelectedLocation = nil
-            resetDeferredSession(reason: "nonText")
-            return false
-        }
-
         guard let client = sender as? IMKTextInput else {
             _ = try? measured("ffi.processHostBypass", thresholdMs: slowCallThresholdMs) {
                 try engine.processHostBypass(modifiers: modifiers)
             }
-            resetDeferredSession(reason: "missingClient")
+            activeComposition = ""
             return false
         }
+        syncClient(client)
+
+        if shouldBypassHost(modifierFlags) {
+            let action = (try? measured("ffi.processHostBypass", thresholdMs: slowCallThresholdMs) {
+                try engine.processHostBypass(modifiers: modifiers)
+            }) ?? .bypass
+            return applyComposition(action, client: client, reason: "hostBypass")
+        }
+
         let hostContext = measured("updateHostContext", thresholdMs: slowHostThresholdMs) {
             updateHostContext(client: sender)
         }
         if hostContext.keyProcessingDisabled {
-            resetDeferredSession(reason: "disabled")
+            clearComposition(client: client, reason: "disabled")
+            engine.resetToken()
             return false
         }
 
         do {
-            let isBackspace = Int(keyCode) == kVK_Delete
-            let selection = hostSelectionSnapshot(
-                client,
-                allowPrediction: !isBackspace,
-                previousEventAt: previousKeyDownAt
-            )
-            if isBackspace {
-                return handleDeferredBackspace(
-                    engine: engine,
-                    client: client,
-                    selection: selection,
-                    modifiers: modifiers
-                )
+            switch Int(keyCode) {
+            case kVK_Return, kVK_Tab, kVK_Escape:
+                let action = try measured("ffi.endToken", thresholdMs: slowCallThresholdMs) {
+                    try engine.endToken()
+                }
+                return applyComposition(action, client: client, reason: "endToken")
+            case kVK_Delete:
+                let action = try measured("ffi.processBackspace", thresholdMs: slowCallThresholdMs) {
+                    try engine.processBackspace()
+                }
+                return applyComposition(action, client: client, reason: "backspace")
+            default:
+                break
             }
-            if selection.bypassesTextMutation {
-                _ = try? measured("ffi.processHostBypass", thresholdMs: slowCallThresholdMs) {
+
+            if shouldBypassNonTextKey(keyCode: keyCode, characters: characters) {
+                let action = try measured("ffi.processHostBypass", thresholdMs: slowCallThresholdMs) {
                     try engine.processHostBypass(modifiers: modifiers)
                 }
-                resetDeferredSession(reason: "selectionBypass")
-                return false
+                return applyComposition(action, client: client, reason: "nonText")
             }
 
             if let physical = TypeflowMacKeyCode.physicalKeyIndex(for: keyCode) {
                 let action = try measured("ffi.process", thresholdMs: slowCallThresholdMs) {
                     try engine.process(physicalKey: physical, modifiers: modifiers)
                 }
-                if engine.tokenLength == 0 {
-                    let boundarySelection = selection.authoritative
-                        ? selection
-                        : hostSelectionSnapshot(
-                            client,
-                            allowPrediction: false,
-                            previousEventAt: previousKeyDownAt
-                        )
-                    _ = flushDeferredReplacement(
-                        client: client,
-                        selection: boundarySelection,
-                        reason: "boundary"
-                    )
-                    resetDeferredSession(reason: "boundary")
-                    recordExpectedSelectionAfterNativeInsertion(
-                        selected: boundarySelection.selected,
-                        characters: characters
-                    )
-                    return false
-                }
-
-                return beginOrAdvanceDeferredSession(
-                    action: action,
-                    engine: engine,
-                    client: client,
-                    selected: selection.selected,
-                    characters: characters
-                )
+                return applyComposition(action, client: client, reason: "key")
             }
 
-            let literalSelection = selection.authoritative
-                ? selection
-                : hostSelectionSnapshot(
-                    client,
-                    allowPrediction: false,
-                    previousEventAt: previousKeyDownAt
-                )
-            _ = flushDeferredReplacement(
-                client: client,
-                selection: literalSelection,
-                reason: "literal"
-            )
             guard let scalar = singleScalar(from: characters) else {
-                _ = try? engine.endToken()
-                resetDeferredSession(reason: "literalWithoutScalar")
-                return false
+                let action = try measured("ffi.endToken", thresholdMs: slowCallThresholdMs) {
+                    try engine.endToken()
+                }
+                return applyComposition(action, client: client, reason: "literalWithoutScalar")
             }
-            _ = try measured("ffi.processLiteral", thresholdMs: slowCallThresholdMs) {
+            let action = try measured("ffi.processLiteral", thresholdMs: slowCallThresholdMs) {
                 try engine.processLiteral(scalar)
             }
-            resetDeferredSession(reason: "literal")
-            recordExpectedSelectionAfterNativeInsertion(selected: literalSelection.selected, characters: characters)
-            return false
+            return applyComposition(action, client: client, reason: "literal")
         } catch {
             engine.resetToken()
-            resetDeferredSession(reason: "error")
+            clearComposition(client: client, reason: "error")
             return false
         }
     }
@@ -375,574 +304,84 @@ final class TypeflowInputController: IMKInputController {
         guard shouldConvert, let client = sender as? IMKTextInput else {
             return false
         }
-        return handleDeferredManualConvert(engine: engine, client: client)
-    }
-
-    private func deferredTokenBelongs(to client: IMKTextInput) -> Bool {
-        deferredToken?.clientID == ObjectIdentifier(client as AnyObject)
-    }
-
-    private func beginOrAdvanceDeferredSession(
-        action: TypeflowAction,
-        engine: TypeflowEngine,
-        client: IMKTextInput,
-        selected: NSRange,
-        characters: String?
-    ) -> Bool {
-        guard let characters,
-              !characters.isEmpty,
-              selected.location != NSNotFound,
-              selected.length == 0
-        else {
-            engine.resetToken()
-            expectedSelectedLocation = nil
-            resetDeferredSession(reason: "untrackableKey")
-            return false
-        }
-
-        let clientID = ObjectIdentifier(client as AnyObject)
-        let existingSession = deferredToken?.clientID == clientID ? deferredToken : nil
-        guard let desired = desiredTokenText(
-            engine: engine,
-            fallback: action,
-            existingSession: existingSession
-        ) else {
-            engine.resetToken()
-            expectedSelectedLocation = nil
-            resetDeferredSession(reason: "missingDesiredToken")
-            return false
-        }
-
-        if let existingSession,
-           let handled = advanceRenderedSessionIfPossible(
-               session: existingSession,
-               desired: desired,
-               client: client,
-               selected: selected,
-               characters: characters
-           )
-        {
-            return handled
-        }
-
-        var session = existingSession
-            ?? DeferredTokenSession(
-                clientID: clientID,
-                baseLocation: selected.location,
-                nativeText: "",
-                visibleText: "",
-                desiredText: "",
-                layout: desired.layout,
-                lastCaretLocation: selected.location,
-                lastCaretAuthoritative: true,
-                applyGeneration: 0
-            )
-
-        session.nativeText.append(characters)
-        session.visibleText.append(characters)
-        session.desiredText = desired.text
-        session.layout = desired.layout
-        session.lastCaretLocation = session.visibleEndLocation
-        session.lastCaretAuthoritative = false
-        expectedSelectedLocation = session.visibleEndLocation
-        deferredToken = session
-
-        logger.debug(
-            "action=deferredAdvance visibleLength=\(session.visibleText.utf16.count, privacy: .private) desiredLength=\(session.desiredText.utf16.count, privacy: .private) pending=\(session.needsReplacement, privacy: .private)"
-        )
-        if session.needsReplacement {
-            scheduleDeferredReplacement(client: client, reason: "key")
-        }
-        return false
-    }
-
-    private func advanceRenderedSessionIfPossible(
-        session existingSession: DeferredTokenSession,
-        desired: DeferredDesiredToken,
-        client: IMKTextInput,
-        selected: NSRange,
-        characters: String
-    ) -> Bool? {
-        guard existingSession.isRendered,
-              selected.location == existingSession.visibleEndLocation,
-              selected.length == 0
-        else {
-            return nil
-        }
-
-        guard desired.text.hasPrefix(existingSession.desiredText) else {
-            var session = existingSession
-            session.nativeText.append(characters)
-            session.desiredText = desired.text
-            session.layout = desired.layout
-            applyDeferredTailMutation(
-                session: session,
-                client: client,
-                reason: "renderedReconcile"
-            )
-            logger.debug("action=deferredRenderedReconcile")
-            return true
-        }
-
-        let suffix = String(desired.text.dropFirst(existingSession.desiredText.count))
-        guard !suffix.isEmpty else {
-            var session = existingSession
-            session.nativeText.append(characters)
-            session.desiredText = desired.text
-            session.layout = desired.layout
-            session.lastCaretLocation = session.visibleEndLocation
-            session.lastCaretAuthoritative = false
-            expectedSelectedLocation = session.visibleEndLocation
-            deferredToken = session
-            logger.debug("action=deferredRenderedNoop")
-            return true
-        }
-
-        var session = existingSession
-        session.nativeText.append(characters)
-        session.desiredText = desired.text
-        session.layout = desired.layout
-
-        if suffix == characters {
-            session.visibleText.append(characters)
-            session.lastCaretLocation = session.visibleEndLocation
-            session.lastCaretAuthoritative = false
-            expectedSelectedLocation = session.visibleEndLocation
-            deferredToken = session
-            logger.debug("action=deferredRenderedNative")
-            return false
-        }
-
-        measured("insertText.deferredAppend", thresholdMs: slowHostThresholdMs) {
-            client.insertText(suffix, replacementRange: replacementRange())
-        }
-        session.visibleText.append(suffix)
-        session.lastCaretLocation = session.visibleEndLocation
-        session.lastCaretAuthoritative = false
-        expectedSelectedLocation = session.visibleEndLocation
-        deferredToken = session
-        logger.debug(
-            "action=deferredRenderedAppend suffixLength=\(suffix.utf16.count, privacy: .private)"
-        )
-        return true
-    }
-
-    private func applyDeferredTailMutation(
-        session inputSession: DeferredTokenSession,
-        client: IMKTextInput,
-        reason: String
-    ) {
-        var session = inputSession
-        let mutation = deferredTailMutation(from: session)
-        if mutation.range.length > 0 || !mutation.replacement.isEmpty {
-            measured("insertText.deferredReplaceTail.\(reason)", thresholdMs: slowHostThresholdMs) {
-                client.insertText(mutation.replacement, replacementRange: mutation.range)
-            }
-        }
-        session.visibleText = session.desiredText
-        session.lastCaretLocation = session.desiredEndLocation
-        session.lastCaretAuthoritative = false
-        expectedSelectedLocation = session.desiredEndLocation
-        deferredToken = session
-    }
-
-    private func deferredTailMutation(from session: DeferredTokenSession) -> DeferredTailMutation {
-        var visibleIndex = session.visibleText.startIndex
-        var desiredIndex = session.desiredText.startIndex
-        while visibleIndex != session.visibleText.endIndex,
-              desiredIndex != session.desiredText.endIndex,
-              session.visibleText[visibleIndex] == session.desiredText[desiredIndex]
-        {
-            session.visibleText.formIndex(after: &visibleIndex)
-            session.desiredText.formIndex(after: &desiredIndex)
-        }
-
-        let prefixLength = session.visibleText[..<visibleIndex].utf16.count
-        let replacementRange = NSRange(
-            location: session.baseLocation + prefixLength,
-            length: session.visibleText[visibleIndex...].utf16.count
-        )
-        return DeferredTailMutation(
-            range: replacementRange,
-            replacement: String(session.desiredText[desiredIndex...])
-        )
-    }
-
-    private func desiredTokenText(
-        engine: TypeflowEngine,
-        fallback action: TypeflowAction,
-        existingSession: DeferredTokenSession?
-    ) -> DeferredDesiredToken? {
-        switch action {
-        case let .replaceToken(_, replacement, layout):
-            return DeferredDesiredToken(text: replacement, layout: layout)
-        case let .commit(character):
-            let layout = existingSession?.layout ?? (try? engine.currentLayout) ?? .english
-            return DeferredDesiredToken(
-                text: (existingSession?.desiredText ?? "") + String(character),
-                layout: layout
-            )
-        case .keep, .resetToken:
-            break
-        }
-
-        if case let .some(.replaceToken(_, replacement, layout)) = try? engine.currentToken() {
-            return DeferredDesiredToken(text: replacement, layout: layout)
-        }
-        return nil
-    }
-
-    @discardableResult
-    private func flushDeferredReplacementWithAuthoritativeSelection(
-        client: IMKTextInput,
-        reason: String
-    ) -> Bool {
-        let selection = hostSelectionSnapshot(
-            client,
-            allowPrediction: false,
-            previousEventAt: lastKeyDownAt
-        )
-        guard !selection.bypassesTextMutation else {
-            return false
-        }
-        return flushDeferredReplacement(client: client, selection: selection, reason: reason)
-    }
-
-    @discardableResult
-    private func flushDeferredReplacement(
-        client: IMKTextInput,
-        selection: HostSelectionSnapshot,
-        reason: String
-    ) -> Bool {
-        let attempt = applyDeferredReplacementNow(client: client, selection: selection, reason: reason)
-        guard let session = deferredToken,
-              session.clientID == ObjectIdentifier(client as AnyObject)
-        else {
-            return attempt.appliedHostMutation
-        }
-
-        if session.needsReplacement {
-            logger.debug("deferredFlush left pending reason=\(reason, privacy: .public)")
-        } else {
-            resetDeferredSession(reason: reason)
-        }
-        return attempt.appliedHostMutation
-    }
-
-    private func applyDeferredReplacementNow(
-        client: IMKTextInput,
-        selection: HostSelectionSnapshot,
-        reason: String
-    ) -> DeferredReplacementAttempt {
-        let clientID = ObjectIdentifier(client as AnyObject)
-        guard var session = deferredToken,
-              session.clientID == clientID,
-              session.needsReplacement
-        else {
-            return .notNeeded
-        }
-        guard selection.selected.location != NSNotFound,
-              selection.selected.length == 0
-        else {
-            return .abandoned
-        }
-
-        let caret = selection.selected.location
-        guard caret == session.visibleEndLocation else {
-            if caret == session.desiredEndLocation {
-                session.visibleText = session.desiredText
-                session.lastCaretLocation = caret
-                session.lastCaretAuthoritative = selection.authoritative
-                expectedSelectedLocation = caret
-                deferredToken = session
-                return .alreadySatisfied
-            } else {
-                session.lastCaretLocation = caret
-                session.lastCaretAuthoritative = selection.authoritative
-                deferredToken = session
-                logger.debug(
-                    "deferredReplace abandon reason=\(reason, privacy: .public) caret=\(caret, privacy: .private) expected=\(session.visibleEndLocation, privacy: .private)"
-                )
-                return .abandoned
-            }
-        }
-
-        applyDeferredTailMutation(session: session, client: client, reason: reason)
-        logger.debug(
-            "action=deferredReplaceTail reason=\(reason, privacy: .public) visibleLength=\(session.visibleText.utf16.count, privacy: .private)"
-        )
-        return .applied
-    }
-
-    private func scheduleDeferredReplacement(client: IMKTextInput, reason: String) {
-        let clientID = ObjectIdentifier(client as AnyObject)
-        guard var session = deferredToken,
-              session.clientID == clientID,
-              session.needsReplacement
-        else {
-            return
-        }
-
-        session.applyGeneration &+= 1
-        let generation = session.applyGeneration
-        deferredToken = session
-
-        DispatchQueue.main.async { [weak self, weak clientObject = client as AnyObject] in
-            guard let self,
-                  let client = clientObject as? IMKTextInput
-            else {
-                return
-            }
-            self.applyScheduledDeferredReplacement(
-                client: client,
-                generation: generation,
-                reason: reason
-            )
-        }
-    }
-
-    private func applyScheduledDeferredReplacement(
-        client: IMKTextInput,
-        generation: UInt64,
-        reason: String
-    ) {
-        let clientID = ObjectIdentifier(client as AnyObject)
-        guard let session = deferredToken,
-              session.clientID == clientID,
-              session.applyGeneration == generation,
-              session.needsReplacement
-        else {
-            return
-        }
-
-        let selection = HostSelectionSnapshot(
-            selected: NSRange(location: session.visibleEndLocation, length: 0),
-            bypassesTextMutation: false,
-            authoritative: false
-        )
-        let attempt = applyDeferredReplacementNow(
-            client: client,
-            selection: selection,
-            reason: reason
-        )
-        switch attempt {
-        case .applied, .alreadySatisfied, .notNeeded:
-            return
-        case .abandoned:
-            engine?.resetToken()
-            resetDeferredSession(reason: "deferredCaretMismatch")
-            return
-        }
-    }
-
-    private func handleDeferredBackspace(
-        engine: TypeflowEngine,
-        client: IMKTextInput,
-        selection: HostSelectionSnapshot,
-        modifiers: UInt8
-    ) -> Bool {
-        if selection.bypassesTextMutation {
-            _ = try? measured("ffi.processHostBypass", thresholdMs: slowCallThresholdMs) {
-                try engine.processHostBypass(modifiers: modifiers)
-            }
-            resetDeferredSession(reason: "backspaceBypass")
-            return false
-        }
-
-        let clientID = ObjectIdentifier(client as AnyObject)
-        guard var session = deferredToken,
-              session.clientID == clientID
-        else {
-            _ = try? measured("ffi.processBackspace", thresholdMs: slowCallThresholdMs) {
-                try engine.processBackspace()
-            }
-            recordExpectedSelectionAfterHostBackspace(selection.selected)
-            return false
-        }
-
-        guard selection.selected.location == session.visibleEndLocation,
-              selection.selected.length == 0
-        else {
-            engine.resetToken()
-            resetDeferredSession(reason: "backspaceCaretMoved")
-            expectedSelectedLocation = nil
-            return false
-        }
-
-        _ = try? measured("ffi.processBackspace", thresholdMs: slowCallThresholdMs) {
-            try engine.processBackspace()
-        }
-        guard let deleted = session.visibleText.last else {
-            resetDeferredSession(reason: "backspaceEmpty")
-            recordExpectedSelectionAfterHostBackspace(selection.selected)
-            return false
-        }
-
-        session.visibleText.removeLast()
-        if !session.nativeText.isEmpty {
-            session.nativeText.removeLast()
-        }
-
-        let caretAfterBackspace = max(
-            session.baseLocation,
-            selection.selected.location - String(deleted).utf16.count
-        )
-        expectedSelectedLocation = caretAfterBackspace
-        if engine.tokenLength == 0 || session.visibleText.isEmpty {
-            resetDeferredSession(reason: "backspaceCleared")
-            logger.debug("action=deferredBackspaceClear")
-            return false
-        }
-
-        if let desired = desiredTokenText(engine: engine, fallback: .keep, existingSession: session) {
-            session.desiredText = desired.text
-            session.layout = desired.layout
-        } else {
-            engine.resetToken()
-            resetDeferredSession(reason: "backspaceLostToken")
-            return false
-        }
-
-        session.lastCaretLocation = caretAfterBackspace
-        session.lastCaretAuthoritative = false
-        deferredToken = session
-        logger.debug(
-            "action=deferredBackspace visibleLength=\(session.visibleText.utf16.count, privacy: .private) pending=\(session.needsReplacement, privacy: .private)"
-        )
-        if session.needsReplacement {
-            scheduleDeferredReplacement(client: client, reason: "backspace")
-        }
-        return false
-    }
-
-    private func handleDeferredManualConvert(engine: TypeflowEngine, client: IMKTextInput) -> Bool {
-        let selection = hostSelectionSnapshot(
-            client,
-            allowPrediction: false,
-            previousEventAt: lastKeyDownAt
-        )
-        guard !selection.bypassesTextMutation,
-              var session = deferredToken,
-              session.clientID == ObjectIdentifier(client as AnyObject)
-        else {
-            logger.debug("manualConvert action=noDeferredSession")
-            return false
-        }
+        syncClient(client)
 
         do {
             let action = try measured("ffi.forceSwitchToken", thresholdMs: slowCallThresholdMs) {
                 try engine.forceSwitchToken()
             }
-            guard let desired = desiredTokenText(
-                engine: engine,
-                fallback: action,
-                existingSession: session
-            ) else {
-                logger.debug("manualConvert action=noToken")
-                return true
-            }
-
-            session.desiredText = desired.text
-            session.layout = desired.layout
-            session.lastCaretLocation = selection.selected.location
-            session.lastCaretAuthoritative = true
-            deferredToken = session
-            _ = applyDeferredReplacementNow(client: client, selection: selection, reason: "manual")
-            logger.debug("manualConvert action=deferredForceSwitch")
-            return true
+            let handled = applyComposition(action, client: client, reason: "manual")
+            logger.debug("manualConvert action=forceSwitch handled=\(handled, privacy: .private)")
+            return handled
         } catch {
             engine.resetToken()
-            resetDeferredSession(reason: "manualError")
+            clearComposition(client: client, reason: "manualError")
             return false
         }
     }
 
-    private func recordExpectedSelectionAfterNativeInsertion(selected: NSRange, characters: String?) {
-        guard let characters,
-              selected.location != NSNotFound,
-              selected.length == 0
-        else {
-            expectedSelectedLocation = nil
-            return
+    @discardableResult
+    private func applyComposition(
+        _ action: TypeflowCompositionAction,
+        client: IMKTextInput,
+        reason: String
+    ) -> Bool {
+        switch action {
+        case .bypass:
+            return false
+        case let .render(text, _):
+            activeComposition = text
+            measured("setMarkedText.\(reason)", thresholdMs: slowHostThresholdMs) {
+                client.setMarkedText(
+                    text,
+                    selectionRange: NSRange(location: text.utf16.count, length: 0),
+                    replacementRange: replacementRange()
+                )
+            }
+            return true
+        case let .commit(text, consumeEvent):
+            activeComposition = ""
+            if !text.isEmpty {
+                measured("insertText.commit.\(reason)", thresholdMs: slowHostThresholdMs) {
+                    client.insertText(text, replacementRange: replacementRange())
+                }
+            } else {
+                clearComposition(client: client, reason: reason)
+            }
+            return consumeEvent
+        case let .clear(consumeEvent):
+            clearComposition(client: client, reason: reason)
+            return consumeEvent
         }
-
-        let insertionLocation = expectedSelectedLocation ?? selected.location
-        expectedSelectedLocation = insertionLocation + characters.utf16.count
     }
 
-    private func recordExpectedSelectionAfterHostBackspace(_ selected: NSRange) {
-        guard selected.location != NSNotFound, selected.length == 0 else {
-            expectedSelectedLocation = nil
+    private func clearComposition(client: IMKTextInput, reason: String) {
+        guard !activeComposition.isEmpty else {
             return
         }
-        expectedSelectedLocation = max(0, selected.location - 1)
+        activeComposition = ""
+        measured("setMarkedText.clear.\(reason)", thresholdMs: slowHostThresholdMs) {
+            client.setMarkedText(
+                "",
+                selectionRange: NSRange(location: 0, length: 0),
+                replacementRange: replacementRange()
+            )
+        }
     }
 
-    private func resetDeferredSession(reason: String) {
-        if deferredToken != nil {
-            logger.debug("deferredReset reason=\(reason, privacy: .public)")
+    private func syncClient(_ client: IMKTextInput) {
+        let clientID = ObjectIdentifier(client as AnyObject)
+        guard trackedClientID != clientID else {
+            return
         }
-        deferredToken = nil
+        trackedClientID = clientID
+        activeComposition = ""
+        engine?.resetLayout(.english)
     }
 
     private struct HostContextSnapshot {
         let keyProcessingDisabled: Bool
         let manualConversionDisabled: Bool
-    }
-
-    private struct HostSelectionSnapshot {
-        let selected: NSRange
-        let bypassesTextMutation: Bool
-        let authoritative: Bool
-    }
-
-    private struct DeferredDesiredToken {
-        let text: String
-        let layout: TypeflowLayout
-    }
-
-    private struct DeferredTailMutation {
-        let range: NSRange
-        let replacement: String
-    }
-
-    private enum DeferredReplacementAttempt {
-        case applied
-        case alreadySatisfied
-        case abandoned
-        case notNeeded
-
-        var appliedHostMutation: Bool {
-            self == .applied
-        }
-    }
-
-    private struct DeferredTokenSession {
-        let clientID: ObjectIdentifier
-        let baseLocation: Int
-        var nativeText: String
-        var visibleText: String
-        var desiredText: String
-        var layout: TypeflowLayout
-        var lastCaretLocation: Int
-        var lastCaretAuthoritative: Bool
-        var applyGeneration: UInt64
-
-        var visibleEndLocation: Int {
-            baseLocation + visibleText.utf16.count
-        }
-
-        var desiredEndLocation: Int {
-            baseLocation + desiredText.utf16.count
-        }
-
-        var needsReplacement: Bool {
-            !visibleText.isEmpty && visibleText != desiredText
-        }
-
-        var isRendered: Bool {
-            !visibleText.isEmpty && visibleText == desiredText
-        }
     }
 
     private func updateHostContext(client sender: Any!) -> HostContextSnapshot {
@@ -958,8 +397,7 @@ final class TypeflowInputController: IMKInputController {
            now < hostContextCacheExpiresAt
         {
             if cachedHostContextSnapshot.manualConversionDisabled {
-                expectedSelectedLocation = nil
-                resetDeferredSession(reason: "cachedDisabled")
+                activeComposition = ""
             }
             return cachedHostContextSnapshot
         }
@@ -997,8 +435,7 @@ final class TypeflowInputController: IMKInputController {
             engine?.setHostContext(flags: flags)
         }
         if policy.manualConversionDisabled {
-            expectedSelectedLocation = nil
-            resetDeferredSession(reason: "disabled")
+            activeComposition = ""
         }
 
         let logKey = [
@@ -1207,8 +644,6 @@ final class TypeflowInputController: IMKInputController {
         else {
             return nil
         }
-        // Swift requires a forced downcast for CoreFoundation AX types; the
-        // CFTypeID guard above is the runtime type check.
         return (value as! AXUIElement)
     }
 
@@ -1233,83 +668,9 @@ final class TypeflowInputController: IMKInputController {
         manualConvertCancelled = false
     }
 
-    private func hostSelectionSnapshot(
-        _ client: IMKTextInput,
-        allowPrediction: Bool = false,
-        previousEventAt: TimeInterval = 0
-    ) -> HostSelectionSnapshot {
-        let clientID = ObjectIdentifier(client as AnyObject)
-        let now = ProcessInfo.processInfo.systemUptime
-        if allowPrediction,
-           trackedClientID == clientID,
-           let expectedSelectedLocation,
-           shouldUsePredictedSelection(now: now, previousEventAt: previousEventAt)
-        {
-            return HostSelectionSnapshot(
-                selected: NSRange(location: expectedSelectedLocation, length: 0),
-                bypassesTextMutation: false,
-                authoritative: false
-            )
-        }
-
-        let selected = measured("selectedRange", thresholdMs: slowCallThresholdMs) {
-            client.selectedRange()
-        }
-        lastSelectionCheckAt = now
-
-        if trackedClientID != clientID {
-            trackedClientID = clientID
-            expectedSelectedLocation = selected.location != NSNotFound && selected.length == 0
-                ? selected.location
-                : nil
-            engine?.resetLayout(.english)
-            resetDeferredSession(reason: "clientChanged")
-        }
-
-        guard selected.location != NSNotFound, selected.length == 0 else {
-            engine?.resetLayout(.english)
-            expectedSelectedLocation = nil
-            resetDeferredSession(reason: "nonCollapsedSelection")
-            logger.debug("host selection is not a collapsed caret; bypassing")
-            return HostSelectionSnapshot(
-                selected: selected,
-                bypassesTextMutation: true,
-                authoritative: true
-            )
-        }
-
-        if let expectedSelectedLocation, selected.location != expectedSelectedLocation {
-            engine?.resetLayout(.english)
-            resetDeferredSession(reason: "caretMoved")
-            logger.debug(
-                "host caret moved expected=\(expectedSelectedLocation, privacy: .private) actual=\(selected.location, privacy: .private); token reset"
-            )
-        }
-        self.expectedSelectedLocation = selected.location
-        return HostSelectionSnapshot(
-            selected: selected,
-            bypassesTextMutation: false,
-            authoritative: true
-        )
-    }
-
-    private func shouldUsePredictedSelection(now: TimeInterval, previousEventAt: TimeInterval) -> Bool {
-        guard lastSelectionCheckAt > 0,
-              now - lastSelectionCheckAt <= selectionPollIntervalSeconds,
-              previousEventAt > 0,
-              now - previousEventAt <= selectionPollAfterIdleSeconds
-        else {
-            return false
-        }
-        return true
-    }
-
     private func resetTrackedHostState() {
         trackedClientID = nil
-        expectedSelectedLocation = nil
-        resetDeferredSession(reason: "trackedHostReset")
-        lastKeyDownAt = 0
-        lastSelectionCheckAt = 0
+        activeComposition = ""
         hostContextCacheClientID = nil
         hostContextCacheSecureInput = false
         hostContextCacheExpiresAt = 0

@@ -3,8 +3,8 @@ use std::sync::Arc;
 use crate::data::{LanguageBundle, LanguageModel};
 use crate::score::{NgramTotals, has_dictionary_evidence, score_layout, score_layout_with_ngrams};
 use crate::{
-    Action, Decision, EngineConfig, EngineOutput, HostContext, InputEvent, Layout,
-    LayoutCandidates, LetterEvent, MAX_CONFIG_TOKEN_LEN, PhysicalKey, ScoreAnalysis,
+    CompositionAction, CompositionOutput, Decision, EngineConfig, HostContext, InputEvent, Layout,
+    LayoutCandidates, LetterEvent, MAX_CONFIG_TOKEN_LEN, ScoreAnalysis,
 };
 
 pub struct Engine {
@@ -140,18 +140,6 @@ impl Engine {
         &self.candidates
     }
 
-    pub fn current_token_action(&self) -> Action {
-        if self.token.is_empty() {
-            return Action::Keep;
-        }
-
-        Action::ReplaceToken {
-            old_len: self.token.len(),
-            replacement: self.candidates.get(self.layout).to_owned(),
-            layout: self.layout,
-        }
-    }
-
     pub fn token_score(&mut self) -> ScoreAnalysis {
         self.score_current()
     }
@@ -212,24 +200,14 @@ impl Engine {
         self.reset_token();
     }
 
-    pub fn process(&mut self, event: InputEvent) -> EngineOutput<'_> {
+    pub fn process(&mut self, event: InputEvent) -> CompositionOutput<'_> {
         let (action, decision) = self.step(event);
-        let score = self.score_current();
-        EngineOutput {
-            candidates: &self.candidates,
-            score,
-            decision,
-            action,
-        }
+        self.snapshot(action, decision)
     }
 
-    pub fn process_action(&mut self, event: InputEvent) -> Action {
-        self.step(event).0
-    }
-
-    pub fn force_switch_token(&mut self) -> EngineOutput<'_> {
+    pub fn force_switch_token(&mut self) -> CompositionOutput<'_> {
         if self.token.is_empty() {
-            return self.snapshot(Action::Keep, Decision::Keep);
+            return self.snapshot(CompositionAction::Bypass, Decision::Keep);
         }
 
         let target = match self.layout {
@@ -237,129 +215,13 @@ impl Engine {
             Layout::Secondary => Layout::English,
         };
         self.layout = target;
-
-        let replacement = self.candidates.get(target).to_owned();
-        let score = self.score_current();
-        let decision = Decision::Use(target);
-        // The whole token has already been committed by the host (one Commit per
-        // letter), so old_len is the full letter count.
-        let action = Action::ReplaceToken {
-            old_len: self.token.len(),
-            replacement,
-            layout: target,
-        };
-
-        EngineOutput {
-            candidates: &self.candidates,
-            score,
-            decision,
-            action,
-        }
+        self.snapshot(self.render_action(), Decision::Use(target))
     }
 
-    pub fn convert_visible_token(&self, token: &str) -> Option<(Layout, String)> {
-        if token.is_empty() {
-            return None;
-        }
-
-        let letters = token
-            .chars()
-            .map(|character| self.visible_letter_event_from_char(character))
-            .collect::<Option<Vec<_>>>()?;
-        let english = crate::render_letters_with_bundle(&letters, Layout::English, &self.bundle);
-        let secondary =
-            crate::render_letters_with_bundle(&letters, Layout::Secondary, &self.bundle);
-
-        let target = if token == english && token != secondary {
-            Layout::Secondary
-        } else if token == secondary && token != english {
-            Layout::English
-        } else if token
-            .chars()
-            .any(|character| character.is_ascii_alphabetic())
-        {
-            Layout::Secondary
-        } else {
-            return None;
-        };
-
-        let replacement = match target {
-            Layout::English => english,
-            Layout::Secondary => secondary,
-        };
-
-        (replacement != token).then_some((target, replacement))
-    }
-
-    pub fn visible_token_suffix<'a>(&self, visible_tail: &'a str) -> Option<&'a str> {
-        let mut start = visible_tail.len();
-        let mut found = false;
-
-        for (idx, character) in visible_tail.char_indices().rev() {
-            if !self.is_visible_token_character(character) {
-                break;
-            }
-            start = idx;
-            found = true;
-        }
-
-        found.then_some(&visible_tail[start..])
-    }
-
-    pub fn convert_visible_tail(&self, visible_tail: &str) -> Option<(Layout, String, usize)> {
-        let token = self.visible_token_suffix(visible_tail)?;
-        let (layout, replacement) = self.convert_visible_token(token)?;
-        Some((layout, replacement, token.chars().count()))
-    }
-
-    pub fn replace_visible_prefix_with_key(
-        &mut self,
-        visible_prefix: &str,
-        event: LetterEvent,
-        target: Layout,
-    ) -> Option<Action> {
-        let mut letters = visible_prefix
-            .chars()
-            .map(|character| self.visible_letter_event_from_char(character))
-            .collect::<Option<Vec<_>>>()?;
-        let prefix_candidates = crate::render_candidates_with_bundle(&letters, &self.bundle);
-        self.token_start_layout = infer_visible_layout(visible_prefix, &prefix_candidates)
-            .unwrap_or(self.token_start_layout);
-
-        letters.push(event);
-        let candidates = crate::render_candidates_with_bundle(&letters, &self.bundle);
-        let replacement = candidates.get(target).to_owned();
-
-        self.token = letters;
-        self.candidates = candidates;
-        self.recompute_ngrams();
-        self.score_cache = None;
-        self.bypass_until_boundary = false;
-        self.layout = target;
-
-        Some(Action::ReplaceToken {
-            old_len: visible_prefix.chars().count(),
-            replacement,
-            layout: target,
-        })
-    }
-
-    pub fn replace_visible_tail_with_key(
-        &mut self,
-        visible_tail: &str,
-        event: LetterEvent,
-        target: Layout,
-    ) -> Option<Action> {
-        let visible_prefix = self.visible_token_suffix(visible_tail)?;
-        self.replace_visible_prefix_with_key(visible_prefix, event, target)
-    }
-
-    /// Single dispatch path shared by `process` and `process_action`. Returns
-    /// the host-facing action plus the explanatory decision.
-    fn step(&mut self, event: InputEvent) -> (Action, Decision) {
+    fn step(&mut self, event: InputEvent) -> (CompositionAction, Decision) {
         if self.host_context.bypasses_engine() {
             self.reset_token();
-            return (Action::Keep, Decision::Bypass);
+            return (CompositionAction::Bypass, Decision::Bypass);
         }
 
         match event {
@@ -368,16 +230,21 @@ impl Engine {
             InputEvent::Backspace => self.step_backspace(),
             InputEvent::EndToken => self.step_end_token(),
             InputEvent::HostBypass => {
-                self.reset_token();
-                (Action::Keep, Decision::Bypass)
+                if self.token.is_empty() {
+                    (CompositionAction::Bypass, Decision::Bypass)
+                } else {
+                    (self.commit_action(false), Decision::Bypass)
+                }
             }
         }
     }
 
-    fn step_letter(&mut self, event: LetterEvent) -> (Action, Decision) {
-        let commit_char = self.bundle.render(event, self.layout);
+    fn step_letter(&mut self, event: LetterEvent) -> (CompositionAction, Decision) {
         if self.bypass_until_boundary {
-            return (Action::Commit(commit_char), Decision::Bypass);
+            if is_english_separator_key_char(self.bundle.render(event, Layout::English)) {
+                self.reset_token();
+            }
+            return (CompositionAction::Bypass, Decision::Bypass);
         }
 
         if self.token.is_empty() {
@@ -385,67 +252,64 @@ impl Engine {
         }
 
         if self.should_commit_auto_disabled_separator(event) {
-            self.reset_token();
-            return (Action::Commit(commit_char), Decision::Bypass);
+            return (self.commit_action_with(event), Decision::Bypass);
         }
         if self.should_commit_english_separator(event) {
-            self.reset_token();
-            return (Action::Commit(commit_char), Decision::Keep);
+            return (self.commit_action_with(event), Decision::Keep);
         }
 
         if self.token.len() >= self.config.max_token_len {
-            self.reset_token();
+            let action = self.commit_action_with(event);
             self.bypass_until_boundary = true;
-            return (Action::Commit(commit_char), Decision::Bypass);
+            return (action, Decision::Bypass);
         }
 
         self.token.push(event);
         self.push_candidate_chars(event);
 
         if self.host_context.automatic_switching_disabled {
-            return (Action::Commit(commit_char), Decision::Bypass);
+            return (self.render_action(), Decision::Bypass);
         }
 
         if self.token.len() < self.config.min_token_len {
-            return (Action::Commit(commit_char), Decision::Keep);
+            return (self.render_action(), Decision::Keep);
         }
         if self.should_bypass_token() {
-            return (Action::Commit(commit_char), Decision::Bypass);
+            return (self.render_action(), Decision::Bypass);
         }
 
         let score = self.score_current();
         let decision = self.decide(&score);
-        let action = match decision {
-            Decision::Keep | Decision::Bypass => Action::Commit(commit_char),
-            Decision::Use(layout) if layout == self.layout => Action::Commit(commit_char),
+        match decision {
+            Decision::Keep | Decision::Bypass => {}
+            Decision::Use(layout) if layout == self.layout => {}
             Decision::Use(layout) => {
-                let replacement = self.candidates.get(layout).to_owned();
                 self.layout = layout;
-                // The host has only committed the previous letters of this token;
-                // the just-pushed letter is implicit in `replacement`. Subtract
-                // one so `old_len` matches the host's committed prefix exactly.
-                Action::ReplaceToken {
-                    old_len: self.token.len() - 1,
-                    replacement,
-                    layout,
-                }
             }
-        };
-        (action, decision)
+        }
+        (self.render_action(), decision)
     }
 
-    /// A literal (digit, punctuation, separator) terminates the current token
-    /// and commits the character itself. Token state is fully cleared so it
-    /// stays in sync with the host buffer regardless of how many literals
-    /// appear in the input stream.
-    fn step_literal(&mut self, character: char) -> (Action, Decision) {
+    fn step_literal(&mut self, character: char) -> (CompositionAction, Decision) {
+        if self.token.is_empty() {
+            self.reset_token();
+            return (CompositionAction::Bypass, Decision::Keep);
+        }
+        let mut text = self.composition_text();
+        text.push(character);
         self.reset_token();
-        (Action::Commit(character), Decision::Keep)
+        (
+            CompositionAction::Commit {
+                text,
+                consume_event: true,
+            },
+            Decision::Keep,
+        )
     }
 
-    fn step_backspace(&mut self) -> (Action, Decision) {
-        if self.bypass_until_boundary {
-            return (Action::Keep, Decision::Bypass);
+    fn step_backspace(&mut self) -> (CompositionAction, Decision) {
+        if self.bypass_until_boundary || self.token.is_empty() {
+            return (CompositionAction::Bypass, Decision::Bypass);
         }
 
         self.token.pop();
@@ -453,16 +317,28 @@ impl Engine {
         self.candidates.secondary.pop();
         self.recompute_ngrams();
         self.score_cache = None;
+        if self.token.is_empty() {
+            self.reset_token();
+            return (
+                CompositionAction::Clear {
+                    consume_event: true,
+                },
+                Decision::Keep,
+            );
+        }
         if self.host_context.automatic_switching_disabled {
-            return (Action::Keep, Decision::Bypass);
+            return (self.render_action(), Decision::Bypass);
         }
         let decision = self.reconcile_layout_after_token_change();
-        (Action::Keep, decision)
+        (self.render_action(), decision)
     }
 
-    fn step_end_token(&mut self) -> (Action, Decision) {
-        self.reset_token();
-        (Action::ResetToken, Decision::Keep)
+    fn step_end_token(&mut self) -> (CompositionAction, Decision) {
+        if self.token.is_empty() {
+            self.reset_token();
+            return (CompositionAction::Bypass, Decision::Keep);
+        }
+        (self.commit_action(false), Decision::Keep)
     }
 
     /// Scores arbitrary candidates against this engine's language bundle and config.
@@ -567,17 +443,50 @@ impl Engine {
     }
 
     fn should_commit_auto_disabled_separator(&self, event: LetterEvent) -> bool {
-        if !self.host_context.automatic_switching_disabled || self.layout != Layout::English {
+        if self.token.is_empty()
+            || !self.host_context.automatic_switching_disabled
+            || self.layout != Layout::English
+        {
             return false;
         }
 
         is_english_separator_key_char(self.bundle.render(event, Layout::English))
     }
 
-    fn snapshot(&mut self, action: Action, decision: Decision) -> EngineOutput<'_> {
+    fn composition_text(&self) -> String {
+        self.candidates.get(self.layout).to_owned()
+    }
+
+    fn render_action(&self) -> CompositionAction {
+        CompositionAction::Render {
+            text: self.composition_text(),
+            layout: self.layout,
+        }
+    }
+
+    fn commit_action(&mut self, consume_event: bool) -> CompositionAction {
+        let text = self.composition_text();
+        self.reset_token();
+        CompositionAction::Commit {
+            text,
+            consume_event,
+        }
+    }
+
+    fn commit_action_with(&mut self, event: LetterEvent) -> CompositionAction {
+        let mut text = self.composition_text();
+        text.push(self.bundle.render(event, self.layout));
+        self.reset_token();
+        CompositionAction::Commit {
+            text,
+            consume_event: true,
+        }
+    }
+
+    fn snapshot(&mut self, action: CompositionAction, decision: Decision) -> CompositionOutput<'_> {
         let score = self.score_current();
 
-        EngineOutput {
+        CompositionOutput {
             candidates: &self.candidates,
             score,
             decision,
@@ -631,17 +540,6 @@ impl Engine {
     fn recompute_ngrams(&mut self) {
         self.ngrams = LayoutNgrams::from_candidates(&self.candidates, &self.bundle);
     }
-
-    fn is_visible_token_character(&self, character: char) -> bool {
-        !is_literal_bypass_char(character)
-            && self.visible_letter_event_from_char(character).is_some()
-    }
-
-    fn visible_letter_event_from_char(&self, character: char) -> Option<LetterEvent> {
-        self.bundle
-            .letter_event_from_char(character)
-            .or_else(|| host_normalized_letter_event(character))
-    }
 }
 
 /// Returns true when the token contains a Shift-modified letter at any position
@@ -653,33 +551,6 @@ fn has_internal_caps(token: &[LetterEvent]) -> bool {
 
 fn is_acronym_like(token: &[LetterEvent]) -> bool {
     token.len() >= 2 && token.iter().all(|event| event.shift)
-}
-
-fn infer_visible_layout(token: &str, candidates: &LayoutCandidates) -> Option<Layout> {
-    if token == candidates.english && token != candidates.secondary {
-        Some(Layout::English)
-    } else if token == candidates.secondary && token != candidates.english {
-        Some(Layout::Secondary)
-    } else {
-        None
-    }
-}
-
-fn host_normalized_letter_event(character: char) -> Option<LetterEvent> {
-    match character {
-        // Some hosts, notably Slack, rewrite ASCII quotes after insertion.
-        // Decode those visible forms as the same physical quote key so fallback
-        // replacements still include the complete token.
-        '‘' | '’' => Some(LetterEvent {
-            physical_key: PhysicalKey::Quote,
-            shift: false,
-        }),
-        '“' | '”' => Some(LetterEvent {
-            physical_key: PhysicalKey::Quote,
-            shift: true,
-        }),
-        _ => None,
-    }
 }
 
 fn is_english_separator_key_char(character: char) -> bool {

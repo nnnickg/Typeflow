@@ -17,9 +17,9 @@
 # Default: 4
 min_token_len = 4
 
-# Maximum number of letters tracked as one replaceable token. Longer letter-only
-# runs bypass scoring until a real token boundary so huge identifiers or pasted
-# text cannot turn scoring into quadratic nonsense.
+# Maximum number of letters tracked as one active composition token. Longer
+# letter-only runs bypass scoring until a real token boundary so huge
+# identifiers or pasted text cannot turn scoring into quadratic nonsense.
 # Valid range: 1..1024, and must be >= min_token_len.
 # Default: 128
 max_token_len = 128
@@ -91,10 +91,11 @@ secondary = "uk"
 
 [apps]
 
-# Terminal-like surfaces are disabled by built-in Rust host policy because many
-# terminals accept inserted text but ignore replacement ranges. That includes
-# Terminal.app, iTerm2, common terminal apps, and embedded terminal panes when
-# macOS exposes terminal-like accessibility metadata.
+# Terminal-like surfaces are disabled by built-in Rust host policy. Shell prompts
+# are not normal document editors, and terminal apps vary in how they handle IMK
+# marked text and commit events. That includes Terminal.app, iTerm2, common
+# terminal apps, and embedded terminal panes when macOS exposes terminal-like
+# accessibility metadata.
 
 # Bundle IDs where Typeflow should stay completely silent.
 # No automatic conversion. No standalone Option conversion.

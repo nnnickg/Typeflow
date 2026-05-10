@@ -6,7 +6,6 @@ import TypeflowKit
 import TypeflowFFI
 
 enum SmokeError: Error, CustomStringConvertible {
-    case underflow(Int)
     case wrongOutput(String)
     case wrongLayout(TypeflowLayout)
     case wrongDefaultMaxTokenLen(Int)
@@ -14,12 +13,10 @@ enum SmokeError: Error, CustomStringConvertible {
     case wrongDataDirectory(String?)
     case wrongSecondaryLanguage(String)
     case wrongAppPolicy(String)
-    case wrongAction(TypeflowAction)
+    case wrongComposition(TypeflowCompositionAction)
 
     var description: String {
         switch self {
-        case let .underflow(count):
-            return "replace action tried to remove \(count) characters from a shorter buffer"
         case let .wrongOutput(output):
             return "expected привіт, got \(output)"
         case let .wrongLayout(layout):
@@ -34,27 +31,52 @@ enum SmokeError: Error, CustomStringConvertible {
             return "unexpected secondary language: \(value)"
         case let .wrongAppPolicy(value):
             return "unexpected app policy result: \(value)"
-        case let .wrongAction(action):
-            return "unexpected action: \(action)"
+        case let .wrongComposition(action):
+            return "unexpected composition action: \(action)"
         }
     }
 }
 
-func apply(_ action: TypeflowAction, to buffer: inout String) throws {
+func apply(
+    _ action: TypeflowCompositionAction,
+    fallback: Character? = nil,
+    committed: inout String,
+    composing: inout String
+) {
     switch action {
-    case .keep, .resetToken:
-        break
-    case let .commit(character):
-        buffer.append(character)
-    case let .replaceToken(oldLength, replacement, _):
-        guard buffer.count >= oldLength else {
-            throw SmokeError.underflow(oldLength)
+    case .bypass:
+        if let fallback {
+            committed.append(fallback)
         }
-        for _ in 0..<oldLength {
-            buffer.removeLast()
+    case let .render(text, _):
+        composing = text
+    case let .commit(text, consumeEvent):
+        committed.append(text)
+        composing = ""
+        if !consumeEvent, let fallback {
+            committed.append(fallback)
         }
-        buffer.append(replacement)
+    case let .clear(consumeEvent):
+        composing = ""
+        if !consumeEvent, let fallback {
+            committed.append(fallback)
+        }
     }
+}
+
+func typeToken(_ engine: TypeflowEngine, keyCodes: [Int]) throws -> String {
+    var committed = ""
+    var composing = ""
+    for keyCode in keyCodes.map(UInt16.init) {
+        guard let physical = TypeflowMacKeyCode.physicalKeyIndex(for: keyCode) else {
+            throw SmokeError.wrongOutput("unmapped keycode \(keyCode)")
+        }
+        let action = try engine.process(physicalKey: physical)
+        apply(action, committed: &committed, composing: &composing)
+    }
+    let action = try engine.endToken()
+    apply(action, committed: &committed, composing: &composing)
+    return committed
 }
 
 func fail(_ error: Error) -> Never {
@@ -204,74 +226,36 @@ func verifyMissingDefaultHostConfigUsesDefaults() throws {
     }
 }
 
-func verifyVisibleTailBridge() throws {
-    let engine = try TypeflowEngine()
-    guard let f = TypeflowMacKeyCode.physicalKeyIndex(for: UInt16(kVK_ANSI_F)) else {
-        throw SmokeError.wrongOutput("unmapped keycode \(kVK_ANSI_F)")
-    }
-    guard let j = TypeflowMacKeyCode.physicalKeyIndex(for: UInt16(kVK_ANSI_J)) else {
-        throw SmokeError.wrongOutput("unmapped keycode \(kVK_ANSI_J)")
-    }
-
-    let replace = try engine.replaceVisibleTail(
-        "hello [fn",
-        physicalKey: f,
-        modifiers: 0,
-        targetLayout: .secondary
-    )
-    guard replace == .replaceToken(oldLength: 3, replacement: "хата", layout: .secondary) else {
-        throw SmokeError.wrongAction(replace)
-    }
-
-    let convert = try engine.convertVisibleTail("hello [fnf")
-    guard convert == .replaceToken(oldLength: 4, replacement: "хата", layout: .secondary) else {
-        throw SmokeError.wrongAction(convert)
-    }
-
-    let smartQuoteReplace = try engine.replaceVisibleTail(
-        "hello ’dh",
-        physicalKey: j,
-        modifiers: 0,
-        targetLayout: .secondary
-    )
-    guard smartQuoteReplace == .replaceToken(oldLength: 3, replacement: "євро", layout: .secondary) else {
-        throw SmokeError.wrongAction(smartQuoteReplace)
-    }
-
-    let smartQuoteConvert = try engine.convertVisibleTail("hello ’dhj")
-    guard smartQuoteConvert == .replaceToken(oldLength: 4, replacement: "євро", layout: .secondary) else {
-        throw SmokeError.wrongAction(smartQuoteConvert)
-    }
-}
-
 func verifyAutoDisabledManualLayoutMode() throws {
     let engine = try TypeflowEngine()
     engine.setHostContext(flags: typeflow_ffi_context_automatic_switching_disabled())
 
     let keyCodes = [kVK_ANSI_G, kVK_ANSI_H, kVK_ANSI_S, kVK_ANSI_D, kVK_ANSI_B, kVK_ANSI_N]
-    var committed = ""
-    for keyCode in keyCodes.map(UInt16.init) {
-        guard let physical = TypeflowMacKeyCode.physicalKeyIndex(for: keyCode) else {
-            throw SmokeError.wrongOutput("unmapped keycode \(keyCode)")
-        }
-        let action = try engine.process(physicalKey: physical)
-        try apply(action, to: &committed)
-    }
+    var committed = try typeToken(engine, keyCodes: keyCodes)
     guard committed == "ghsdbn" else {
         throw SmokeError.wrongOutput(committed)
     }
 
     engine.resetLayout(.secondary)
-    committed = ""
+    committed = try typeToken(engine, keyCodes: keyCodes)
+    guard committed == "привіт" else {
+        throw SmokeError.wrongOutput(committed)
+    }
+}
+
+func verifyManualSwitchRendersComposition() throws {
+    let engine = try TypeflowEngine()
+    let keyCodes = [kVK_ANSI_T, kVK_ANSI_Y, kVK_ANSI_P, kVK_ANSI_E]
     for keyCode in keyCodes.map(UInt16.init) {
         guard let physical = TypeflowMacKeyCode.physicalKeyIndex(for: keyCode) else {
             throw SmokeError.wrongOutput("unmapped keycode \(keyCode)")
         }
-        let action = try engine.process(physicalKey: physical)
-        try apply(action, to: &committed)
+        _ = try engine.process(physicalKey: physical)
     }
-    guard committed == "привіт" else {
-        throw SmokeError.wrongOutput(committed)
+
+    let action = try engine.forceSwitchToken()
+    guard action == .render(text: "ензу", layout: .secondary) else {
+        throw SmokeError.wrongComposition(action)
     }
 }
 
@@ -282,20 +266,12 @@ do {
     }
     try verifyHostConfigPrecedence()
     try verifyMissingDefaultHostConfigUsesDefaults()
-    try verifyVisibleTailBridge()
     try verifyAutoDisabledManualLayoutMode()
+    try verifyManualSwitchRendersComposition()
 
     let engine = try TypeflowEngine()
-    var committed = ""
-
     let keyCodes = [kVK_ANSI_G, kVK_ANSI_H, kVK_ANSI_S, kVK_ANSI_D, kVK_ANSI_B, kVK_ANSI_N]
-    for keyCode in keyCodes.map(UInt16.init) {
-        guard let physical = TypeflowMacKeyCode.physicalKeyIndex(for: keyCode) else {
-            throw SmokeError.wrongOutput("unmapped keycode \(keyCode)")
-        }
-        let action = try engine.process(physicalKey: physical)
-        try apply(action, to: &committed)
-    }
+    let committed = try typeToken(engine, keyCodes: keyCodes)
 
     guard committed == "привіт" else {
         throw SmokeError.wrongOutput(committed)

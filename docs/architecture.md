@@ -43,11 +43,11 @@
 Pure Rust. Hot path has no I/O; startup can deserialize embedded data or load an
 external pack directory. Contains:
 
-- `types.rs` — public API data types: layouts, input events, actions,
+- `types.rs` — public API data types: layouts, input events, composition actions,
   decisions, scores, host context, and config.
 - `keyboard.rs` — physical key positions, keyboard maps, reverse mapping, and
   layout rendering helpers.
-- `engine.rs` — state machine and action protocol implementation.
+- `engine.rs` — state machine and composition protocol implementation.
 - `score.rs` — n-gram + dictionary scoring and dictionary-evidence checks.
 - `data.rs` — language model, dictionary lookup, embedded artifacts, and pack
   loading/validation.
@@ -61,7 +61,7 @@ external pack directory. Contains:
 - `InputEvent` — `Letter(LetterEvent)` / `Literal(char)` / `Backspace` /
   `EndToken` / `HostBypass`. `Literal` is for digits, separators, and
   characters that are not physical letters in either loaded layout; the engine
-  treats it as a hard token boundary that also commits the char. Punctuation
+  treats it as a hard composition boundary. Punctuation
   keys that are letters in the secondary layout stay as `LetterEvent`s, with an
   English-token boundary heuristic for normal punctuation after resolved
   English words. Modifier shortcuts (Cmd/Ctrl/Opt) come in as `HostBypass`.
@@ -69,17 +69,20 @@ external pack directory. Contains:
 - `HostSurfaceFacts` / `HostInputPolicy` — Swift supplies host facts such as
   secure-input state, bundle id, input-client class, and focused accessibility
   metadata. Rust classifies the surface. Terminal-like surfaces, secure fields,
-  and fully disabled apps block both automatic replacement and standalone Option
+  and fully disabled apps block both automatic composition and standalone Option
   conversion. Auto-disabled apps block only automatic processing.
 - `HostContext` — persistent engine bypass state derived from host policy.
   Secure input, terminal-like surfaces, fully disabled apps, and unavailable
-  host config are full bypasses: normal key processing returns `Action::Keep`
+  host config are full bypasses: normal key processing returns
+  `CompositionAction::Bypass`
   and clears its token. Apps in `disable_auto_bundle_ids` use automatic-switching
-  disabled mode instead: Rust still commits keys in the current layout, but it
-  does not score or replace automatically.
-- `Engine::process(InputEvent) -> EngineOutput` — the only loop the host runs.
-- `Action` — what the host should do in response: `Keep`, `Commit(char)`,
-  `ReplaceToken { old_len, replacement, layout }`, `ResetToken`.
+  disabled mode instead: Rust still owns composition in the current layout, but
+  it does not score or switch automatically.
+- `Engine::process(InputEvent) -> CompositionOutput` — the only loop the host
+  runs.
+- `CompositionAction` — what the host should do in response: `Bypass`,
+  `Render { text, layout }`, `Commit { text, consume_event }`, or
+  `Clear { consume_event }`.
 - `docs/invariants.md` — the stable core/host contract. If this conflicts
   with a CLI convenience behavior, the invariants doc wins.
 - `data::LanguageBundle` — n-gram models + FST dictionaries, normally loaded
@@ -158,23 +161,19 @@ C ABI for the macOS bundle. Exports:
   `typeflow_engine_new_from_pack_dir(path)` / `typeflow_engine_free`
 - `_with_config(...)` constructor variants plus `typeflow_engine_default_config(...)`
   for hosts that need runtime tuning while keeping config validation in Rust.
-- `typeflow_engine_process(engine, TfEvent, *out TfAction)` — the hot path
+- `typeflow_engine_process(engine, TfEvent, *out TfComposition)` — the hot path
 - `typeflow_engine_reset_token` / `typeflow_engine_set_host_context` /
   `typeflow_engine_current_layout`
-- `typeflow_engine_convert_visible_tail` /
-  `typeflow_engine_replace_visible_tail_with_key` — host-visible fallback paths
-  where Swift passes a bounded committed-text tail and Rust owns token suffix
-  extraction.
 
 Header at `crates/typeflow-ffi/include/typeflow.h` is generated with cbindgen
 from `crates/typeflow-ffi/src/lib.rs` and checked in CI. Builds as both
 `staticlib` and `cdylib` (`libtypeflow_ffi.dylib`).
 
 `TfEvent` supports physical-key letters, literals by Unicode codepoint,
-backspace, and end-token boundaries. The 4096-byte fixed `replace_text` buffer
-in `TfAction` keeps the FFI lifetime-free: no Vec passed across the boundary,
+backspace, and end-token boundaries. The 4096-byte fixed `text` buffer in
+`TfComposition` keeps the FFI lifetime-free: no Vec passed across the boundary,
 Swift just copies bytes. See `docs/invariants.md` for the required ownership,
-event, and action semantics.
+event, and composition semantics.
 
 ### `macos/`
 
@@ -186,9 +185,9 @@ Current files:
   registration helper, and input-method executable targets.
 - `TypeflowFFI/include/module.modulemap` exposes the C ABI to Swift.
 - `TypeflowFFI/include/typeflow_shim.h` includes the canonical Rust header and
-  adds tiny C helpers for zeroed actions/events.
+  adds tiny C helpers for zeroed composition/events.
 - `Sources/TypeflowKit/Engine.swift` wraps the opaque `TfEngine*` lifecycle and
-  decodes `TfAction`.
+  decodes `TfComposition`.
 - `Sources/TypeflowKit/HostConfig.swift` owns only an opaque Rust
   `TfHostConfig*`. Rust parses and resolves `~/.config/typeflow/config.toml`,
   environment overrides, app disable policy, engine tuning, language id, and
@@ -202,7 +201,8 @@ Current files:
   `IMKInputController`, collects host-surface facts, applies Rust input policy,
   handles raw keyDown and flagsChanged events, dispatches keyDown events to the
   Rust engine, binds standalone Option press/release to manual conversion, and
-  applies `TfAction` to `IMKTextInput`.
+  applies `TypeflowCompositionAction` to `IMKTextInput` marked text or final
+  commit.
 - `Sources/TypeflowInputMethod/main.swift` starts the `IMKServer`.
 - `Sources/TypeflowRegister/main.swift` calls `TISRegisterInputSource` after
   install, enables/selects the Typeflow input method, and writes the
@@ -246,12 +246,12 @@ conversion. Remaining IMK validation work:
    - `score_layout` for each language: bigram + trigram + dict bonuses.
    - `decide` checks `min_token_len`, `disable_on_internal_caps`, then picks
      the winning layout if its margin clears the required confidence threshold.
-5. Returns an `EngineOutput { candidates, score, decision, action }`.
+5. Returns a `CompositionOutput { candidates, score, decision, action }`.
 6. Host applies the `action`:
-   - `Commit(c)` → insert one char in the current layout.
-   - `ReplaceToken { old_len, replacement, layout }` → replace the trailing
-     `old_len` chars with `replacement`. Engine just flipped layouts.
-   - `ResetToken` / `Keep` → host-side bookkeeping only.
+   - `Render { text, layout }` → redraw active marked/overlay composition.
+   - `Commit { text, consume_event }` → insert finalized text once.
+   - `Clear { consume_event }` → clear active composition.
+   - `Bypass` → let the host app process the event normally.
 
 ## Non-goals
 

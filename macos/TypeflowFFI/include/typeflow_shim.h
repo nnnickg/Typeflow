@@ -62,10 +62,10 @@ static inline TfEvent typeflow_ffi_host_bypass_event(uint8_t modifiers) {
     return event;
 }
 
-static inline TfAction typeflow_ffi_empty_action(void) {
-    TfAction action;
-    memset(&action, 0, sizeof(action));
-    return action;
+static inline TfComposition typeflow_ffi_empty_composition(void) {
+    TfComposition composition;
+    memset(&composition, 0, sizeof(composition));
+    return composition;
 }
 
 #endif

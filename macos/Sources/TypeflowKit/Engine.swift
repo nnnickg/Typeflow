@@ -4,9 +4,8 @@ import TypeflowFFI
 public enum TypeflowError: Error, CustomStringConvertible {
     case engineCreationFailed
     case engineCreationFailedFromConfig(String)
-    case invalidCommitCodepoint(UInt32)
-    case invalidReplacementUTF8
-    case unknownActionTag(UInt8)
+    case invalidCompositionUTF8
+    case unknownCompositionTag(UInt8)
     case unknownLayout(UInt8)
 
     public var description: String {
@@ -15,12 +14,10 @@ public enum TypeflowError: Error, CustomStringConvertible {
             return "typeflow_engine_new_embedded returned null"
         case let .engineCreationFailedFromConfig(source):
             return "Typeflow engine constructor returned null for \(source)"
-        case let .invalidCommitCodepoint(value):
-            return "invalid commit codepoint: \(value)"
-        case .invalidReplacementUTF8:
-            return "replacement payload was not valid UTF-8"
-        case let .unknownActionTag(tag):
-            return "unknown action tag: \(tag)"
+        case .invalidCompositionUTF8:
+            return "composition payload was not valid UTF-8"
+        case let .unknownCompositionTag(tag):
+            return "unknown composition tag: \(tag)"
         case let .unknownLayout(layout):
             return "unknown layout: \(layout)"
         }
@@ -32,11 +29,22 @@ public enum TypeflowLayout: UInt8, Equatable {
     case secondary = 1
 }
 
-public enum TypeflowAction: Equatable {
-    case keep
-    case commit(Character)
-    case replaceToken(oldLength: Int, replacement: String, layout: TypeflowLayout)
-    case resetToken
+public enum TypeflowCompositionAction: Equatable {
+    case bypass
+    case render(text: String, layout: TypeflowLayout)
+    case commit(text: String, consumeEvent: Bool)
+    case clear(consumeEvent: Bool)
+
+    public var consumesEvent: Bool {
+        switch self {
+        case .bypass:
+            return false
+        case .render:
+            return true
+        case let .commit(_, consumeEvent), let .clear(consumeEvent):
+            return consumeEvent
+        }
+    }
 }
 
 public final class TypeflowEngine {
@@ -99,129 +107,67 @@ public final class TypeflowEngine {
         typeflow_engine_set_host_context(raw, flags)
     }
 
-    public func process(physicalKey: UInt8, modifiers: UInt8 = 0) throws -> TypeflowAction {
+    public func process(physicalKey: UInt8, modifiers: UInt8 = 0) throws -> TypeflowCompositionAction {
         try process(event: typeflow_ffi_letter_event(physicalKey, modifiers))
     }
 
-    public func processLiteral(_ scalar: UnicodeScalar) throws -> TypeflowAction {
+    public func processLiteral(_ scalar: UnicodeScalar) throws -> TypeflowCompositionAction {
         try process(event: typeflow_ffi_literal_event(scalar.value))
     }
 
-    public func processBackspace() throws -> TypeflowAction {
+    public func processBackspace() throws -> TypeflowCompositionAction {
         try process(event: typeflow_ffi_backspace_event())
     }
 
-    public func processHostBypass(modifiers: UInt8) throws -> TypeflowAction {
+    public func processHostBypass(modifiers: UInt8) throws -> TypeflowCompositionAction {
         try process(event: typeflow_ffi_host_bypass_event(modifiers | UInt8(TF_MOD_COMMAND)))
     }
 
-    public func currentToken() throws -> TypeflowAction {
-        try withFreshAction {
-            typeflow_engine_current_token(raw, $0)
-        }
-    }
-
-    public func endToken() throws -> TypeflowAction {
+    public func endToken() throws -> TypeflowCompositionAction {
         try process(event: typeflow_ffi_end_token_event())
     }
 
-    public func forceSwitchToken() throws -> TypeflowAction {
-        try withFreshAction {
+    public func forceSwitchToken() throws -> TypeflowCompositionAction {
+        try withFreshComposition {
             typeflow_engine_force_switch_token(raw, $0)
         }
     }
 
-    public func convertVisibleToken(_ token: String) throws -> TypeflowAction {
-        try withFreshAction { action in
-            token.withCString {
-                typeflow_engine_convert_visible_token(raw, $0, action)
-            }
-        }
-    }
-
-    public func convertVisibleTail(_ tail: String) throws -> TypeflowAction {
-        try withFreshAction { action in
-            tail.withCString {
-                typeflow_engine_convert_visible_tail(raw, $0, action)
-            }
-        }
-    }
-
-    public func replaceVisiblePrefix(
-        _ prefix: String,
-        physicalKey: UInt8,
-        modifiers: UInt8,
-        targetLayout: TypeflowLayout
-    ) throws -> TypeflowAction {
-        try withFreshAction { action in
-            prefix.withCString {
-                typeflow_engine_replace_visible_prefix_with_key(
-                    raw,
-                    $0,
-                    physicalKey,
-                    modifiers,
-                    targetLayout.rawValue,
-                    action
-                )
-            }
-        }
-    }
-
-    public func replaceVisibleTail(
-        _ tail: String,
-        physicalKey: UInt8,
-        modifiers: UInt8,
-        targetLayout: TypeflowLayout
-    ) throws -> TypeflowAction {
-        try withFreshAction { action in
-            tail.withCString {
-                typeflow_engine_replace_visible_tail_with_key(
-                    raw,
-                    $0,
-                    physicalKey,
-                    modifiers,
-                    targetLayout.rawValue,
-                    action
-                )
-            }
-        }
-    }
-
-    private func process(event: TfEvent) throws -> TypeflowAction {
-        try withFreshAction {
+    private func process(event: TfEvent) throws -> TypeflowCompositionAction {
+        try withFreshComposition {
             typeflow_engine_process(raw, event, $0)
         }
     }
 
-    private func withFreshAction(
-        _ call: (UnsafeMutablePointer<TfAction>) -> Void
-    ) throws -> TypeflowAction {
-        var action = typeflow_ffi_empty_action()
-        call(&action)
-        return try Self.decode(action: &action)
+    private func withFreshComposition(
+        _ call: (UnsafeMutablePointer<TfComposition>) -> Void
+    ) throws -> TypeflowCompositionAction {
+        var composition = typeflow_ffi_empty_composition()
+        call(&composition)
+        return try Self.decode(composition: &composition)
     }
 
-    private static func decode(action: inout TfAction) throws -> TypeflowAction {
-        switch action.tag {
-        case UInt8(TF_ACTION_KEEP):
-            return .keep
-        case UInt8(TF_ACTION_COMMIT):
-            guard let scalar = UnicodeScalar(action.commit_codepoint) else {
-                throw TypeflowError.invalidCommitCodepoint(action.commit_codepoint)
-            }
-            return .commit(Character(scalar))
-        case UInt8(TF_ACTION_REPLACE):
-            let layout = try decodeLayout(action.replace_layout)
-            let replacement = try replacementString(from: &action)
-            return .replaceToken(
-                oldLength: Int(action.replace_old_len),
-                replacement: replacement,
+    private static func decode(
+        composition: inout TfComposition
+    ) throws -> TypeflowCompositionAction {
+        switch composition.tag {
+        case UInt8(TF_COMPOSITION_BYPASS):
+            return .bypass
+        case UInt8(TF_COMPOSITION_RENDER):
+            let layout = try decodeLayout(composition.layout)
+            return .render(
+                text: try compositionString(from: &composition),
                 layout: layout
             )
-        case UInt8(TF_ACTION_RESET):
-            return .resetToken
+        case UInt8(TF_COMPOSITION_COMMIT):
+            return .commit(
+                text: try compositionString(from: &composition),
+                consumeEvent: composition.consume_event != 0
+            )
+        case UInt8(TF_COMPOSITION_CLEAR):
+            return .clear(consumeEvent: composition.consume_event != 0)
         default:
-            throw TypeflowError.unknownActionTag(action.tag)
+            throw TypeflowError.unknownCompositionTag(composition.tag)
         }
     }
 
@@ -232,16 +178,16 @@ public final class TypeflowEngine {
         return layout
     }
 
-    private static func replacementString(from action: inout TfAction) throws -> String {
-        let length = Int(action.replace_text_len)
-        let bytes = try withUnsafeBytes(of: &action.replace_text) { rawBuffer in
+    private static func compositionString(from composition: inout TfComposition) throws -> String {
+        let length = Int(composition.text_len)
+        let bytes = try withUnsafeBytes(of: &composition.text) { rawBuffer in
             guard length <= rawBuffer.count else {
-                throw TypeflowError.invalidReplacementUTF8
+                throw TypeflowError.invalidCompositionUTF8
             }
             return Array(rawBuffer.prefix(length))
         }
         guard let string = String(bytes: bytes, encoding: .utf8) else {
-            throw TypeflowError.invalidReplacementUTF8
+            throw TypeflowError.invalidCompositionUTF8
         }
         return string
     }

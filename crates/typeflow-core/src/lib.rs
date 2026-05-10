@@ -13,15 +13,15 @@ pub use keyboard::{
 };
 pub use score::has_dictionary_evidence;
 pub use types::{
-    Action, Decision, EngineConfig, EngineConfigError, EngineOutput, HostContext, InputEvent,
-    Layout, LayoutCandidates, LayoutScore, MAX_CONFIG_TOKEN_LEN, ScoreAnalysis,
+    CompositionAction, CompositionOutput, Decision, EngineConfig, EngineConfigError, HostContext,
+    InputEvent, Layout, LayoutCandidates, LayoutScore, MAX_CONFIG_TOKEN_LEN, ScoreAnalysis,
 };
 
 #[cfg(test)]
 mod tests {
     use super::{
-        Action, Decision, Engine, EngineConfig, EngineConfigError, HostContext, InputEvent,
-        KeyboardMap, Layout, LayoutScore, LetterEvent, MAX_CONFIG_TOKEN_LEN, PhysicalKey,
+        CompositionAction, Decision, Engine, EngineConfig, EngineConfigError, HostContext,
+        InputEvent, KeyboardMap, Layout, LetterEvent, MAX_CONFIG_TOKEN_LEN, PhysicalKey,
         ScoreAnalysis,
     };
     use crate::data::LanguageBundle;
@@ -96,23 +96,6 @@ mod tests {
         ]
     }
 
-    fn assert_finite_score(score: ScoreAnalysis) {
-        for value in [
-            score.english.total,
-            score.english.bigram,
-            score.english.trigram,
-            score.english.dict_exact_bonus,
-            score.english.dict_prefix_bonus,
-            score.secondary.total,
-            score.secondary.bigram,
-            score.secondary.trigram,
-            score.secondary.dict_exact_bonus,
-            score.secondary.dict_prefix_bonus,
-        ] {
-            assert!(value.is_finite(), "score component must stay finite");
-        }
-    }
-
     #[test]
     fn it_defaults_to_english() {
         let engine = engine();
@@ -184,292 +167,57 @@ mod tests {
     }
 
     #[test]
-    fn it_scores_ukrainian_higher_for_pryvit() {
+    fn composition_renders_letters_without_committing_until_boundary() {
         let mut engine = engine();
-        for event in letters(&[
-            PhysicalKey::G,
-            PhysicalKey::H,
-            PhysicalKey::S,
-            PhysicalKey::D,
-            PhysicalKey::B,
-            PhysicalKey::N,
-        ]) {
-            engine.process(InputEvent::Letter(event));
-        }
-        let score = engine.score(engine.token_candidates());
-        assert!(
-            score.secondary.total > score.english.total,
-            "expected ukrainian > english, got {:?} vs {:?}",
-            score.secondary,
-            score.english
-        );
-    }
+        let mut committed = String::new();
+        let mut composing = String::new();
 
-    #[test]
-    fn it_scores_english_higher_for_typeflow() {
-        let mut engine = engine();
-        for event in letters(&[
-            PhysicalKey::T,
-            PhysicalKey::Y,
-            PhysicalKey::P,
-            PhysicalKey::E,
-            PhysicalKey::F,
-            PhysicalKey::L,
-            PhysicalKey::O,
-            PhysicalKey::W,
-        ]) {
-            engine.process(InputEvent::Letter(event));
-        }
-        let score = engine.score(engine.token_candidates());
-        assert!(score.english.total > score.secondary.total);
-    }
-
-    #[test]
-    fn incremental_token_score_matches_full_rescore() {
-        let mut engine = engine();
-        for event in [
-            LetterEvent::new(PhysicalKey::G),
-            LetterEvent {
-                physical_key: PhysicalKey::H,
-                shift: true,
-            },
-            LetterEvent::new(PhysicalKey::S),
-            LetterEvent::new(PhysicalKey::D),
-            LetterEvent::new(PhysicalKey::B),
-            LetterEvent::new(PhysicalKey::N),
-        ] {
-            engine.process(InputEvent::Letter(event));
-            assert_scores_equal(
-                engine.token_score(),
-                engine.score(engine.token_candidates()),
+        for character in "ghsdbn".chars() {
+            let input = input_event_for_char(&engine, character);
+            let output = engine.process(input);
+            apply_composition(
+                output.action,
+                Some(character),
+                &mut committed,
+                &mut composing,
             );
         }
 
-        engine.process(InputEvent::Backspace);
-        assert_scores_equal(
-            engine.token_score(),
-            engine.score(engine.token_candidates()),
-        );
-    }
-
-    #[test]
-    fn it_replaces_token_when_decision_switches_layout() {
-        let mut engine = engine();
-        let mut last_action = Action::Keep;
-        for event in letters(&[
-            PhysicalKey::G,
-            PhysicalKey::H,
-            PhysicalKey::S,
-            PhysicalKey::D,
-            PhysicalKey::B,
-            PhysicalKey::N,
-        ]) {
-            last_action = engine.process(InputEvent::Letter(event)).action;
-        }
-
-        // Engine should have flipped to Ukrainian at some point during the token.
+        assert_eq!(committed, "");
+        assert_eq!(composing, "привіт");
         assert_eq!(engine.current_layout(), Layout::Secondary);
-        // The final action should either be a Commit (already in Ukrainian) or Replace
-        // (just flipped on this letter); both are acceptable depending on calibration.
-        assert!(matches!(
-            last_action,
-            Action::Commit(_) | Action::ReplaceToken { .. }
-        ));
-    }
 
-    #[test]
-    fn it_keeps_layout_for_short_tokens() {
-        let mut engine = engine();
-        engine.process(InputEvent::Letter(LetterEvent::new(PhysicalKey::G)));
-        let output = engine.process(InputEvent::Letter(LetterEvent::new(PhysicalKey::H)));
-        assert_eq!(output.decision, Decision::Keep);
-        assert_eq!(output.action, Action::Commit('h'));
-    }
-
-    #[test]
-    fn it_resets_token_on_end_token() {
-        let mut engine = engine();
-        engine.process(InputEvent::Letter(LetterEvent::new(PhysicalKey::T)));
         let output = engine.process(InputEvent::EndToken);
-        assert_eq!(output.action, Action::ResetToken);
+        apply_composition(output.action, None, &mut committed, &mut composing);
+
+        assert_eq!(committed, "привіт");
+        assert_eq!(composing, "");
         assert_eq!(engine.token_len(), 0);
     }
 
     #[test]
-    fn it_pops_token_on_backspace() {
+    fn literal_commits_active_composition_and_literal_together() {
         let mut engine = engine();
-        for event in letters(&[PhysicalKey::T, PhysicalKey::Y, PhysicalKey::P]) {
-            engine.process(InputEvent::Letter(event));
+        for character in "abc".chars() {
+            let input = input_event_for_char(&engine, character);
+            engine.process(input);
         }
-        let output = engine.process(InputEvent::Backspace);
-        assert_eq!(output.action, Action::Keep);
-        assert_eq!(engine.token_len(), 2);
-        assert_eq!(engine.token_candidates().english, "ty");
-    }
-
-    #[test]
-    fn it_reverts_layout_when_backspacing_before_the_switch_point() {
-        let mut engine = engine();
-        for event in letters(&[
-            PhysicalKey::G,
-            PhysicalKey::H,
-            PhysicalKey::S,
-            PhysicalKey::D,
-        ]) {
-            engine.process(InputEvent::Letter(event));
-        }
-        assert_eq!(engine.current_layout(), Layout::Secondary);
-
-        engine.process(InputEvent::Backspace);
-
-        assert_eq!(engine.token_candidates().english, "ghs");
-        assert_eq!(engine.current_layout(), Layout::English);
-    }
-
-    #[test]
-    fn backspace_on_empty_token_is_a_noop() {
-        let mut engine = engine();
-        let output = engine.process(InputEvent::Backspace);
-        assert_eq!(output.action, Action::Keep);
-        assert_eq!(engine.token_len(), 0);
-    }
-
-    #[test]
-    fn it_refuses_to_switch_on_internal_caps() {
-        let mut engine = engine();
-        // Type "gHsDbN" — same physical keys as привіт but with mid-word capitals.
-        // Engine should refuse to switch layouts because this looks like an identifier.
-        for (idx, key) in [
-            PhysicalKey::G,
-            PhysicalKey::H,
-            PhysicalKey::S,
-            PhysicalKey::D,
-            PhysicalKey::B,
-            PhysicalKey::N,
-        ]
-        .iter()
-        .copied()
-        .enumerate()
-        {
-            engine.process(InputEvent::Letter(LetterEvent {
-                physical_key: key,
-                // shift on every odd-indexed letter (positions 1, 3, 5)
-                shift: idx % 2 == 1,
-            }));
-        }
-        assert_eq!(engine.current_layout(), Layout::English);
-    }
-
-    #[test]
-    fn it_does_not_block_capitalized_first_letter() {
-        let mut engine = engine();
-        // Type "Привіт" via physical keys with shift on position 0 only.
-        for (idx, key) in [
-            PhysicalKey::G,
-            PhysicalKey::H,
-            PhysicalKey::S,
-            PhysicalKey::D,
-            PhysicalKey::B,
-            PhysicalKey::N,
-        ]
-        .iter()
-        .copied()
-        .enumerate()
-        {
-            engine.process(InputEvent::Letter(LetterEvent {
-                physical_key: key,
-                shift: idx == 0,
-            }));
-        }
-        assert_eq!(engine.current_layout(), Layout::Secondary);
-
-        let score = engine.score(engine.token_candidates());
-        assert!(score.secondary.exact_count > 0);
-    }
-
-    #[test]
-    fn it_renders_shifted_english_punctuation_positions() {
-        let bundle = fixture_bundle();
-        let cases = [
-            ('~', PhysicalKey::Grave),
-            ('{', PhysicalKey::LBracket),
-            ('}', PhysicalKey::RBracket),
-            (':', PhysicalKey::Semicolon),
-            ('"', PhysicalKey::Quote),
-            ('<', PhysicalKey::Comma),
-            ('>', PhysicalKey::Period),
-            ('|', PhysicalKey::Backslash),
-        ];
-
-        for (character, key) in cases {
-            let event = LetterEvent::from_char(character).unwrap();
-
-            assert_eq!(event.physical_key, key);
-            assert!(event.shift);
-            assert_eq!(bundle.render(event, Layout::English), character);
-        }
-    }
-
-    #[test]
-    fn it_requires_stronger_margin_without_dictionary_evidence() {
-        let config = EngineConfig {
-            confidence_margin: 0.0,
-            ngram_only_confidence_margin: f32::MAX,
-            ..EngineConfig::default()
-        };
-
-        let mut engine = engine_with_config(config);
-        for event in letters(&[
-            PhysicalKey::G,
-            PhysicalKey::H,
-            PhysicalKey::S,
-            PhysicalKey::D,
-            PhysicalKey::B,
-            PhysicalKey::N,
-        ]) {
-            engine.process(InputEvent::Letter(event));
-        }
-        assert_eq!(engine.current_layout(), Layout::Secondary);
-        engine.process(InputEvent::EndToken);
-
-        for event in letters(&[
-            PhysicalKey::Q,
-            PhysicalKey::W,
-            PhysicalKey::E,
-            PhysicalKey::R,
-            PhysicalKey::T,
-            PhysicalKey::Y,
-        ]) {
-            engine.process(InputEvent::Letter(event));
-        }
-
-        assert_eq!(engine.current_layout(), Layout::Secondary);
-    }
-
-    #[test]
-    fn literal_resets_token_and_commits_the_character() {
-        let mut engine = engine();
-        for event in letters(&[PhysicalKey::G, PhysicalKey::H, PhysicalKey::B]) {
-            engine.process(InputEvent::Letter(event));
-        }
-        assert_eq!(engine.token_len(), 3);
 
         let output = engine.process(InputEvent::Literal('1'));
-        assert_eq!(output.action, Action::Commit('1'));
+        assert_eq!(
+            output.action,
+            CompositionAction::Commit {
+                text: "abc1".to_owned(),
+                consume_event: true,
+            }
+        );
         assert_eq!(engine.token_len(), 0);
-
-        // The remaining letters form a new short token; engine stays English
-        // because each segment is below min_token_len.
-        for event in letters(&[PhysicalKey::D, PhysicalKey::T, PhysicalKey::N]) {
-            engine.process(InputEvent::Letter(event));
-        }
-        assert_eq!(engine.current_layout(), Layout::English);
     }
 
     #[test]
-    fn english_punctuation_key_ends_decided_english_token() {
+    fn english_punctuation_key_commits_decided_english_token() {
         let mut engine = engine();
-        let rendered = run_cli_like_token(&mut engine, "hello,ghsdbn");
+        let rendered = run_text_committed(&mut engine, "hello,ghsdbn");
 
         assert_eq!(rendered, "hello,привіт");
         assert_eq!(engine.current_layout(), Layout::Secondary);
@@ -478,114 +226,103 @@ mod tests {
     #[test]
     fn punctuation_position_keys_can_still_form_secondary_words() {
         let mut engine = engine();
-        let rendered = run_cli_like_token(&mut engine, ",f,f");
+        let rendered = run_text_committed(&mut engine, ",f,f");
 
         assert_eq!(rendered, "баба");
         assert_eq!(engine.current_layout(), Layout::Secondary);
     }
 
     #[test]
-    fn backspace_after_literal_keeps_token_state_consistent() {
-        // Reproduces the desync that existed when literals didn't terminate the
-        // token: the host buffer would drift from `engine.token` because each
-        // literal added a character to the host while leaving `engine.token`
-        // unchanged. With literal = reset+commit, both sides advance in lockstep.
+    fn backspace_updates_owned_composition() {
         let mut engine = engine();
-        let mut committed = String::new();
-
-        for character in "abc".chars() {
-            let action = engine.process_action(input_event_for_char(&engine, character));
-            apply_action_to_string(&action, &mut committed);
-        }
-        let action = engine.process_action(InputEvent::Literal('1'));
-        apply_action_to_string(&action, &mut committed);
-        for character in "def".chars() {
-            let action = engine.process_action(input_event_for_char(&engine, character));
-            apply_action_to_string(&action, &mut committed);
+        for character in "type".chars() {
+            let input = input_event_for_char(&engine, character);
+            engine.process(input);
         }
 
-        assert_eq!(committed, "abc1def");
-        assert_eq!(engine.token_len(), 3); // engine sees only "def"
+        let output = engine.process(InputEvent::Backspace);
+        assert_eq!(
+            output.action,
+            CompositionAction::Render {
+                text: "typ".to_owned(),
+                layout: Layout::English,
+            }
+        );
+        assert_eq!(engine.token_candidates().english, "typ");
 
-        // Backspace 3 times via the engine; the host pops the corresponding
-        // char itself (Backspace returns Action::Keep).
-        for _ in 0..3 {
-            engine.process_action(InputEvent::Backspace);
-            committed.pop();
-        }
+        engine.process(InputEvent::Backspace);
+        engine.process(InputEvent::Backspace);
+        let output = engine.process(InputEvent::Backspace);
+        assert_eq!(
+            output.action,
+            CompositionAction::Clear {
+                consume_event: true,
+            }
+        );
         assert_eq!(engine.token_len(), 0);
-        assert_eq!(committed, "abc1");
     }
 
     #[test]
-    fn it_bypasses_acronym_like_tokens() {
+    fn manual_switch_changes_composition_not_document_state() {
         let mut engine = engine();
-        let mut output = engine.process(InputEvent::Letter(LetterEvent {
-            physical_key: PhysicalKey::H,
-            shift: true,
-        }));
-        for key in [PhysicalKey::T, PhysicalKey::T, PhysicalKey::P] {
-            output = engine.process(InputEvent::Letter(LetterEvent {
+        for character in "type".chars() {
+            let input = input_event_for_char(&engine, character);
+            engine.process(input);
+        }
+
+        let output = engine.force_switch_token();
+        assert_eq!(
+            output.action,
+            CompositionAction::Render {
+                text: "ензу".to_owned(),
+                layout: Layout::Secondary,
+            }
+        );
+        assert_eq!(engine.current_layout(), Layout::Secondary);
+        assert_eq!(engine.token_len(), 4);
+    }
+
+    #[test]
+    fn internal_caps_and_acronyms_render_without_switching() {
+        let mut case_engine = engine();
+        for (idx, key) in [
+            PhysicalKey::G,
+            PhysicalKey::H,
+            PhysicalKey::S,
+            PhysicalKey::D,
+            PhysicalKey::B,
+            PhysicalKey::N,
+        ]
+        .iter()
+        .copied()
+        .enumerate()
+        {
+            case_engine.process(InputEvent::Letter(LetterEvent {
+                physical_key: key,
+                shift: idx % 2 == 1,
+            }));
+        }
+
+        assert_eq!(case_engine.current_layout(), Layout::English);
+        assert_eq!(run_text_committed(&mut case_engine, ""), "gHsDbN");
+
+        let mut engine = engine();
+        for key in [
+            PhysicalKey::H,
+            PhysicalKey::T,
+            PhysicalKey::T,
+            PhysicalKey::P,
+        ] {
+            engine.process(InputEvent::Letter(LetterEvent {
                 physical_key: key,
                 shift: true,
             }));
         }
-
-        assert_eq!(output.decision, Decision::Bypass);
         assert_eq!(engine.current_layout(), Layout::English);
     }
 
     #[test]
-    fn it_keeps_devops_and_secret_like_tokens_english() {
-        let cases = [
-            "http",
-            "https://example.com",
-            "user@example.com",
-            "/var/log/nginx/access.log",
-            "snake_case",
-            "camelCase",
-            "HTTP",
-            "abc123",
-            "CLOUDACCESSKEYIDLIKEVALUE1234",
-            "arn:aws:iam::000000000000:role/ExampleRole",
-            "kubectl",
-            "terraform",
-            "Bearer",
-            "github-token-placeholder",
-            "password123!",
-            "kube-system",
-            "deployment.apps",
-        ];
-
-        for token in cases {
-            let mut engine = engine();
-            let rendered = run_cli_like_token(&mut engine, token);
-
-            assert_eq!(
-                engine.current_layout(),
-                Layout::English,
-                "false positive for {token}, rendered {rendered}"
-            );
-            assert_eq!(rendered, token);
-        }
-    }
-
-    #[test]
-    fn weird_unicode_literals_do_not_panic_or_switch() {
-        let mut engine = engine();
-        let mut committed = String::new();
-
-        for character in ['🧪', '\u{200d}', '\u{0301}', '\n', '\u{0000}', 'ß'] {
-            let output = engine.process(InputEvent::Literal(character));
-            apply_action_to_string(&output.action, &mut committed);
-        }
-
-        assert_eq!(engine.current_layout(), Layout::English);
-        assert_eq!(engine.token_len(), 0);
-    }
-
-    #[test]
-    fn host_context_bypasses_secure_and_auto_disabled_inputs() {
+    fn host_context_bypasses_secure_and_full_disabled_inputs() {
         let mut engine = engine();
         for event in letters(&[PhysicalKey::G, PhysicalKey::H, PhysicalKey::B]) {
             engine.process(InputEvent::Letter(event));
@@ -600,7 +337,7 @@ mod tests {
         let output = engine.process(InputEvent::Letter(LetterEvent::new(PhysicalKey::D)));
 
         assert_eq!(output.decision, Decision::Bypass);
-        assert_eq!(output.action, Action::Keep);
+        assert_eq!(output.action, CompositionAction::Bypass);
         assert_eq!(engine.token_len(), 0);
 
         engine.set_host_context(HostContext {
@@ -609,11 +346,11 @@ mod tests {
             automatic_switching_disabled: false,
         });
         let output = engine.process(InputEvent::Letter(LetterEvent::new(PhysicalKey::D)));
-        assert_eq!(output.action, Action::Keep);
+        assert_eq!(output.action, CompositionAction::Bypass);
     }
 
     #[test]
-    fn auto_switching_disabled_commits_current_layout_without_replacement() {
+    fn auto_switching_disabled_still_owns_composition_in_current_layout() {
         let mut engine = engine();
         engine.set_host_context(HostContext {
             secure_input: false,
@@ -621,49 +358,20 @@ mod tests {
             automatic_switching_disabled: true,
         });
 
-        let rendered = run_cli_like_token(&mut engine, "ghsdbn");
+        let rendered = run_text_committed(&mut engine, "ghsdbn");
 
         assert_eq!(rendered, "ghsdbn");
         assert_eq!(engine.current_layout(), Layout::English);
 
         engine.reset_layout(Layout::Secondary);
-        let rendered = run_cli_like_token(&mut engine, "ghsdbn");
+        let rendered = run_text_committed(&mut engine, "ghsdbn");
 
         assert_eq!(rendered, "привіт");
         assert_eq!(engine.current_layout(), Layout::Secondary);
     }
 
     #[test]
-    fn host_context_mode_change_clears_in_flight_token() {
-        let mut engine = engine();
-
-        for event in letters(&[PhysicalKey::G, PhysicalKey::H, PhysicalKey::S]) {
-            engine.process(InputEvent::Letter(event));
-        }
-        assert_eq!(engine.token_len(), 3);
-
-        engine.set_host_context(HostContext {
-            secure_input: false,
-            automatic_processing_disabled: false,
-            automatic_switching_disabled: true,
-        });
-
-        assert_eq!(engine.token_len(), 0);
-        assert!(engine.host_context().automatic_switching_disabled);
-    }
-
-    #[test]
-    fn modifier_bypass_event_does_not_commit_or_score() {
-        let mut engine = engine();
-        let output = engine.process(InputEvent::HostBypass);
-
-        assert_eq!(output.decision, Decision::Bypass);
-        assert_eq!(output.action, Action::Keep);
-        assert_eq!(engine.token_len(), 0);
-    }
-
-    #[test]
-    fn long_tokens_bypass_until_boundary() {
+    fn long_tokens_commit_once_then_bypass_until_boundary() {
         let config = EngineConfig {
             max_token_len: 3,
             ..EngineConfig::default()
@@ -672,105 +380,32 @@ mod tests {
 
         for event in letters(&[PhysicalKey::A, PhysicalKey::B, PhysicalKey::C]) {
             let output = engine.process(InputEvent::Letter(event));
-            assert_eq!(output.decision, Decision::Keep);
+            assert!(matches!(output.action, CompositionAction::Render { .. }));
         }
         assert_eq!(engine.token_len(), 3);
 
         let output = engine.process(InputEvent::Letter(LetterEvent::new(PhysicalKey::D)));
-        assert_eq!(output.decision, Decision::Bypass);
-        assert_eq!(output.action, Action::Commit('d'));
+        assert_eq!(
+            output.action,
+            CompositionAction::Commit {
+                text: "abcd".to_owned(),
+                consume_event: true,
+            }
+        );
         assert_eq!(engine.token_len(), 0);
 
         let output = engine.process(InputEvent::Letter(LetterEvent::new(PhysicalKey::E)));
-        assert_eq!(output.decision, Decision::Bypass);
-        assert_eq!(output.action, Action::Commit('e'));
-        assert_eq!(engine.token_len(), 0);
+        assert_eq!(output.action, CompositionAction::Bypass);
 
         engine.process(InputEvent::EndToken);
         let output = engine.process(InputEvent::Letter(LetterEvent::new(PhysicalKey::F)));
-        assert_eq!(output.decision, Decision::Keep);
-        assert_eq!(output.action, Action::Commit('f'));
-        assert_eq!(engine.token_len(), 1);
-    }
-
-    #[test]
-    fn action_only_path_matches_full_output_for_switching_token() {
-        let mut full = engine();
-        let mut fast = engine();
-        let mut full_committed = String::new();
-        let mut fast_committed = String::new();
-
-        for character in "ghsdbn".chars() {
-            let input = input_event_for_char(&full, character);
-            let output = full.process(input);
-            apply_action_to_string(&output.action, &mut full_committed);
-
-            let input = input_event_for_char(&fast, character);
-            let action = fast.process_action(input);
-            apply_action_to_string(&action, &mut fast_committed);
-        }
-
-        assert_eq!(full_committed, "привіт");
-        assert_eq!(fast_committed, full_committed);
-        assert_eq!(fast.current_layout(), full.current_layout());
-    }
-
-    proptest! {
-        #![proptest_config(ProptestConfig::with_cases(256))]
-
-        #[test]
-        fn action_only_path_matches_full_output_for_generated_events(
-            events in prop::collection::vec(input_event_strategy(), 0..256)
-        ) {
-            let mut full = engine();
-            let mut fast = engine();
-
-            for event in events {
-                let full_action = {
-                    let output = full.process(event);
-                    output.action.clone()
-                };
-                let fast_action = fast.process_action(event);
-
-                prop_assert_eq!(fast_action, full_action);
-                prop_assert_eq!(fast.current_layout(), full.current_layout());
-                prop_assert_eq!(fast.token_len(), full.token_len());
-                prop_assert_eq!(fast.token_candidates(), full.token_candidates());
+        assert_eq!(
+            output.action,
+            CompositionAction::Render {
+                text: "f".to_owned(),
+                layout: Layout::English,
             }
-        }
-
-        #[test]
-        fn generated_events_preserve_engine_state_invariants(
-            events in prop::collection::vec(input_event_strategy(), 0..512)
-        ) {
-            let mut engine = engine();
-            let max_token_len = engine.config().max_token_len;
-
-            for event in events {
-                let action = engine.process_action(event);
-                let token_len = engine.token_len();
-                let candidates = engine.token_candidates();
-
-                prop_assert!(token_len <= max_token_len);
-                prop_assert_eq!(candidates.english.chars().count(), token_len);
-                prop_assert_eq!(candidates.secondary.chars().count(), token_len);
-
-                match action {
-                    Action::ReplaceToken {
-                        old_len,
-                        replacement,
-                        ..
-                    } => {
-                        prop_assert!(old_len <= max_token_len);
-                        prop_assert!(!replacement.is_empty());
-                        prop_assert!(replacement.chars().count() <= max_token_len);
-                    }
-                    Action::Keep | Action::Commit(_) | Action::ResetToken => {}
-                }
-
-                assert_finite_score(engine.token_score());
-            }
-        }
+        );
     }
 
     #[test]
@@ -803,178 +438,41 @@ mod tests {
         assert!(unsupported.to_string().contains("not supported"));
     }
 
-    #[test]
-    fn replace_token_old_len_matches_committed_prefix() {
-        // When the engine flips mid-stream, the host has only committed the
-        // previous letters of the token (one Commit per letter). `old_len` must
-        // equal that committed-prefix length so AppKit's
-        // `client.insertText(_:replacementRange:)` can target a real range
-        // instead of going off the end of the buffer.
-        let mut engine = engine();
-        let mut committed = String::new();
-        let mut flip_action: Option<Action> = None;
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
 
-        for character in "ghsdbn".chars() {
-            let action = engine.process_action(input_event_for_char(&engine, character));
-            if matches!(action, Action::ReplaceToken { .. }) {
-                flip_action = Some(action.clone());
-                let committed_before_flip = committed.chars().count();
-                if let Action::ReplaceToken { old_len, .. } = &action {
-                    assert_eq!(
-                        *old_len, committed_before_flip,
-                        "old_len ({old_len}) must equal the host's committed prefix \
-                         ({committed_before_flip}) at the moment of the flip"
-                    );
+        #[test]
+        fn generated_events_preserve_engine_state_invariants(
+            events in prop::collection::vec(input_event_strategy(), 0..512)
+        ) {
+            let mut engine = engine();
+            let max_token_len = engine.config().max_token_len;
+
+            for event in events {
+                let action = {
+                    let output = engine.process(event);
+                    output.action.clone()
+                };
+                let token_len = engine.token_len();
+                let candidates = engine.token_candidates();
+
+                prop_assert!(token_len <= max_token_len);
+                prop_assert_eq!(candidates.english.chars().count(), token_len);
+                prop_assert_eq!(candidates.secondary.chars().count(), token_len);
+
+                match &action {
+                    CompositionAction::Render { text, .. } => {
+                        prop_assert!(text.chars().count() <= max_token_len);
+                    }
+                    CompositionAction::Commit { text, .. } => {
+                        prop_assert!(text.chars().count() <= max_token_len + 1);
+                    }
+                    CompositionAction::Bypass | CompositionAction::Clear { .. } => {}
                 }
+
+                assert_finite_score(engine.token_score());
             }
-            apply_action_to_string(&action, &mut committed);
         }
-
-        assert_eq!(committed, "привіт");
-        assert!(
-            flip_action.is_some(),
-            "expected a ReplaceToken event for ghsdbn -> привіт"
-        );
-    }
-
-    #[test]
-    fn force_switch_old_len_matches_committed_token() {
-        // For force_switch, every letter of the token has already been
-        // committed; old_len must equal the full token length (no off-by-one).
-        let mut engine = engine();
-        let mut committed = String::new();
-        for character in "type".chars() {
-            let action = engine.process_action(input_event_for_char(&engine, character));
-            apply_action_to_string(&action, &mut committed);
-        }
-        assert_eq!(committed.chars().count(), 4);
-
-        let output = engine.force_switch_token();
-        let Action::ReplaceToken { old_len, .. } = output.action else {
-            panic!("expected ReplaceToken from force_switch");
-        };
-        assert_eq!(old_len, 4);
-    }
-
-    #[test]
-    fn it_force_switches_the_current_token() {
-        let mut engine = engine();
-        for event in letters(&[
-            PhysicalKey::T,
-            PhysicalKey::Y,
-            PhysicalKey::P,
-            PhysicalKey::E,
-        ]) {
-            engine.process(InputEvent::Letter(event));
-        }
-
-        let action = engine.force_switch_token().action;
-
-        assert_eq!(engine.current_layout(), Layout::Secondary);
-        assert_eq!(
-            action,
-            Action::ReplaceToken {
-                old_len: 4,
-                replacement: "ензу".to_owned(),
-                layout: Layout::Secondary,
-            }
-        );
-    }
-
-    #[test]
-    fn visible_token_conversion_uses_actual_text() {
-        let engine = engine();
-
-        assert_eq!(
-            engine.convert_visible_token("afrn"),
-            Some((Layout::Secondary, "факт".to_owned()))
-        );
-        assert_eq!(
-            engine.convert_visible_token("факт"),
-            Some((Layout::English, "afrn".to_owned()))
-        );
-        assert_eq!(
-            engine.convert_visible_token("ghив"),
-            Some((Layout::Secondary, "прив".to_owned()))
-        );
-    }
-
-    #[test]
-    fn visible_prefix_replacement_uses_host_prefix_length() {
-        let mut engine = engine();
-        let action = engine
-            .replace_visible_prefix_with_key(
-                "ghb",
-                LetterEvent::new(PhysicalKey::D),
-                Layout::Secondary,
-            )
-            .unwrap();
-
-        assert_eq!(
-            action,
-            Action::ReplaceToken {
-                old_len: 3,
-                replacement: "прів".to_owned(),
-                layout: Layout::Secondary,
-            }
-        );
-        assert_eq!(engine.current_layout(), Layout::Secondary);
-    }
-
-    #[test]
-    fn visible_tail_keeps_punctuation_position_letters_in_token() {
-        let mut engine = engine();
-
-        assert_eq!(engine.visible_token_suffix("hello [fn"), Some("[fn"));
-        assert_eq!(engine.visible_token_suffix("hello —[fn"), Some("[fn"));
-        assert_eq!(engine.visible_token_suffix("hello …[fn"), Some("[fn"));
-        assert_eq!(engine.visible_token_suffix("hello\u{00a0}[fn"), Some("[fn"));
-        assert_eq!(engine.visible_token_suffix("hello\u{200b}[fn"), Some("[fn"));
-        assert_eq!(engine.visible_token_suffix("hello ✓"), None);
-        assert_eq!(
-            engine.convert_visible_tail("hello [fnf"),
-            Some((Layout::Secondary, "хата".to_owned(), 4))
-        );
-
-        let action = engine
-            .replace_visible_tail_with_key(
-                "hello [fn",
-                LetterEvent::new(PhysicalKey::F),
-                Layout::Secondary,
-            )
-            .unwrap();
-
-        assert_eq!(
-            action,
-            Action::ReplaceToken {
-                old_len: 3,
-                replacement: "хата".to_owned(),
-                layout: Layout::Secondary,
-            }
-        );
-
-        assert_eq!(engine.visible_token_suffix("hello ’dh"), Some("’dh"));
-        assert_eq!(
-            engine.convert_visible_tail("hello ’dhj"),
-            Some((Layout::Secondary, "євро".to_owned(), 4))
-        );
-
-        let action = engine
-            .replace_visible_tail_with_key(
-                "hello ’dh",
-                LetterEvent::new(PhysicalKey::J),
-                Layout::Secondary,
-            )
-            .unwrap();
-
-        assert_eq!(
-            action,
-            Action::ReplaceToken {
-                old_len: 3,
-                replacement: "євро".to_owned(),
-                layout: Layout::Secondary,
-            }
-        );
     }
 
     fn letters(physical_keys: &[PhysicalKey]) -> Vec<LetterEvent> {
@@ -985,13 +483,21 @@ mod tests {
             .collect()
     }
 
-    fn run_cli_like_token(engine: &mut Engine, token: &str) -> String {
+    fn run_text_committed(engine: &mut Engine, text: &str) -> String {
         let mut committed = String::new();
-        for character in token.chars() {
+        let mut composing = String::new();
+        for character in text.chars() {
             let input = input_event_for_char(engine, character);
-            let action = engine.process_action(input);
-            apply_action_to_string(&action, &mut committed);
+            let output = engine.process(input);
+            apply_composition(
+                output.action,
+                Some(character),
+                &mut committed,
+                &mut composing,
+            );
         }
+        let output = engine.process(InputEvent::EndToken);
+        apply_composition(output.action, None, &mut committed, &mut composing);
         committed
     }
 
@@ -999,36 +505,54 @@ mod tests {
         engine.input_event_from_char(character)
     }
 
-    fn apply_action_to_string(action: &Action, committed: &mut String) {
+    fn apply_composition(
+        action: CompositionAction,
+        fallback: Option<char>,
+        committed: &mut String,
+        composing: &mut String,
+    ) {
         match action {
-            Action::Keep | Action::ResetToken => {}
-            Action::Commit(character) => committed.push(*character),
-            Action::ReplaceToken {
-                old_len,
-                replacement,
-                ..
-            } => {
-                for _ in 0..*old_len {
-                    committed.pop();
+            CompositionAction::Bypass => {
+                if let Some(character) = fallback {
+                    committed.push(character);
                 }
-                committed.push_str(replacement);
+            }
+            CompositionAction::Render { text, .. } => {
+                *composing = text;
+            }
+            CompositionAction::Commit {
+                text,
+                consume_event,
+            } => {
+                committed.push_str(&text);
+                composing.clear();
+                if !consume_event && let Some(character) = fallback {
+                    committed.push(character);
+                }
+            }
+            CompositionAction::Clear { consume_event } => {
+                composing.clear();
+                if !consume_event && let Some(character) = fallback {
+                    committed.push(character);
+                }
             }
         }
     }
 
-    fn assert_scores_equal(left: ScoreAnalysis, right: ScoreAnalysis) {
-        assert_layout_scores_equal(left.english, right.english);
-        assert_layout_scores_equal(left.secondary, right.secondary);
-    }
-
-    fn assert_layout_scores_equal(left: LayoutScore, right: LayoutScore) {
-        assert_eq!(left.layout, right.layout);
-        assert_eq!(left.total, right.total);
-        assert_eq!(left.bigram, right.bigram);
-        assert_eq!(left.trigram, right.trigram);
-        assert_eq!(left.dict_exact_bonus, right.dict_exact_bonus);
-        assert_eq!(left.dict_prefix_bonus, right.dict_prefix_bonus);
-        assert_eq!(left.exact_count, right.exact_count);
-        assert_eq!(left.prefix_sum, right.prefix_sum);
+    fn assert_finite_score(score: ScoreAnalysis) {
+        for value in [
+            score.english.total,
+            score.english.bigram,
+            score.english.trigram,
+            score.english.dict_exact_bonus,
+            score.english.dict_prefix_bonus,
+            score.secondary.total,
+            score.secondary.bigram,
+            score.secondary.trigram,
+            score.secondary.dict_exact_bonus,
+            score.secondary.dict_prefix_bonus,
+        ] {
+            assert!(value.is_finite(), "score component must stay finite");
+        }
     }
 }

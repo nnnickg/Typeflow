@@ -159,21 +159,21 @@ In a normal app/text field with Typeflow selected:
 
 1. With default embedded Ukrainian config, type `ghsdbn`; expected visible text:
    `привіт`.
-2. Type `http`, then tap standalone Option; expected replacement under the
-   embedded Ukrainian layout: `реез`.
+2. Type `http`, then tap standalone Option; expected active composition under
+   the embedded Ukrainian layout: `реез`.
 3. Install any external secondary pack, set `language.secondary` to that pack
-   id, restart Typeflow, and verify normal replacement plus standalone Option
-   manual conversion in an app that is not disabled.
+   id, restart Typeflow, and verify normal composition/commit plus standalone
+   Option manual conversion in an app that is not disabled.
 4. Press Option with another key; it should pass through as normal app input and
    must not trigger manual conversion.
 5. Add an app bundle id under `[apps].disable_auto_bundle_ids`, restart
-   Typeflow, and confirm automatic replacement does not fire in that app.
+   Typeflow, and confirm automatic layout switching does not fire in that app.
 6. In the same auto-disabled app, tap standalone Option in a normal text field
-   and confirm explicit visible-token conversion still works. Continue typing
-   another word; it should commit in the selected manual layout without
-   automatic replacement.
+   and confirm explicit active-composition conversion still works. Continue
+   typing another word; it should commit in the selected manual layout without
+   automatic switching.
 7. Add an app bundle id under `[apps].disable_bundle_ids`, restart Typeflow,
-   and confirm neither automatic replacement nor standalone Option conversion
+   and confirm neither automatic composition nor standalone Option conversion
    fires. Repeat in a password field and confirm it does not fire.
 8. In Terminal.app and iTerm2, type a normally-switching token such as `ghsdbn`.
    It must stay unchanged. Standalone Option must also pass through without
@@ -249,8 +249,6 @@ Expected exported symbols:
 ```text
 _typeflow_engine_current_layout
 _typeflow_engine_default_config
-_typeflow_engine_convert_visible_tail
-_typeflow_engine_convert_visible_token
 _typeflow_engine_force_switch_token
 _typeflow_engine_free
 _typeflow_engine_new_embedded
@@ -261,11 +259,10 @@ _typeflow_engine_new_from_host_config
 _typeflow_engine_new_from_pack_dir
 _typeflow_engine_new_from_pack_dir_with_config
 _typeflow_engine_process
-_typeflow_engine_replace_visible_prefix_with_key
-_typeflow_engine_replace_visible_tail_with_key
 _typeflow_engine_reset_layout
 _typeflow_engine_reset_token
 _typeflow_engine_set_host_context
+_typeflow_engine_token_len
 _typeflow_last_error_message
 _typeflow_host_config_data_directory
 _typeflow_host_config_engine_config

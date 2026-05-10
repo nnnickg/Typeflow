@@ -43,38 +43,43 @@ accident.
   the active layout.
 - `reset_layout(layout)` changes active layout and clears token, candidates,
   and score cache.
-- `EndToken` clears token state and returns `Action::ResetToken`.
-- `Literal(char)` clears token state and returns `Action::Commit(char)`.
+- `EndToken` commits the active rendered composition once and clears token
+  state. If no token is active, it bypasses to the host.
+- `Literal(char)` commits the active rendered composition plus the literal
+  once, then clears token state. If no token is active, it bypasses to the host.
 - Punctuation-looking physical keys that are secondary-layout letters remain
   `Letter` events. If the active layout is English and the current token has
   already resolved as English, English punctuation on those keys terminates the
   token and commits the punctuation character.
 - `Backspace` removes one `LetterEvent` from token state, reconciles the
-  inferred layout for the shortened token, and returns `Action::Keep`.
-- Backspace on an empty token is a no-op.
-- Once a letter-only run exceeds `max_token_len`, the engine stops tracking it
-  as replaceable state and bypasses scoring until the next token boundary.
+  inferred layout for the shortened token, and returns a render or clear
+  composition action.
+- Backspace on an empty token bypasses to the host.
+- Once a letter-only run exceeds `max_token_len`, the engine commits the
+  buffered composition plus the current key once, then bypasses scoring until
+  the next token boundary.
 - Hosts must call `EndToken` or `reset_token()` on focus loss, app switch,
   committed whitespace, or any other boundary that makes the previous letters
-  no longer replaceable as one contiguous token.
-- Hosts must reset token state when the focused text client changes, selected
-  text is active, or the caret moves away from the replaceable trailing token.
+  no longer belongs to the active composition.
+- Hosts must reset token state when the focused text client changes or when an
+  out-of-band edit invalidates the active composition.
 
-## Action Protocol
+## Composition Protocol
 
-- `Action::Commit(c)` means insert exactly one Unicode scalar into the host
-  buffer.
-- `Action::ReplaceToken { old_len, replacement, layout }` means delete exactly
-  `old_len` already-committed trailing characters, then insert `replacement`.
-- During automatic switching, `old_len` intentionally excludes the current
-  just-pressed key. The replacement includes the whole token including that key.
-- During `force_switch_token()`, `old_len` is the full token length because all
-  letters in the token have already been committed by earlier actions.
-- `Action::Keep` means the host must not insert, delete, or reset visible text.
-- `Action::ResetToken` means host-side token bookkeeping should reset, but no
-  visible text should be edited by the core action itself.
-- The host must apply actions in order. Reordering, coalescing, or dropping a
-  `ReplaceToken` will desynchronize the host buffer and engine token state.
+- `CompositionAction::Render { text, layout }` means redraw the active
+  Typeflow-owned composition. The host must consume the key event and must not
+  let the app insert raw text for that event.
+- `CompositionAction::Commit { text, consume_event }` means insert `text` once
+  with host commit semantics. If `consume_event` is false, the host may pass the
+  original boundary event through after committing the text.
+- `CompositionAction::Clear { consume_event }` means clear active marked/overlay
+  composition without committing text.
+- `CompositionAction::Bypass` means Typeflow is not handling the event. The host
+  should let the app process it normally.
+- Normal conversion is render-only while a token is active. The document is not
+  edited per key and no committed trailing text is replaced.
+- `force_switch_token()` changes the internal layout and returns `Render`; it
+  does not mutate committed document text.
 
 ## Switching Rules
 
@@ -100,20 +105,18 @@ accident.
   `HostContext.automatic_processing_disabled` are full bypass flags for normal
   key processing.
 - While either full bypass flag is true, the engine clears token state and
-  returns `Decision::Bypass` with `Action::Keep`.
+  returns `Decision::Bypass` with `CompositionAction::Bypass`.
 - `HostContext.automatic_switching_disabled` disables automatic layout
-  decisions and replacement, but still commits keys in the current layout. This
-  is the mode used for apps in `apps.disable_auto_bundle_ids`: standalone Option
-  can switch the current layout, and subsequent keys use that layout without
-  automatic scoring.
+  decisions, but the host still uses Typeflow-owned composition in the current
+  layout. This is the mode used for apps in `apps.disable_auto_bundle_ids`:
+  standalone Option can switch the current layout, and subsequent keys use that
+  layout without automatic scoring.
 - The host is responsible for setting these flags before sending letter events.
   Secure-input detection is a host signal. App disable policy and
   terminal-surface policy are evaluated by Rust from `HostSurfaceFacts`,
   `apps.disable_bundle_ids`, and `apps.disable_auto_bundle_ids`; the macOS host
   supplies facts, not decisions.
-- Explicit manual conversion may use the visible-tail FFI path in auto-disabled
-  apps because that is a user-requested action rather than automatic processing.
-  Secure input, terminal-like surfaces, and fully disabled apps still bypass
+- Secure input, terminal-like surfaces, and fully disabled apps bypass
   everything.
 - Clearing host context does not restore a previous token. The next letter
   starts a fresh token.
@@ -127,17 +130,13 @@ accident.
 - Passing null to null-tolerant functions is a no-op or English fallback as
   documented in the Rust FFI comments.
 - `typeflow_engine_process` requires a valid engine pointer and writable
-  `TfAction` pointer. Invalid events decode to `Action::Keep`.
-- `TfAction.replace_text` is an inline UTF-8 byte buffer. The host must copy
-  exactly `replace_text_len` bytes and decode them as UTF-8.
-- Visible-tail FFI helpers take bounded committed text immediately before the
-  caret. Rust, not the host, decides the trailing token suffix using the active
-  keyboard maps.
-- `TF_REPLACE_BUF_LEN` bounds replacement payloads. If a replacement ever
-  exceeds that buffer, the FFI action writer must fail closed rather than
-  exposing partial text.
-- FFI constructors reject `max_token_len` values that could produce a UTF-8
-  replacement larger than `TF_REPLACE_BUF_LEN`.
+  `TfComposition` pointer. Invalid events decode to
+  `CompositionAction::Bypass`.
+- `TfComposition.text` is an inline UTF-8 byte buffer. The host must copy
+  exactly `text_len` bytes and decode them as UTF-8.
+- `TF_COMPOSITION_TEXT_BUF_LEN` bounds render and commit payloads. If a payload
+  exceeds that buffer, the FFI writer fails closed with a clear composition
+  action rather than exposing partial text.
 
 ## Data And Packs
 
@@ -165,7 +164,7 @@ Calibration may change:
 
 Calibration must not change:
 
-- `Action` semantics.
+- `CompositionAction` semantics.
 - `PhysicalKey` numeric indices.
 - token/candidate length invariants.
 - FFI ownership rules.

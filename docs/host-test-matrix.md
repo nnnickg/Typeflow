@@ -17,7 +17,7 @@ Core cases for every normal text field:
 
 | Input | Expected visible text | Purpose |
 | --- | --- | --- |
-| `[fnf` | `хата` | punctuation-position secondary letters stay inside the replaced token |
+| `[fnf` | `хата` | punctuation-position secondary letters stay inside the composed token |
 | `'dhj` | `євро` | ASCII quote key can be part of a secondary token |
 | `’dhj` | `євро` | host smart quote mutation does not leave a leading quote behind |
 | `hello —[fnf` | `hello —хата` | smart dash before token is a boundary, not token corruption |
@@ -44,11 +44,11 @@ Expected host behavior:
 
 - Normal fields apply the core cases above.
 - Password fields bypass Typeflow completely; `[fnf` must remain `[fnf`.
-- Apps in `apps.disable_auto_bundle_ids` bypass automatic Typeflow changes, but
-  still allow explicit standalone Option conversion in normal text fields when
-  the host exposes a visible text tail. After standalone Option conversion, the
-  next word should commit in the selected manual layout without automatic
-  replacement.
+- Apps in `apps.disable_auto_bundle_ids` bypass automatic layout switching, but
+  still let Typeflow own the active composition in the current layout.
+  Standalone Option changes that active composition to the opposite layout.
+  After standalone Option conversion, the next word should commit in the
+  selected manual layout without automatic switching.
 - Apps in `apps.disable_bundle_ids` bypass both automatic changes and
   standalone Option conversion.
 - Terminal-like surfaces bypass both automatic changes and standalone Option
@@ -58,4 +58,5 @@ Expected host behavior:
   Typeflow is not Accessibility-trusted, terminal apps are still blocked by
   bundle id but embedded terminal panes may look like normal editor text.
 - Autocorrect or rich-text mutations may change punctuation around the token,
-  but replacement must not leave stale ASCII/smart punctuation inside the word.
+  but the final commit must not leave stale ASCII/smart punctuation inside the
+  word.

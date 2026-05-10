@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use typeflow_core::data::LanguageBundle;
 use typeflow_core::{
-    Action, Engine, EngineConfig, InputEvent, Layout, LetterEvent, MAX_CONFIG_TOKEN_LEN,
+    CompositionAction, Engine, EngineConfig, InputEvent, Layout, LetterEvent, MAX_CONFIG_TOKEN_LEN,
     PhysicalKey,
 };
 use typeflow_host_config::{
@@ -46,17 +46,15 @@ pub const TF_HOST_POLICY_REASON_DISABLED_BUNDLE: u8 = 4;
 pub const TF_HOST_POLICY_REASON_AUTOMATIC_PROCESSING_DISABLED_BUNDLE: u8 = 5;
 pub const TF_HOST_POLICY_REASON_UNAVAILABLE_HOST_CONFIG: u8 = 255;
 
-pub const TF_ACTION_KEEP: u8 = 0;
-pub const TF_ACTION_COMMIT: u8 = 1;
-pub const TF_ACTION_REPLACE: u8 = 2;
-pub const TF_ACTION_RESET: u8 = 3;
+pub const TF_COMPOSITION_BYPASS: u8 = 0;
+pub const TF_COMPOSITION_RENDER: u8 = 1;
+pub const TF_COMPOSITION_COMMIT: u8 = 2;
+pub const TF_COMPOSITION_CLEAR: u8 = 3;
 
 pub const TF_LAYOUT_ENGLISH: u8 = 0;
 pub const TF_LAYOUT_SECONDARY: u8 = 1;
 
-pub const TF_REPLACE_BUF_LEN: usize = 4096;
-const TF_MAX_TOKEN_LEN: usize = TF_REPLACE_BUF_LEN / 4;
-const _: () = assert!(TF_MAX_TOKEN_LEN == MAX_CONFIG_TOKEN_LEN);
+pub const TF_COMPOSITION_TEXT_BUF_LEN: usize = MAX_CONFIG_TOKEN_LEN * 4;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -83,13 +81,12 @@ pub struct TfEngineConfig {
 }
 
 #[repr(C)]
-pub struct TfAction {
+pub struct TfComposition {
     pub tag: u8,
-    pub commit_codepoint: u32,
-    pub replace_old_len: usize,
-    pub replace_text_len: usize,
-    pub replace_layout: u8,
-    pub replace_text: [u8; TF_REPLACE_BUF_LEN],
+    pub consume_event: u8,
+    pub layout: u8,
+    pub text_len: usize,
+    pub text: [u8; TF_COMPOSITION_TEXT_BUF_LEN],
 }
 
 #[repr(C)]
@@ -253,45 +250,48 @@ pub extern "C" fn typeflow_last_error_message() -> *const c_char {
     })
 }
 
-impl TfAction {
-    fn write(&mut self, action: Action) {
-        self.tag = TF_ACTION_KEEP;
-        self.commit_codepoint = 0;
-        self.replace_old_len = 0;
-        self.replace_text_len = 0;
-        self.replace_layout = TF_LAYOUT_ENGLISH;
+impl TfComposition {
+    fn write(&mut self, action: CompositionAction) {
+        self.tag = TF_COMPOSITION_BYPASS;
+        self.consume_event = 0;
+        self.layout = TF_LAYOUT_ENGLISH;
+        self.text_len = 0;
 
         match action {
-            Action::Keep => {}
-            Action::Commit(character) => {
-                self.tag = TF_ACTION_COMMIT;
-                self.commit_codepoint = character as u32;
+            CompositionAction::Bypass => {}
+            CompositionAction::Render { text, layout } => {
+                self.tag = TF_COMPOSITION_RENDER;
+                self.consume_event = 1;
+                self.layout = layout_to_u8(layout);
+                self.write_text(&text);
             }
-            Action::ReplaceToken {
-                old_len,
-                replacement,
-                layout,
+            CompositionAction::Commit {
+                text,
+                consume_event,
             } => {
-                let bytes = replacement.as_bytes();
-                if bytes.len() > TF_REPLACE_BUF_LEN {
-                    self.tag = TF_ACTION_RESET;
-                    return;
-                }
-                self.tag = TF_ACTION_REPLACE;
-                self.replace_old_len = old_len;
-                self.replace_text_len = bytes.len();
-                self.replace_layout = layout_to_u8(layout);
-                self.replace_text[..bytes.len()].copy_from_slice(bytes);
-                // The ABI is length-delimited; this sentinel is only for
-                // defensive debugging by C callers that accidentally print the
-                // buffer as a string.
-                if bytes.len() < TF_REPLACE_BUF_LEN {
-                    self.replace_text[bytes.len()] = 0;
-                }
+                self.tag = TF_COMPOSITION_COMMIT;
+                self.consume_event = u8::from(consume_event);
+                self.write_text(&text);
             }
-            Action::ResetToken => {
-                self.tag = TF_ACTION_RESET;
+            CompositionAction::Clear { consume_event } => {
+                self.tag = TF_COMPOSITION_CLEAR;
+                self.consume_event = u8::from(consume_event);
             }
+        }
+    }
+
+    fn write_text(&mut self, value: &str) {
+        let bytes = value.as_bytes();
+        if bytes.len() > TF_COMPOSITION_TEXT_BUF_LEN {
+            self.tag = TF_COMPOSITION_CLEAR;
+            self.consume_event = 1;
+            self.text_len = 0;
+            return;
+        }
+        self.text_len = bytes.len();
+        self.text[..bytes.len()].copy_from_slice(bytes);
+        if bytes.len() < TF_COMPOSITION_TEXT_BUF_LEN {
+            self.text[bytes.len()] = 0;
         }
     }
 }
@@ -1053,9 +1053,11 @@ pub unsafe extern "C" fn typeflow_engine_reset_layout(engine: *mut TfEngine, lay
 /// `TF_CONTEXT_AUTOMATIC_PROCESSING_DISABLED` means automatic processing is
 /// disabled for the foreground app.
 /// `TF_CONTEXT_AUTOMATIC_SWITCHING_DISABLED` means automatic layout switches
-/// are disabled, but the engine still commits keys in the current layout.
+/// are disabled, but the engine still composes and commits in the current
+/// layout.
 /// Secure input and full automatic-processing disable return Keep/Bypass and
-/// clear the token; automatic-switching disable keeps normal commit behavior.
+/// clear the token; automatic-switching disable keeps normal composition/commit
+/// behavior.
 ///
 /// # Safety
 ///
@@ -1073,224 +1075,30 @@ pub unsafe extern "C" fn typeflow_engine_set_host_context(engine: *mut TfEngine,
 
 /// Forces the current token to the opposite side of the active language pair.
 ///
+/// This changes the active Typeflow-owned composition state. It does not ask
+/// the host to replace committed document text.
+///
 /// # Safety
 ///
 /// `engine` must be a valid live pointer returned by `typeflow_engine_new_embedded` or
-/// any other Typeflow constructor. `out_action` must point to writable memory for one `TfAction`.
+/// any other Typeflow constructor. `out_composition` must point to writable memory for one
+/// `TfComposition`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn typeflow_engine_force_switch_token(
     engine: *mut TfEngine,
-    out_action: *mut TfAction,
+    out_composition: *mut TfComposition,
 ) {
     ffi_guard_void(|| {
         let Some(engine) = (unsafe { engine.as_mut() }) else {
             return;
         };
-        let Some(out) = (unsafe { out_action.as_mut() }) else {
+        let Some(out) = (unsafe { out_composition.as_mut() }) else {
             return;
         };
-        out.write(Action::Keep);
+        out.write(CompositionAction::Bypass);
 
         let output = engine.engine.force_switch_token();
         out.write(output.action);
-    });
-}
-
-/// Converts the visible token supplied by the host to the opposite keyboard side.
-///
-/// This is for hosts whose text controls do not keep IME token tracking stable
-/// across selection/delete/replacement operations. The input must be a
-/// null-terminated UTF-8 string. On success, the engine layout is reset to the
-/// replacement side and `out_action` receives a `ReplaceToken` action whose
-/// `old_len` is the input token's character count.
-///
-/// # Safety
-///
-/// `engine` must be a valid live pointer returned by a Typeflow constructor.
-/// `token_utf8` must point to a null-terminated UTF-8 string. `out_action` must
-/// point to writable memory for one `TfAction`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn typeflow_engine_convert_visible_token(
-    engine: *mut TfEngine,
-    token_utf8: *const c_char,
-    out_action: *mut TfAction,
-) {
-    ffi_guard_void(|| {
-        let Some(engine) = (unsafe { engine.as_mut() }) else {
-            return;
-        };
-        let Some(out) = (unsafe { out_action.as_mut() }) else {
-            return;
-        };
-        out.write(Action::Keep);
-
-        let Some(token) = (unsafe { c_str(token_utf8) }) else {
-            return;
-        };
-        let Some((layout, replacement)) = engine.engine.convert_visible_token(token) else {
-            return;
-        };
-
-        let old_len = token.chars().count();
-        engine.engine.reset_layout(layout);
-        out.write(Action::ReplaceToken {
-            old_len,
-            replacement,
-            layout,
-        });
-    });
-}
-
-/// Converts the trailing visible token inside the host-supplied text tail.
-///
-/// The host should pass a bounded slice of committed text immediately before
-/// the caret. Rust owns the token grammar, including punctuation-position keys
-/// that are letters in the active secondary layout.
-///
-/// # Safety
-///
-/// `engine` must be a valid live pointer returned by a Typeflow constructor.
-/// `visible_tail_utf8` must point to a null-terminated UTF-8 string.
-/// `out_action` must point to writable memory for one `TfAction`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn typeflow_engine_convert_visible_tail(
-    engine: *mut TfEngine,
-    visible_tail_utf8: *const c_char,
-    out_action: *mut TfAction,
-) {
-    ffi_guard_void(|| {
-        let Some(engine) = (unsafe { engine.as_mut() }) else {
-            return;
-        };
-        let Some(out) = (unsafe { out_action.as_mut() }) else {
-            return;
-        };
-        out.write(Action::Keep);
-
-        let Some(visible_tail) = (unsafe { c_str(visible_tail_utf8) }) else {
-            return;
-        };
-        let Some((layout, replacement, old_len)) = engine.engine.convert_visible_tail(visible_tail)
-        else {
-            return;
-        };
-
-        engine.engine.reset_layout(layout);
-        out.write(Action::ReplaceToken {
-            old_len,
-            replacement,
-            layout,
-        });
-    });
-}
-
-/// Rebuilds a replacement action from the host's visible committed token prefix
-/// plus the current physical key.
-///
-/// This keeps replacement ranges correct in text controls that report unstable
-/// selection/caret state to IMK. `visible_prefix_utf8` is the host text before
-/// the current key; the returned action replaces exactly that prefix with the
-/// full rendered token for `target_layout`.
-///
-/// # Safety
-///
-/// `engine` must be a valid live pointer returned by a Typeflow constructor.
-/// `visible_prefix_utf8` must point to a null-terminated UTF-8 string.
-/// `out_action` must point to writable memory for one `TfAction`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn typeflow_engine_replace_visible_prefix_with_key(
-    engine: *mut TfEngine,
-    visible_prefix_utf8: *const c_char,
-    physical: u8,
-    modifiers: u8,
-    target_layout: u8,
-    out_action: *mut TfAction,
-) {
-    ffi_guard_void(|| {
-        let Some(engine) = (unsafe { engine.as_mut() }) else {
-            return;
-        };
-        let Some(out) = (unsafe { out_action.as_mut() }) else {
-            return;
-        };
-        out.write(Action::Keep);
-
-        let Some(visible_prefix) = (unsafe { c_str(visible_prefix_utf8) }) else {
-            return;
-        };
-        let Some(physical_key) = PhysicalKey::from_index(physical) else {
-            return;
-        };
-        let Some(target) = layout_from_u8(target_layout) else {
-            return;
-        };
-
-        let event = LetterEvent {
-            physical_key,
-            shift: modifiers & TF_MOD_SHIFT != 0,
-        };
-        let Some(action) =
-            engine
-                .engine
-                .replace_visible_prefix_with_key(visible_prefix, event, target)
-        else {
-            return;
-        };
-        out.write(action);
-    });
-}
-
-/// Rebuilds a replacement action from a bounded host-visible text tail plus the
-/// current physical key.
-///
-/// Rust extracts the trailing token from `visible_tail_utf8` using the loaded
-/// keyboard maps, then returns a `ReplaceToken` action whose `old_len` targets
-/// exactly that trailing token.
-///
-/// # Safety
-///
-/// `engine` must be a valid live pointer returned by a Typeflow constructor.
-/// `visible_tail_utf8` must point to a null-terminated UTF-8 string.
-/// `out_action` must point to writable memory for one `TfAction`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn typeflow_engine_replace_visible_tail_with_key(
-    engine: *mut TfEngine,
-    visible_tail_utf8: *const c_char,
-    physical: u8,
-    modifiers: u8,
-    target_layout: u8,
-    out_action: *mut TfAction,
-) {
-    ffi_guard_void(|| {
-        let Some(engine) = (unsafe { engine.as_mut() }) else {
-            return;
-        };
-        let Some(out) = (unsafe { out_action.as_mut() }) else {
-            return;
-        };
-        out.write(Action::Keep);
-
-        let Some(visible_tail) = (unsafe { c_str(visible_tail_utf8) }) else {
-            return;
-        };
-        let Some(physical_key) = PhysicalKey::from_index(physical) else {
-            return;
-        };
-        let Some(target) = layout_from_u8(target_layout) else {
-            return;
-        };
-
-        let event = LetterEvent {
-            physical_key,
-            shift: modifiers & TF_MOD_SHIFT != 0,
-        };
-        let Some(action) = engine
-            .engine
-            .replace_visible_tail_with_key(visible_tail, event, target)
-        else {
-            return;
-        };
-        out.write(action);
     });
 }
 
@@ -1324,62 +1132,35 @@ pub unsafe extern "C" fn typeflow_engine_token_len(engine: *mut TfEngine) -> usi
     })
 }
 
-/// Writes the current rendered token as a replacement action.
+/// Processes a single input event and writes the resulting composition operation.
 ///
-/// This lets hosts using marked text redraw the whole active composition after
-/// non-inserting token operations such as backspace. The returned replacement
-/// length is the current logical token length.
-///
-/// # Safety
-///
-/// `engine` must be null or a valid live pointer returned by any Typeflow
-/// constructor. `out_action` must be null or point to writable memory for one
-/// `TfAction`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn typeflow_engine_current_token(
-    engine: *mut TfEngine,
-    out_action: *mut TfAction,
-) {
-    ffi_guard_void(|| {
-        let Some(out) = (unsafe { out_action.as_mut() }) else {
-            return;
-        };
-        out.write(Action::Keep);
-        let Some(engine) = (unsafe { engine.as_ref() }) else {
-            return;
-        };
-        out.write(engine.engine.current_token_action());
-    });
-}
-
-/// Processes a single input event and writes the resulting action into `out_action`.
-///
-/// `engine` and `out_action` must be non-null and valid. `out_action` is fully overwritten.
+/// `engine` and `out_composition` must be non-null and valid. `out_composition`
+/// is fully overwritten.
 ///
 /// # Safety
 ///
 /// `engine` must be a valid live pointer returned by any Typeflow constructor.
-/// `out_action` must point to writable memory for one `TfAction`.
+/// `out_composition` must point to writable memory for one `TfComposition`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn typeflow_engine_process(
     engine: *mut TfEngine,
     event: TfEvent,
-    out_action: *mut TfAction,
+    out_composition: *mut TfComposition,
 ) {
     ffi_guard_void(|| {
         let Some(engine) = (unsafe { engine.as_mut() }) else {
             return;
         };
-        let Some(out) = (unsafe { out_action.as_mut() }) else {
+        let Some(out) = (unsafe { out_composition.as_mut() }) else {
             return;
         };
-        out.write(Action::Keep);
+        out.write(CompositionAction::Bypass);
         match decode_event(event) {
             Some(input) => {
-                let action = engine.engine.process_action(input);
-                out.write(action);
+                let output = engine.engine.process(input);
+                out.write(output.action);
             }
-            None => out.write(Action::Keep),
+            None => out.write(CompositionAction::Bypass),
         }
     });
 }
@@ -1406,16 +1187,17 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        TF_ACTION_COMMIT, TF_ACTION_KEEP, TF_ACTION_REPLACE, TF_ACTION_RESET,
-        TF_CONTEXT_AUTOMATIC_PROCESSING_DISABLED, TF_CONTEXT_AUTOMATIC_SWITCHING_DISABLED,
-        TF_CONTEXT_SECURE_INPUT, TF_EVENT_BACKSPACE, TF_EVENT_END_TOKEN, TF_EVENT_LETTER,
-        TF_EVENT_LITERAL, TF_HOST_POLICY_AUTOMATIC_PROCESSING_DISABLED,
-        TF_HOST_POLICY_MANUAL_CONVERSION_DISABLED, TF_HOST_POLICY_REASON_TERMINAL_BUNDLE,
-        TF_HOST_POLICY_REASON_TERMINAL_SURFACE, TF_HOST_POLICY_SECURE_INPUT,
-        TF_HOST_POLICY_TERMINAL_SURFACE, TF_LAYOUT_ENGLISH, TF_LAYOUT_SECONDARY, TF_MOD_COMMAND,
-        TF_MOD_CONTROL, TF_MOD_OPTION, TF_MOD_SHIFT, TF_REPLACE_BUF_LEN, TfAction, TfEngineConfig,
-        TfEvent, TfHostInputPolicy, TfHostSurfaceFacts, decode_event, default_ffi_config,
-        engine_config_from_ffi, typeflow_engine_default_config, typeflow_engine_free,
+        TF_COMPOSITION_BYPASS, TF_COMPOSITION_CLEAR, TF_COMPOSITION_COMMIT, TF_COMPOSITION_RENDER,
+        TF_COMPOSITION_TEXT_BUF_LEN, TF_CONTEXT_AUTOMATIC_PROCESSING_DISABLED,
+        TF_CONTEXT_AUTOMATIC_SWITCHING_DISABLED, TF_CONTEXT_SECURE_INPUT, TF_EVENT_BACKSPACE,
+        TF_EVENT_END_TOKEN, TF_EVENT_LETTER, TF_EVENT_LITERAL,
+        TF_HOST_POLICY_AUTOMATIC_PROCESSING_DISABLED, TF_HOST_POLICY_MANUAL_CONVERSION_DISABLED,
+        TF_HOST_POLICY_REASON_TERMINAL_BUNDLE, TF_HOST_POLICY_REASON_TERMINAL_SURFACE,
+        TF_HOST_POLICY_SECURE_INPUT, TF_HOST_POLICY_TERMINAL_SURFACE, TF_LAYOUT_ENGLISH,
+        TF_LAYOUT_SECONDARY, TF_MOD_COMMAND, TF_MOD_CONTROL, TF_MOD_OPTION, TF_MOD_SHIFT,
+        TfComposition, TfEngineConfig, TfEvent, TfHostInputPolicy, TfHostSurfaceFacts,
+        decode_event, default_ffi_config, engine_config_from_ffi, typeflow_engine_default_config,
+        typeflow_engine_force_switch_token, typeflow_engine_free,
         typeflow_engine_new_embedded_with_config, typeflow_engine_new_from_host_config,
         typeflow_engine_process, typeflow_host_config_auto_disabled_bundle_count,
         typeflow_host_config_data_directory, typeflow_host_config_disabled_bundle_count,
@@ -1491,9 +1273,9 @@ mod tests {
     }
 
     #[test]
-    fn config_rejects_max_token_len_that_can_overflow_replace_buffer() {
+    fn config_rejects_max_token_len_above_supported_limit() {
         let mut config = default_ffi_config();
-        config.max_token_len = TF_REPLACE_BUF_LEN;
+        config.max_token_len = typeflow_core::MAX_CONFIG_TOKEN_LEN + 1;
 
         assert!(engine_config_from_ffi(config).is_none());
 
@@ -1514,14 +1296,13 @@ mod tests {
     }
 
     #[test]
-    fn process_with_null_engine_leaves_action_unchanged() {
-        let mut action = TfAction {
-            tag: TF_ACTION_COMMIT,
-            commit_codepoint: 'x' as u32,
-            replace_old_len: 9,
-            replace_text_len: 9,
-            replace_layout: 1,
-            replace_text: [1; super::TF_REPLACE_BUF_LEN],
+    fn process_with_null_engine_leaves_composition_unchanged() {
+        let mut composition = TfComposition {
+            tag: TF_COMPOSITION_COMMIT,
+            consume_event: 1,
+            layout: TF_LAYOUT_SECONDARY,
+            text_len: 9,
+            text: [1; super::TF_COMPOSITION_TEXT_BUF_LEN],
         };
 
         unsafe {
@@ -1533,12 +1314,14 @@ mod tests {
                     modifiers: 0,
                     codepoint: 0,
                 },
-                &mut action,
+                &mut composition,
             );
         }
 
-        assert_eq!(action.tag, TF_ACTION_COMMIT);
-        assert_eq!(action.commit_codepoint, 'x' as u32);
+        assert_eq!(composition.tag, TF_COMPOSITION_COMMIT);
+        assert_eq!(composition.consume_event, 1);
+        assert_eq!(composition.layout, TF_LAYOUT_SECONDARY);
+        assert_eq!(composition.text_len, 9);
     }
 
     #[test]
@@ -1564,22 +1347,91 @@ mod tests {
     }
 
     #[test]
-    fn keep_action_clears_previous_payload_metadata() {
-        let mut action = TfAction {
-            tag: TF_ACTION_COMMIT,
-            commit_codepoint: 'x' as u32,
-            replace_old_len: 9,
-            replace_text_len: 9,
-            replace_layout: 1,
-            replace_text: [1; super::TF_REPLACE_BUF_LEN],
+    fn bypass_composition_clears_previous_payload_metadata() {
+        let mut composition = TfComposition {
+            tag: TF_COMPOSITION_COMMIT,
+            consume_event: 1,
+            layout: TF_LAYOUT_SECONDARY,
+            text_len: 9,
+            text: [1; super::TF_COMPOSITION_TEXT_BUF_LEN],
         };
 
-        action.write(typeflow_core::Action::Keep);
+        composition.write(typeflow_core::CompositionAction::Bypass);
 
-        assert_eq!(action.tag, TF_ACTION_KEEP);
-        assert_eq!(action.commit_codepoint, 0);
-        assert_eq!(action.replace_old_len, 0);
-        assert_eq!(action.replace_text_len, 0);
+        assert_eq!(composition.tag, TF_COMPOSITION_BYPASS);
+        assert_eq!(composition.consume_event, 0);
+        assert_eq!(composition.layout, TF_LAYOUT_ENGLISH);
+        assert_eq!(composition.text_len, 0);
+    }
+
+    #[test]
+    fn process_returns_render_then_commit_composition() {
+        let engine = typeflow_engine_new_embedded_with_config(default_ffi_config());
+        assert!(!engine.is_null());
+
+        let mut composition = empty_composition();
+        for physical in [6, 7, 18, 3, 1, 13] {
+            unsafe {
+                typeflow_engine_process(
+                    engine,
+                    TfEvent {
+                        tag: TF_EVENT_LETTER,
+                        physical,
+                        modifiers: 0,
+                        codepoint: 0,
+                    },
+                    &mut composition,
+                );
+            }
+            assert_eq!(composition.tag, TF_COMPOSITION_RENDER);
+            assert_eq!(composition.consume_event, 1);
+        }
+
+        assert_eq!(composition_text(&composition), "привіт");
+
+        unsafe {
+            typeflow_engine_process(engine, end_token(), &mut composition);
+        }
+        assert_eq!(composition.tag, TF_COMPOSITION_COMMIT);
+        assert_eq!(composition.consume_event, 0);
+        assert_eq!(composition_text(&composition), "привіт");
+
+        unsafe {
+            typeflow_engine_free(engine);
+        }
+    }
+
+    #[test]
+    fn force_switch_rerenders_active_composition() {
+        let engine = typeflow_engine_new_embedded_with_config(default_ffi_config());
+        assert!(!engine.is_null());
+
+        let mut composition = empty_composition();
+        for physical in [19, 24, 15, 4] {
+            unsafe {
+                typeflow_engine_process(
+                    engine,
+                    TfEvent {
+                        tag: TF_EVENT_LETTER,
+                        physical,
+                        modifiers: 0,
+                        codepoint: 0,
+                    },
+                    &mut composition,
+                );
+            }
+        }
+
+        unsafe {
+            typeflow_engine_force_switch_token(engine, &mut composition);
+        }
+        assert_eq!(composition.tag, TF_COMPOSITION_RENDER);
+        assert_eq!(composition.layout, TF_LAYOUT_SECONDARY);
+        assert_eq!(composition_text(&composition), "ензу");
+
+        unsafe {
+            typeflow_engine_free(engine);
+        }
     }
 
     #[test]
@@ -1882,15 +1734,38 @@ disable_bundle_ids = [
                 "TF_HOST_POLICY_TERMINAL_SURFACE",
                 TF_HOST_POLICY_TERMINAL_SURFACE as usize,
             ),
-            ("TF_ACTION_KEEP", TF_ACTION_KEEP as usize),
-            ("TF_ACTION_COMMIT", TF_ACTION_COMMIT as usize),
-            ("TF_ACTION_REPLACE", TF_ACTION_REPLACE as usize),
-            ("TF_ACTION_RESET", TF_ACTION_RESET as usize),
+            ("TF_COMPOSITION_BYPASS", TF_COMPOSITION_BYPASS as usize),
+            ("TF_COMPOSITION_RENDER", TF_COMPOSITION_RENDER as usize),
+            ("TF_COMPOSITION_COMMIT", TF_COMPOSITION_COMMIT as usize),
+            ("TF_COMPOSITION_CLEAR", TF_COMPOSITION_CLEAR as usize),
             ("TF_LAYOUT_ENGLISH", TF_LAYOUT_ENGLISH as usize),
             ("TF_LAYOUT_SECONDARY", TF_LAYOUT_SECONDARY as usize),
-            ("TF_REPLACE_BUF_LEN", TF_REPLACE_BUF_LEN),
+            ("TF_COMPOSITION_TEXT_BUF_LEN", TF_COMPOSITION_TEXT_BUF_LEN),
         ] {
             assert_eq!(header_define(header, name), value, "{name}");
+        }
+    }
+
+    fn empty_composition() -> TfComposition {
+        TfComposition {
+            tag: TF_COMPOSITION_BYPASS,
+            consume_event: 0,
+            layout: TF_LAYOUT_ENGLISH,
+            text_len: 0,
+            text: [0; super::TF_COMPOSITION_TEXT_BUF_LEN],
+        }
+    }
+
+    fn composition_text(composition: &TfComposition) -> &str {
+        std::str::from_utf8(&composition.text[..composition.text_len]).unwrap()
+    }
+
+    fn end_token() -> TfEvent {
+        TfEvent {
+            tag: TF_EVENT_END_TOKEN,
+            physical: 0,
+            modifiers: 0,
+            codepoint: 0,
         }
     }
 

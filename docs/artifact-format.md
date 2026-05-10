@@ -103,8 +103,8 @@ dictionary inputs. Pack authors should fill `source_corpus` and
 - Keyboard rows, when provided, must contain exactly `PhysicalKey::COUNT`
   characters.
 - Each keyboard-row character must be a single non-combining UTF-16 code unit.
-  The current FFI/AppKit replacement protocol uses host text ranges directly,
-  so non-BMP and combining output require a future ABI/model expansion.
+  The current keyboard model stores one rendered scalar per physical key, so
+  non-BMP and combining output require a future ABI/model expansion.
 
 The loader rejects any manifest whose `format_version` is not exactly
 `PACK_FORMAT_VERSION`.

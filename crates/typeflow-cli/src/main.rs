@@ -22,7 +22,7 @@ use typeflow_core::data::{
     PACK_MANIFEST_FILE, PACK_NGRAMS_FILE,
 };
 use typeflow_core::{
-    Action, Decision, Engine, EngineConfig, InputEvent, LayoutCandidates, LayoutScore,
+    CompositionAction, Decision, Engine, EngineConfig, InputEvent, LayoutCandidates, LayoutScore,
     ScoreAnalysis, has_dictionary_evidence,
 };
 use typeflow_host_config::{self as host_config, HostEnvironment, ResolvedHostConfig};
@@ -406,11 +406,14 @@ fn cmd_stream(args: &[String], explicit_config: Option<&Path>) -> Result<(), Str
 
 fn run_token_committed(engine: &mut Engine, token: &str) -> Result<String, String> {
     let mut committed = String::new();
+    let mut composing = String::new();
     for character in token.chars() {
         let input = input_event_for_char(engine, character);
-        let action = engine.process_action(input);
-        apply_action(&action, &mut committed);
+        let action = engine.process(input).action;
+        apply_composition(action, Some(character), &mut committed, &mut composing);
     }
+    let action = engine.process(InputEvent::EndToken).action;
+    apply_composition(action, None, &mut committed, &mut composing);
     Ok(committed)
 }
 
@@ -478,9 +481,17 @@ fn cmd_convert(args: &[String], explicit_config: Option<&Path>) -> Result<(), St
 
     let source = load_config(explicit_config)?;
     let mut engine = build_engine(&source.config)?;
-    let mut committed = run_token_committed(&mut engine, &args[0])?;
+    let mut committed = String::new();
+    let mut composing = String::new();
+    for character in args[0].chars() {
+        let input = input_event_for_char(&engine, character);
+        let action = engine.process(input).action;
+        apply_composition(action, Some(character), &mut committed, &mut composing);
+    }
     let output = engine.force_switch_token();
-    apply_action(&output.action, &mut committed);
+    apply_composition(output.action, None, &mut committed, &mut composing);
+    let action = engine.process(InputEvent::EndToken).action;
+    apply_composition(action, None, &mut committed, &mut composing);
 
     println!(
         "{}\t{}",
@@ -1149,6 +1160,7 @@ fn cmd_repl(explicit_config: Option<&Path>) -> Result<(), String> {
         .unwrap_or_else(|| "<defaults>".to_owned());
     let mut history: Vec<String> = Vec::new();
     let mut committed: String = String::new();
+    let mut composing: String = String::new();
 
     let mut stdout = io::stdout();
     terminal::enable_raw_mode().map_err(io_str)?;
@@ -1158,7 +1170,7 @@ fn cmd_repl(explicit_config: Option<&Path>) -> Result<(), String> {
         .map_err(io_str)?;
 
     loop {
-        redraw(&mut engine, &history, &committed, &config_label).map_err(io_str)?;
+        redraw(&mut engine, &history, &committed, &composing, &config_label).map_err(io_str)?;
         let evt = event::read().map_err(io_str)?;
         let Event::Key(KeyEvent {
             code,
@@ -1177,24 +1189,41 @@ fn cmd_repl(explicit_config: Option<&Path>) -> Result<(), String> {
             (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
             (KeyCode::Backspace, _) => {
                 let action = engine.process(InputEvent::Backspace).action;
-                committed.pop();
+                apply_composition(action.clone(), None, &mut committed, &mut composing);
+                if matches!(action, CompositionAction::Bypass) {
+                    committed.pop();
+                }
                 history.push(format!("Backspace -> {}", action_label(&engine, &action)));
             }
             (KeyCode::Char(' '), _) => {
-                engine.process(InputEvent::EndToken);
-                committed.push(' ');
-                history.push("EndToken (space)".into());
+                let action = engine.process(InputEvent::Literal(' ')).action;
+                apply_composition(action.clone(), Some(' '), &mut committed, &mut composing);
+                history.push(format!("Space -> {}", action_label(&engine, &action)));
             }
             (KeyCode::Enter, _) => {
-                engine.process(InputEvent::EndToken);
-                committed.push('\n');
-                history.push("EndToken (enter)".into());
+                let action = engine.process(InputEvent::EndToken).action;
+                apply_composition(action.clone(), Some('\n'), &mut committed, &mut composing);
+                if !matches!(
+                    action,
+                    CompositionAction::Commit {
+                        consume_event: false,
+                        ..
+                    }
+                ) {
+                    committed.push('\n');
+                }
+                history.push(format!("Enter -> {}", action_label(&engine, &action)));
             }
             (KeyCode::Char(character), _) => {
                 let output = engine.process(input_event_for_char(&engine, character));
                 let decision = output.decision;
                 let action = output.action;
-                apply_action(&action, &mut committed);
+                apply_composition(
+                    action.clone(),
+                    Some(character),
+                    &mut committed,
+                    &mut composing,
+                );
                 history.push(format!(
                     "'{character}' -> decision={} action={}",
                     decision_label(&engine, decision),
@@ -1208,22 +1237,37 @@ fn cmd_repl(explicit_config: Option<&Path>) -> Result<(), String> {
     Ok(())
 }
 
-/// Mirrors what an IMK host would do with the engine's action: commit a char,
-/// or replace the trailing N chars with the engine's preferred rendering.
-fn apply_action(action: &Action, committed: &mut String) {
+fn apply_composition(
+    action: CompositionAction,
+    fallback: Option<char>,
+    committed: &mut String,
+    composing: &mut String,
+) {
     match action {
-        Action::Commit(character) => committed.push(*character),
-        Action::ReplaceToken {
-            old_len,
-            replacement,
-            ..
-        } => {
-            for _ in 0..*old_len {
-                committed.pop();
+        CompositionAction::Bypass => {
+            if let Some(character) = fallback {
+                committed.push(character);
             }
-            committed.push_str(replacement);
         }
-        Action::Keep | Action::ResetToken => {}
+        CompositionAction::Render { text, .. } => {
+            *composing = text;
+        }
+        CompositionAction::Commit {
+            text,
+            consume_event,
+        } => {
+            committed.push_str(&text);
+            composing.clear();
+            if !consume_event && let Some(character) = fallback {
+                committed.push(character);
+            }
+        }
+        CompositionAction::Clear { consume_event } => {
+            composing.clear();
+            if !consume_event && let Some(character) = fallback {
+                committed.push(character);
+            }
+        }
     }
 }
 
@@ -1276,6 +1320,7 @@ fn redraw(
     engine: &mut Engine,
     history: &[String],
     committed: &str,
+    composing: &str,
     config_label: &str,
 ) -> io::Result<()> {
     let mut stdout = io::stdout();
@@ -1293,7 +1338,13 @@ fn redraw(
     let _ = writeln_cr(&mut buf, format!("config: {config_label}"));
     let _ = writeln_cr(&mut buf, "");
     let _ = writeln_cr(&mut buf, "What you would see in TextEdit:");
-    let _ = writeln_cr(&mut buf, format!("  {}", visible_committed(committed)));
+    let _ = writeln_cr(
+        &mut buf,
+        format!(
+            "  {}",
+            visible_committed(&format!("{committed}{composing}"))
+        ),
+    );
     let _ = writeln_cr(&mut buf, "");
     let _ = writeln_cr(
         &mut buf,
@@ -1461,19 +1512,22 @@ fn decision_label(engine: &Engine, decision: Decision) -> String {
     }
 }
 
-fn action_label(engine: &Engine, action: &Action) -> String {
+fn action_label(engine: &Engine, action: &CompositionAction) -> String {
     match action {
-        Action::Keep => "Keep".to_owned(),
-        Action::Commit(character) => format!("Commit({character:?})"),
-        Action::ReplaceToken {
-            old_len,
-            replacement,
-            layout,
-        } => format!(
-            "ReplaceToken {{ old_len: {old_len}, replacement: {replacement:?}, layout: {} }}",
-            layout_label(engine, *layout)
-        ),
-        Action::ResetToken => "ResetToken".to_owned(),
+        CompositionAction::Bypass => "Bypass".to_owned(),
+        CompositionAction::Render { text, layout } => {
+            format!(
+                "Render {{ text: {text:?}, layout: {} }}",
+                layout_label(engine, *layout)
+            )
+        }
+        CompositionAction::Commit {
+            text,
+            consume_event,
+        } => format!("Commit {{ text: {text:?}, consume_event: {consume_event} }}"),
+        CompositionAction::Clear { consume_event } => {
+            format!("Clear {{ consume_event: {consume_event} }}")
+        }
     }
 }
 

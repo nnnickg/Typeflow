@@ -50,19 +50,19 @@
 
 #define TF_HOST_POLICY_REASON_UNAVAILABLE_HOST_CONFIG 255
 
-#define TF_ACTION_KEEP 0
+#define TF_COMPOSITION_BYPASS 0
 
-#define TF_ACTION_COMMIT 1
+#define TF_COMPOSITION_RENDER 1
 
-#define TF_ACTION_REPLACE 2
+#define TF_COMPOSITION_COMMIT 2
 
-#define TF_ACTION_RESET 3
+#define TF_COMPOSITION_CLEAR 3
 
 #define TF_LAYOUT_ENGLISH 0
 
 #define TF_LAYOUT_SECONDARY 1
 
-#define TF_REPLACE_BUF_LEN 4096
+#define TF_COMPOSITION_TEXT_BUF_LEN 4096
 
 typedef struct TfEngine TfEngine;
 
@@ -101,19 +101,18 @@ typedef struct {
 
 typedef struct {
     uint8_t tag;
-    uint32_t commit_codepoint;
-    size_t replace_old_len;
-    size_t replace_text_len;
-    uint8_t replace_layout;
-    uint8_t replace_text[TF_REPLACE_BUF_LEN];
-} TfAction;
-
-typedef struct {
-    uint8_t tag;
     uint8_t physical;
     uint8_t modifiers;
     uint32_t codepoint;
 } TfEvent;
+
+typedef struct {
+    uint8_t tag;
+    uint8_t consume_event;
+    uint8_t layout;
+    size_t text_len;
+    uint8_t text[TF_COMPOSITION_TEXT_BUF_LEN];
+} TfComposition;
 
 #ifdef __cplusplus
 extern "C" {
@@ -396,9 +395,11 @@ void typeflow_engine_reset_layout(TfEngine *engine, uint8_t layout);
  * `TF_CONTEXT_AUTOMATIC_PROCESSING_DISABLED` means automatic processing is
  * disabled for the foreground app.
  * `TF_CONTEXT_AUTOMATIC_SWITCHING_DISABLED` means automatic layout switches
- * are disabled, but the engine still commits keys in the current layout.
+ * are disabled, but the engine still composes and commits in the current
+ * layout.
  * Secure input and full automatic-processing disable return Keep/Bypass and
- * clear the token; automatic-switching disable keeps normal commit behavior.
+ * clear the token; automatic-switching disable keeps normal composition/commit
+ * behavior.
  *
  * # Safety
  *
@@ -409,91 +410,16 @@ void typeflow_engine_set_host_context(TfEngine *engine, uint32_t flags);
 /**
  * Forces the current token to the opposite side of the active language pair.
  *
+ * This changes the active Typeflow-owned composition state. It does not ask
+ * the host to replace committed document text.
+ *
  * # Safety
  *
  * `engine` must be a valid live pointer returned by `typeflow_engine_new_embedded` or
- * any other Typeflow constructor. `out_action` must point to writable memory for one `TfAction`.
+ * any other Typeflow constructor. `out_composition` must point to writable memory for one
+ * `TfComposition`.
  */
-void typeflow_engine_force_switch_token(TfEngine *engine, TfAction *out_action);
-
-/**
- * Converts the visible token supplied by the host to the opposite keyboard side.
- *
- * This is for hosts whose text controls do not keep IME token tracking stable
- * across selection/delete/replacement operations. The input must be a
- * null-terminated UTF-8 string. On success, the engine layout is reset to the
- * replacement side and `out_action` receives a `ReplaceToken` action whose
- * `old_len` is the input token's character count.
- *
- * # Safety
- *
- * `engine` must be a valid live pointer returned by a Typeflow constructor.
- * `token_utf8` must point to a null-terminated UTF-8 string. `out_action` must
- * point to writable memory for one `TfAction`.
- */
-void typeflow_engine_convert_visible_token(TfEngine *engine,
-                                           const char *token_utf8,
-                                           TfAction *out_action);
-
-/**
- * Converts the trailing visible token inside the host-supplied text tail.
- *
- * The host should pass a bounded slice of committed text immediately before
- * the caret. Rust owns the token grammar, including punctuation-position keys
- * that are letters in the active secondary layout.
- *
- * # Safety
- *
- * `engine` must be a valid live pointer returned by a Typeflow constructor.
- * `visible_tail_utf8` must point to a null-terminated UTF-8 string.
- * `out_action` must point to writable memory for one `TfAction`.
- */
-void typeflow_engine_convert_visible_tail(TfEngine *engine,
-                                          const char *visible_tail_utf8,
-                                          TfAction *out_action);
-
-/**
- * Rebuilds a replacement action from the host's visible committed token prefix
- * plus the current physical key.
- *
- * This keeps replacement ranges correct in text controls that report unstable
- * selection/caret state to IMK. `visible_prefix_utf8` is the host text before
- * the current key; the returned action replaces exactly that prefix with the
- * full rendered token for `target_layout`.
- *
- * # Safety
- *
- * `engine` must be a valid live pointer returned by a Typeflow constructor.
- * `visible_prefix_utf8` must point to a null-terminated UTF-8 string.
- * `out_action` must point to writable memory for one `TfAction`.
- */
-void typeflow_engine_replace_visible_prefix_with_key(TfEngine *engine,
-                                                     const char *visible_prefix_utf8,
-                                                     uint8_t physical,
-                                                     uint8_t modifiers,
-                                                     uint8_t target_layout,
-                                                     TfAction *out_action);
-
-/**
- * Rebuilds a replacement action from a bounded host-visible text tail plus the
- * current physical key.
- *
- * Rust extracts the trailing token from `visible_tail_utf8` using the loaded
- * keyboard maps, then returns a `ReplaceToken` action whose `old_len` targets
- * exactly that trailing token.
- *
- * # Safety
- *
- * `engine` must be a valid live pointer returned by a Typeflow constructor.
- * `visible_tail_utf8` must point to a null-terminated UTF-8 string.
- * `out_action` must point to writable memory for one `TfAction`.
- */
-void typeflow_engine_replace_visible_tail_with_key(TfEngine *engine,
-                                                   const char *visible_tail_utf8,
-                                                   uint8_t physical,
-                                                   uint8_t modifiers,
-                                                   uint8_t target_layout,
-                                                   TfAction *out_action);
+void typeflow_engine_force_switch_token(TfEngine *engine, TfComposition *out_composition);
 
 /**
  * Returns the engine's current inferred layout.
@@ -518,31 +444,17 @@ uint8_t typeflow_engine_current_layout(TfEngine *engine);
 size_t typeflow_engine_token_len(TfEngine *engine);
 
 /**
- * Writes the current rendered token as a replacement action.
+ * Processes a single input event and writes the resulting composition operation.
  *
- * This lets hosts using marked text redraw the whole active composition after
- * non-inserting token operations such as backspace. The returned replacement
- * length is the current logical token length.
- *
- * # Safety
- *
- * `engine` must be null or a valid live pointer returned by any Typeflow
- * constructor. `out_action` must be null or point to writable memory for one
- * `TfAction`.
- */
-void typeflow_engine_current_token(TfEngine *engine, TfAction *out_action);
-
-/**
- * Processes a single input event and writes the resulting action into `out_action`.
- *
- * `engine` and `out_action` must be non-null and valid. `out_action` is fully overwritten.
+ * `engine` and `out_composition` must be non-null and valid. `out_composition`
+ * is fully overwritten.
  *
  * # Safety
  *
  * `engine` must be a valid live pointer returned by any Typeflow constructor.
- * `out_action` must point to writable memory for one `TfAction`.
+ * `out_composition` must point to writable memory for one `TfComposition`.
  */
-void typeflow_engine_process(TfEngine *engine, TfEvent event, TfAction *out_action);
+void typeflow_engine_process(TfEngine *engine, TfEvent event, TfComposition *out_composition);
 
 /**
  * Writes the default runtime config into `out_config`.

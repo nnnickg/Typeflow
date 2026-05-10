@@ -54,7 +54,7 @@ host language. The implementation pattern is:
   `typeflow_last_error_message`, and return the ABI's null/default value;
 - `typeflow_engine_free` and `typeflow_host_config_free` are the only
   `Box::from_raw` sites;
-- `TfAction` stores replacement text in an inline fixed buffer.
+- `TfComposition` stores rendered/committed text in an inline fixed buffer.
 
 Known contract:
 
@@ -76,11 +76,12 @@ Reviewed direct indexing sites:
 
 - `KeyboardMap::render` indexes fixed arrays through `PhysicalKey::index`.
   `PhysicalKey` is a closed enum with `COUNT = 34`.
-- `TfAction::write` slices `replace_text` only after checking
-  `bytes.len() <= TF_REPLACE_BUF_LEN`.
+- `TfComposition::write` slices composition text only after checking
+  `bytes.len() <= TF_COMPOSITION_TEXT_BUF_LEN`.
 - Shared engine-config validation rejects zero lengths, `min_token_len` greater
   than `max_token_len`, non-finite/negative score floats, and `max_token_len`
-  values that could produce an FFI replacement larger than `TF_REPLACE_BUF_LEN`.
+  values that could produce an FFI composition payload larger than
+  `TF_COMPOSITION_TEXT_BUF_LEN`.
 - eval confusion-matrix indexing uses `layout_index`, which only returns `0`
   or `1`.
 - CLI argument indexing is guarded by arity checks before access.

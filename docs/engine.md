@@ -94,16 +94,18 @@ generate the file with full inline comments. Each field:
 ### `min_token_len` *(default: 4)*
 
 Minimum number of letters before the engine will decide *anything*. Below this,
-all letters commit in the current layout and `Decision::Keep` is returned. Lower =
-faster reaction but more false positives on short ambiguous prefixes (`не` vs
-`yt`, `при` vs `ghb`). Higher = more cautious, sluggish-feeling.
+all letters render in the current active composition and `Decision::Keep` is
+returned. Lower = faster reaction but more false positives on short ambiguous
+prefixes (`не` vs `yt`, `при` vs `ghb`). Higher = more cautious,
+sluggish-feeling.
 
 ### `max_token_len` *(default: 128)*
 
-Maximum number of letters tracked as one replaceable token. Once a letter-only
-run exceeds this, the engine clears token state and commits subsequent letters
-without scoring until a hard token boundary. This caps hot-path work for huge
-identifiers, pasted blobs, or broken host boundary detection.
+Maximum number of letters tracked as one active composition token. Once a
+letter-only run exceeds this, the engine commits the buffered composition plus
+the current key once, then bypasses scoring until a hard token boundary. This
+caps hot-path work for huge identifiers, pasted blobs, or broken host boundary
+detection.
 
 ### `confidence_margin` *(default: 1.0)*
 
@@ -171,10 +173,9 @@ capitalized words like `Hello` or `Привіт`.
 Anything that is not a physical letter in either loaded layout (digits,
 identifier separators, most symbols) is sent to the engine as
 `InputEvent::Literal(char)`. The engine treats a literal as a hard token
-boundary: it clears the current token, emits `Action::Commit(c)`, and starts
-the next token fresh. This keeps `engine.token` and the host's committed buffer
-in sync regardless of how many literals appear in the input stream — backspace
-through a literal works without desync.
+boundary: if a composition is active, it commits the rendered token plus the
+literal once, clears token state, and starts the next token fresh. If no
+composition is active, it bypasses to the host.
 
 Some punctuation-looking English keys are also real secondary-layout letters:
 `, . ; ' [ ] \` and their shifted forms. Those arrive as `LetterEvent`s so a
@@ -204,41 +205,24 @@ skips generated secondary cases whose physical key sequence is an exact English
 dictionary word. See `docs/calibration.md` for that ambiguity policy. Use
 `typeflow repl` for interactive inspection of any failure.
 
-## The action protocol (host contract)
+## The Composition Protocol
 
 `docs/invariants.md` is the source of truth for this contract. This section is
 the explanatory version.
 
-The engine returns one of four `Action` variants:
+The engine returns one of four `CompositionAction` variants:
 
 | Action | Host should... |
 |---|---|
-| `Keep` | Nothing. Engine processed a backspace, modifier-only event, or just synced state. |
-| `Commit(char)` | Insert the char at the cursor. Token continues. |
-| `ReplaceToken { old_len, replacement, layout }` | Delete the trailing `old_len` chars and insert `replacement`. Engine just flipped layouts. |
-| `ResetToken` | Token boundary (e.g. space). Engine cleared its buffer. Host inserts the boundary char itself. |
+| `Bypass` | Do not consume the key. Let the host app process it normally. |
+| `Render { text, layout }` | Consume the key and redraw Typeflow-owned active composition. Do not insert raw text into the document. |
+| `Commit { text, consume_event }` | Insert the finalized text once. If `consume_event` is false, pass the original boundary event through after the commit. |
+| `Clear { consume_event }` | Clear active composition without committing text. |
 
-For `ReplaceToken`: `old_len` is exactly the number of chars in the host buffer
-that belong to this token at the moment the action is emitted. Two cases:
-
-- **Mid-stream flip** (engine just decided to switch on the latest letter):
-  the host has committed `token.len() - 1` chars (one `Commit` per previous
-  letter); the new letter is implicit in `replacement`. So `old_len = token.len() - 1`
-  and `replacement.chars().count() = token.len()` — net delta of +1 character.
-- **Force-switch** (`engine.force_switch_token()`): the host has already
-  committed every letter, so `old_len = token.len()` and
-  `replacement.chars().count() = token.len()` — net delta of 0.
-
-In both cases `old_len` matches the host's committed prefix exactly, which
-maps directly to AppKit's `client.insertText(_:replacementRange:)`:
-
-```swift
-let range = NSRange(location: cursor - oldLen, length: oldLen)
-client.insertText(replacement, replacementRange: range)
-```
-
-AppKit handles the diff atomically, which means undo (Cmd-Z) Just Works in the
-focused app.
+For the macOS IMK host, `Render` maps to `setMarkedText`, and `Commit` maps to
+one `insertText` call. There is no normal per-key document replacement path.
+Manual Option conversion calls `force_switch_token()` and receives another
+`Render`; it changes the active composition, not committed document text.
 
 If the user backspaces inside the current token, the engine re-evaluates the
 shortened token. If the shortened token no longer justifies a switch, layout

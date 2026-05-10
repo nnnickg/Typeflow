@@ -23,7 +23,7 @@ limitations, and the areas that still need validation before a stable release.
 - `HostContext` lets Swift/IMK fully bypass secure input fields, terminal-like
   surfaces, and fully disabled apps. Apps with only automatic processing
   disabled still let Rust commit the current manual layout, but automatic
-  scoring/replacement is disabled.
+  scoring/switching is disabled.
 - `LanguagePack` now carries the keyboard map, language id/display/script,
   keyboard layout id, n-gram model, dictionary FST, manifest validation, and
   runtime metadata. English is still fixed; the second side can be embedded or
@@ -44,7 +44,7 @@ limitations, and the areas that still need validation before a stable release.
   n-gram/FST artifacts, weird Unicode literals, host bypass, and devops/security
   false positives.
 - `docs/invariants.md` defines the core/host contract for token state,
-  actions, FFI ownership, and calibration boundaries.
+  composition actions, FFI ownership, and calibration boundaries.
 
 ### Data pipeline (typeflow-data) — works
 
@@ -120,7 +120,8 @@ the input-method executable linked against `libtypeflow_ffi.a`.
 starts an `IMKServer` from `Info.plist`, exposes `TypeflowInputController`,
 receives raw `NSEvent` keyDown/flagsChanged events, maps ANSI keycodes to Rust
 physical key indexes, calls the FFI, and applies
-`TypeflowAction` through `IMKTextInput.insertText(_:replacementRange:)`.
+`TypeflowCompositionAction` through `IMKTextInput.setMarkedText` for active
+composition and `insertText(_:replacementRange:)` for final commits.
 
 `make -C macos release-universal` builds arm64 and x86_64 Rust/Swift artifacts,
 merges them with `lipo`, signs with hardened runtime when a Developer ID
@@ -135,10 +136,10 @@ and passes host-surface facts to Rust for input-policy classification.
 `~/Library/Application Support/Typeflow/packs/<id>` unless overridden.
 Standalone Option press/release is hardcoded as manual conversion; Option+another
 key cancels the pending manual conversion and passes through as normal app
-input. Auto-disabled apps bypass automatic scoring/replacement but still allow
-explicit Option conversion when a normal, non-secure text field exposes a
-visible tail. After explicit conversion, subsequent keys commit in the selected
-manual layout until the user converts back or the engine layout is reset.
+input. Auto-disabled apps bypass automatic scoring/switching but still allow
+explicit Option conversion in normal, non-secure text fields. After explicit
+conversion, subsequent keys compose and commit in the selected manual layout
+until the user converts back or the engine layout is reset.
 Fully disabled apps and terminal-like surfaces bypass both automatic processing
 and Option conversion. Terminal-like surfaces are detected from Rust-owned
 policy using bundle ids plus focused accessibility metadata supplied by Swift.
@@ -165,16 +166,15 @@ Manual host testing has verified:
 - External secondary pack loading through `language.secondary`.
 - App disable policy via `apps.disable_bundle_ids` and
   `apps.disable_auto_bundle_ids`.
-- Normal replacement in real text fields.
+- Normal active composition and final commit in real text fields.
 - Standalone Option manual conversion in real text fields.
 
-The host also resets token state when the input client changes, selected text
-is active, or the caret location no longer matches the previous action's
-predicted location.
+The host also resets token/composition state when input stops, the client
+changes, explicit composition commit runs, or host policy disables processing.
 
 The input method logs slow host-path timings under the `Performance` category
-for `processKey`, host policy/AX refresh, `selectedRange`, visible-tail reads,
-FFI calls, and `insertText`. To watch them live:
+for `processKey`, host policy/AX refresh, FFI calls, `setMarkedText`, and
+`insertText`. To watch them live:
 
 ```sh
 log stream --style compact --predicate 'subsystem == "io.github.nnnickg.typeflow.inputmethod.Typeflow" && category == "Performance"'
@@ -319,14 +319,14 @@ If you're building the IMK bundle:
   staticlib through the C ABI.
 - `macos/Sources/TypeflowInputMethod/InputController.swift` — current IMK
   raw keyDown/flagsChanged event path, host context, standalone Option manual
-  conversion, and action application.
+  conversion, and composition action application.
 - `crates/typeflow-ffi/include/typeflow.h` — exact ABI to consume.
 - `crates/typeflow-ffi/src/lib.rs` — Rust side of the bridge; understand
-  `TfEvent` / `TfAction` / `typeflow_engine_process` before writing Swift.
+  `TfEvent` / `TfComposition` / `typeflow_engine_process` before writing Swift.
 - `crates/typeflow-ffi/tests/abi_smoke.rs` — public ABI host-buffer simulation
   that Swift should mirror.
-- `docs/engine.md#the-action-protocol-host-contract` — extra explanation for
-  the action protocol. The invariants doc is the source of truth.
+- `docs/engine.md#the-composition-protocol` — extra explanation
+  for the composition protocol. The invariants doc is the source of truth.
 
 If you're tuning thresholds:
 
