@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/typeflow-core",
+    "crates/typeflow-host-config",
     "crates/typeflow-data",
     "crates/typeflow-ffi",
     "crates/typeflow-cli",
@@ -15,6 +16,15 @@ homepage = "https://github.com/nnnickg/typeflow"
 
 [workspace.dependencies]
 criterion = "0.8.2"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
 
 [profile.release]
 codegen-units = 1

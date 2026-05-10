@@ -14,13 +14,17 @@
 │  type / stream     │   │   - PhysicalKey, InputEvent   │   │  C ABI for IMK     │
 │  repl / predict    │   │   - Engine.process()          │   │  (Swift IMK host) │
 │  pack / config     │   │   - LanguageBundle scoring    │   │                    │
-└────────────────────┘   └───────────┬───────────────────┘   └────────────────────┘
+└─────────┬──────────┘   └───────────┬───────────────────┘   └──────────┬─────────┘
+          │                          │                                   │
+          └──────────▶ typeflow-host-config ◀────────────────────────────┘
+                       TOML/env/app-policy resolution
                                      │ embedded data by default
                                      ▼
                    ┌────────────────────────────────────┐
                    │  crates/typeflow-core/data/        │
                    │   en.ngrams.bin / uk.ngrams.bin    │  ← compile-time inputs
                    │   en.dict.fst   / uk.dict.fst      │
+                   │   en.dict-prefix.bin / uk...       │
                    └────────────────────────────────────┘
                                      ▲
                                      │ produces
@@ -87,12 +91,21 @@ external pack directory. Contains:
 Tests live in `crates/typeflow-core/src/lib.rs#tests` and use `LanguageBundle::for_testing`
 to drive the engine with synthetic inline word lists — no on-disk artifacts required.
 
+### `typeflow-host-config`
+
+Rust host-policy/config layer shared by the CLI and FFI host. It owns TOML
+config parsing, environment overrides, default config paths, app disable policy,
+and host-surface classification from bundle id / secure-input / Accessibility
+facts. It depends on `typeflow-core`; `typeflow-core` does not depend on it.
+
 ### `typeflow-data` (xtask)
 
 A binary that produces data artifacts. With no arguments it rebuilds the embedded
 EN/UK artifacts. With `build-pack <spec.toml> --out <dir>` it builds an
 installable external secondary-language pack. Cached downloads live under
-`target/typeflow-data-cache/` and are reused across runs.
+`target/typeflow-data-cache/` and are reused across runs. Embedded source
+downloads are pinned by byte count and SHA-256; external pack specs can pin
+their own `corpus_sha256` and `dictionary_sha256`.
 
 Inputs:
 
@@ -107,8 +120,10 @@ Outputs:
 - `{en,uk}.ngrams.bin` — Typeflow n-gram artifact `CompiledLanguageData`
   (sorted bigrams + trigrams with log-probabilities + smoothing floors).
 - `{en,uk}.dict.fst` — BurntSushi `fst::Map` (word → frequency).
-- External packs: `pack.toml`, `ngrams.bin`, `dict.fst`. Spec details live in
-  `docs/pack-spec.md`.
+- `{en,uk}.dict-prefix.bin` — serialized capped prefix sums used by hot-path
+  dictionary evidence scoring.
+- External packs: `pack.toml`, `ngrams.bin`, `dict.fst`, `dict-prefix.bin`.
+  Spec details live in `docs/pack-spec.md`.
 
 Data-source attribution and license notes live in `NOTICE.md`.
 

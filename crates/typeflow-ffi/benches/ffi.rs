@@ -4,10 +4,11 @@ use std::hint::black_box;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use typeflow_ffi::{
     TF_ACTION_COMMIT, TF_ACTION_KEEP, TF_ACTION_REPLACE, TF_ACTION_RESET, TF_EVENT_LETTER,
-    TF_HOST_POLICY_REASON_NORMAL, TF_LAYOUT_ENGLISH, TF_REPLACE_BUF_LEN, TfAction, TfEvent,
-    TfHostInputPolicy, TfHostSurfaceFacts, typeflow_engine_free, typeflow_engine_new_embedded,
-    typeflow_engine_process, typeflow_engine_reset_layout, typeflow_host_config_free,
-    typeflow_host_config_load_defaults, typeflow_host_config_resolve_input_policy,
+    TF_HOST_POLICY_REASON_NORMAL, TF_LAYOUT_ENGLISH, TF_REPLACE_BUF_LEN, TfAction, TfEngine,
+    TfEvent, TfHostInputPolicy, TfHostSurfaceFacts, typeflow_engine_free,
+    typeflow_engine_new_embedded, typeflow_engine_process, typeflow_engine_reset_layout,
+    typeflow_host_config_free, typeflow_host_config_load_defaults,
+    typeflow_host_config_resolve_input_policy,
 };
 
 const MIXED_TOKENS: &[&[u8]] = &[
@@ -115,7 +116,7 @@ fn bench_ffi(c: &mut Criterion) {
     group.finish();
 }
 
-fn feed_process_batch(engine: *mut typeflow_core::Engine, tokens: &[&[u8]]) {
+fn feed_process_batch(engine: *mut TfEngine, tokens: &[&[u8]]) {
     let mut action = blank_action();
     for token in tokens {
         unsafe {
@@ -131,7 +132,7 @@ fn feed_process_batch(engine: *mut typeflow_core::Engine, tokens: &[&[u8]]) {
     }
 }
 
-fn feed_process_batch_new_action_each_key(engine: *mut typeflow_core::Engine, tokens: &[&[u8]]) {
+fn feed_process_batch_new_action_each_key(engine: *mut TfEngine, tokens: &[&[u8]]) {
     for token in tokens {
         unsafe {
             typeflow_engine_reset_layout(engine, TF_LAYOUT_ENGLISH);
@@ -147,7 +148,7 @@ fn feed_process_batch_new_action_each_key(engine: *mut typeflow_core::Engine, to
     }
 }
 
-fn feed_and_apply_token(engine: *mut typeflow_core::Engine, token: &[u8]) {
+fn feed_and_apply_token(engine: *mut TfEngine, token: &[u8]) {
     let mut action = blank_action();
     let mut committed = String::new();
     unsafe {
@@ -162,7 +163,7 @@ fn feed_and_apply_token(engine: *mut typeflow_core::Engine, token: &[u8]) {
     }
 }
 
-fn feed_letter_run(engine: *mut typeflow_core::Engine, len: usize) {
+fn feed_letter_run(engine: *mut TfEngine, len: usize) {
     let mut action = blank_action();
     unsafe {
         typeflow_engine_reset_layout(engine, TF_LAYOUT_ENGLISH);

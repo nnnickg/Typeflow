@@ -1,6 +1,5 @@
 pub mod data;
 mod engine;
-pub mod host_config;
 mod keyboard;
 mod score;
 mod types;
@@ -20,7 +19,8 @@ pub use types::{
 mod tests {
     use super::{
         Action, Decision, Engine, EngineConfig, EngineConfigError, HostContext, InputEvent,
-        KeyboardMap, Layout, LetterEvent, MAX_CONFIG_TOKEN_LEN, PhysicalKey,
+        KeyboardMap, Layout, LayoutScore, LetterEvent, MAX_CONFIG_TOKEN_LEN, PhysicalKey,
+        ScoreAnalysis,
     };
     use crate::data::LanguageBundle;
 
@@ -179,6 +179,34 @@ mod tests {
         }
         let score = engine.score(&engine.token_candidates());
         assert!(score.english.total > score.secondary.total);
+    }
+
+    #[test]
+    fn incremental_token_score_matches_full_rescore() {
+        let mut engine = engine();
+        for event in [
+            LetterEvent::new(PhysicalKey::G),
+            LetterEvent {
+                physical_key: PhysicalKey::H,
+                shift: true,
+            },
+            LetterEvent::new(PhysicalKey::S),
+            LetterEvent::new(PhysicalKey::D),
+            LetterEvent::new(PhysicalKey::B),
+            LetterEvent::new(PhysicalKey::N),
+        ] {
+            engine.process(InputEvent::Letter(event));
+            assert_scores_equal(
+                engine.token_score(),
+                engine.score(&engine.token_candidates()),
+            );
+        }
+
+        engine.process(InputEvent::Backspace);
+        assert_scores_equal(
+            engine.token_score(),
+            engine.score(&engine.token_candidates()),
+        );
     }
 
     #[test]
@@ -885,5 +913,21 @@ mod tests {
                 committed.push_str(replacement);
             }
         }
+    }
+
+    fn assert_scores_equal(left: ScoreAnalysis, right: ScoreAnalysis) {
+        assert_layout_scores_equal(left.english, right.english);
+        assert_layout_scores_equal(left.secondary, right.secondary);
+    }
+
+    fn assert_layout_scores_equal(left: LayoutScore, right: LayoutScore) {
+        assert_eq!(left.layout, right.layout);
+        assert_eq!(left.total, right.total);
+        assert_eq!(left.bigram, right.bigram);
+        assert_eq!(left.trigram, right.trigram);
+        assert_eq!(left.dict_exact_bonus, right.dict_exact_bonus);
+        assert_eq!(left.dict_prefix_bonus, right.dict_prefix_bonus);
+        assert_eq!(left.exact_count, right.exact_count);
+        assert_eq!(left.prefix_sum, right.prefix_sum);
     }
 }

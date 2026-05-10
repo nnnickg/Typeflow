@@ -6,10 +6,10 @@ Audit date: 2026-05-09.
 
 ```sh
 rg -n "unwrap\\(|expect\\(|panic!|unreachable!|todo!|unimplemented!" \
-  crates/typeflow-core/src crates/typeflow-ffi/src crates/typeflow-cli/src crates/typeflow-data/src
+  crates/typeflow-core/src crates/typeflow-host-config/src crates/typeflow-ffi/src crates/typeflow-cli/src crates/typeflow-data/src
 
 rg -n "unsafe" \
-  crates/typeflow-core/src crates/typeflow-ffi/src crates/typeflow-cli/src crates/typeflow-data/src
+  crates/typeflow-core/src crates/typeflow-host-config/src crates/typeflow-ffi/src crates/typeflow-cli/src crates/typeflow-data/src
 ```
 
 ## Result
@@ -17,6 +17,8 @@ rg -n "unsafe" \
 - `typeflow-core` hot path has no `unsafe`.
 - `typeflow-cli` has no production `unwrap`, `expect`, or `panic`.
 - `typeflow-data` has no production `unwrap`, `expect`, or `panic`.
+- `typeflow-host-config` has no production `unwrap`, `expect`, `panic`, or
+  `unsafe`.
 - Remaining `unwrap` / `panic` sites are in `#[cfg(test)]` test code or
   test-only synthetic language helpers.
 - All `unsafe` is isolated to `typeflow-ffi/src/lib.rs`.
@@ -33,8 +35,11 @@ rg -n "unsafe" \
   `CFTypeID` check at the accessibility boundary.
 - Added shared engine-config validation plus FFI boundary tests for invalid
   config, null engine processing, and null default-config output.
-- Moved host-config parsing/policy decisions behind Rust FFI so Swift no
-  longer carries a duplicate TOML parser or app-policy implementation.
+- Moved host-config parsing/policy decisions into `typeflow-host-config`, so
+  Swift no longer carries a duplicate TOML parser or app-policy implementation
+  and `typeflow-core` stays focused on engine/data logic.
+- Added `catch_unwind` guards around exported FFI functions so Rust panics do
+  not unwind into Swift/AppKit.
 
 ## FFI Unsafe Boundary
 
@@ -45,6 +50,8 @@ host language. The implementation pattern is:
 - constructors return null on invalid config or data-loading failure;
 - C strings are decoded once through `CStr::from_ptr` after a null check;
 - engine pointers are accessed through `as_ref` / `as_mut` after null checks;
+- exported functions catch Rust panics at the FFI boundary, set
+  `typeflow_last_error_message`, and return the ABI's null/default value;
 - `typeflow_engine_free` and `typeflow_host_config_free` are the only
   `Box::from_raw` sites;
 - `TfAction` stores replacement text in an inline fixed buffer.

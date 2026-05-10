@@ -3,17 +3,18 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use typeflow_core::data::LanguageBundle;
-use typeflow_core::host_config::{
-    Config, ConfigSource, HostEnvironment, HostInputPolicy, HostInputPolicyReason,
-    HostSurfaceFactsView, ResolvedHostConfig,
-};
 use typeflow_core::{
     Action, Engine, EngineConfig, InputEvent, Layout, LetterEvent, MAX_CONFIG_TOKEN_LEN,
     PhysicalKey,
+};
+use typeflow_host_config::{
+    Config, ConfigSource, HostEnvironment, HostInputPolicy, HostInputPolicyReason,
+    HostSurfaceFactsView, ResolvedHostConfig,
 };
 
 pub const TF_EVENT_LETTER: u8 = 0;
@@ -111,6 +112,10 @@ pub struct TfHostInputPolicy {
     pub reason: u8,
 }
 
+pub struct TfEngine {
+    engine: Engine,
+}
+
 pub struct TfHostConfig {
     config: ResolvedHostConfig,
     source_path: Option<CString>,
@@ -143,6 +148,30 @@ fn clear_last_error() {
     LAST_ERROR.with(|last_error| {
         *last_error.borrow_mut() = None;
     });
+}
+
+fn ffi_guard<T>(fallback: T, call: impl FnOnce() -> T) -> T {
+    match catch_unwind(AssertUnwindSafe(call)) {
+        Ok(value) => value,
+        Err(payload) => {
+            set_last_error(panic_message(payload.as_ref()));
+            fallback
+        }
+    }
+}
+
+fn ffi_guard_void(call: impl FnOnce()) {
+    ffi_guard((), call);
+}
+
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        format!("panic crossed Typeflow FFI boundary: {message}")
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        format!("panic crossed Typeflow FFI boundary: {message}")
+    } else {
+        "panic crossed Typeflow FFI boundary".to_owned()
+    }
 }
 
 fn language_bundle_cache() -> &'static Mutex<HashMap<String, Arc<LanguageBundle>>> {
@@ -213,12 +242,14 @@ fn host_config_bundle(config: &ResolvedHostConfig) -> Result<Arc<LanguageBundle>
 
 #[unsafe(no_mangle)]
 pub extern "C" fn typeflow_last_error_message() -> *const c_char {
-    LAST_ERROR.with(|last_error| {
-        last_error
-            .borrow()
-            .as_ref()
-            .map(|error| error.as_ptr())
-            .unwrap_or(std::ptr::null())
+    ffi_guard(std::ptr::null(), || {
+        LAST_ERROR.with(|last_error| {
+            last_error
+                .borrow()
+                .as_ref()
+                .map(|error| error.as_ptr())
+                .unwrap_or(std::ptr::null())
+        })
     })
 }
 
@@ -329,14 +360,16 @@ fn engine_config_from_ffi(config: TfEngineConfig) -> Option<EngineConfig> {
     Some(engine_config)
 }
 
-fn new_engine(bundle: Arc<LanguageBundle>, config: TfEngineConfig) -> *mut Engine {
+fn new_engine(bundle: Arc<LanguageBundle>, config: TfEngineConfig) -> *mut TfEngine {
     let Some(config) = engine_config_from_ffi(config) else {
         return std::ptr::null_mut();
     };
-    Box::into_raw(Box::new(Engine::with_shared_bundle(config, bundle)))
+    Box::into_raw(Box::new(TfEngine {
+        engine: Engine::with_shared_bundle(config, bundle),
+    }))
 }
 
-fn new_engine_or_error(bundle: Arc<LanguageBundle>, config: TfEngineConfig) -> *mut Engine {
+fn new_engine_or_error(bundle: Arc<LanguageBundle>, config: TfEngineConfig) -> *mut TfEngine {
     let engine = new_engine(bundle, config);
     if engine.is_null() {
         set_last_error("invalid engine config");
@@ -464,8 +497,10 @@ fn layout_from_u8(value: u8) -> Option<Layout> {
 /// This is the normal constructor for release builds and the future macOS input method.
 /// Returns null if the embedded bundle fails to deserialize.
 #[unsafe(no_mangle)]
-pub extern "C" fn typeflow_engine_new_embedded() -> *mut Engine {
-    typeflow_engine_new_embedded_with_config(default_ffi_config())
+pub extern "C" fn typeflow_engine_new_embedded() -> *mut TfEngine {
+    ffi_guard(std::ptr::null_mut(), || {
+        typeflow_engine_new_embedded_with_config(default_ffi_config())
+    })
 }
 
 /// Allocates a new embedded engine with explicit runtime tuning.
@@ -473,14 +508,16 @@ pub extern "C" fn typeflow_engine_new_embedded() -> *mut Engine {
 /// Returns null if the embedded bundle fails to deserialize or the config contains
 /// invalid numeric values.
 #[unsafe(no_mangle)]
-pub extern "C" fn typeflow_engine_new_embedded_with_config(config: TfEngineConfig) -> *mut Engine {
-    match embedded_bundle() {
+pub extern "C" fn typeflow_engine_new_embedded_with_config(
+    config: TfEngineConfig,
+) -> *mut TfEngine {
+    ffi_guard(std::ptr::null_mut(), || match embedded_bundle() {
         Ok(bundle) => new_engine_or_error(bundle, config),
         Err(error) => {
             set_last_error(error);
             std::ptr::null_mut()
         }
-    }
+    })
 }
 
 /// Allocates a new engine, loading the language bundle from the directory at `data_dir_utf8`.
@@ -493,8 +530,10 @@ pub extern "C" fn typeflow_engine_new_embedded_with_config(config: TfEngineConfi
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn typeflow_engine_new_from_data_dir(
     data_dir_utf8: *const c_char,
-) -> *mut Engine {
-    unsafe { typeflow_engine_new_from_data_dir_with_config(data_dir_utf8, default_ffi_config()) }
+) -> *mut TfEngine {
+    ffi_guard(std::ptr::null_mut(), || unsafe {
+        typeflow_engine_new_from_data_dir_with_config(data_dir_utf8, default_ffi_config())
+    })
 }
 
 /// Allocates a new engine from `data_dir_utf8` with explicit runtime tuning.
@@ -509,17 +548,19 @@ pub unsafe extern "C" fn typeflow_engine_new_from_data_dir(
 pub unsafe extern "C" fn typeflow_engine_new_from_data_dir_with_config(
     data_dir_utf8: *const c_char,
     config: TfEngineConfig,
-) -> *mut Engine {
-    let Some(path) = (unsafe { c_path(data_dir_utf8) }) else {
-        return std::ptr::null_mut();
-    };
-    match data_dir_bundle(&path) {
-        Ok(bundle) => new_engine_or_error(bundle, config),
-        Err(error) => {
-            set_last_error(error);
-            std::ptr::null_mut()
+) -> *mut TfEngine {
+    ffi_guard(std::ptr::null_mut(), || {
+        let Some(path) = (unsafe { c_path(data_dir_utf8) }) else {
+            return std::ptr::null_mut();
+        };
+        match data_dir_bundle(&path) {
+            Ok(bundle) => new_engine_or_error(bundle, config),
+            Err(error) => {
+                set_last_error(error);
+                std::ptr::null_mut()
+            }
         }
-    }
+    })
 }
 
 /// Allocates a new engine using embedded English plus the secondary pack in `pack_dir_utf8`.
@@ -532,8 +573,10 @@ pub unsafe extern "C" fn typeflow_engine_new_from_data_dir_with_config(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn typeflow_engine_new_from_pack_dir(
     pack_dir_utf8: *const c_char,
-) -> *mut Engine {
-    unsafe { typeflow_engine_new_from_pack_dir_with_config(pack_dir_utf8, default_ffi_config()) }
+) -> *mut TfEngine {
+    ffi_guard(std::ptr::null_mut(), || unsafe {
+        typeflow_engine_new_from_pack_dir_with_config(pack_dir_utf8, default_ffi_config())
+    })
 }
 
 /// Allocates a new engine from `pack_dir_utf8` with explicit runtime tuning.
@@ -548,17 +591,19 @@ pub unsafe extern "C" fn typeflow_engine_new_from_pack_dir(
 pub unsafe extern "C" fn typeflow_engine_new_from_pack_dir_with_config(
     pack_dir_utf8: *const c_char,
     config: TfEngineConfig,
-) -> *mut Engine {
-    let Some(path) = (unsafe { c_path(pack_dir_utf8) }) else {
-        return std::ptr::null_mut();
-    };
-    match pack_dir_bundle(&path) {
-        Ok(bundle) => new_engine_or_error(bundle, config),
-        Err(error) => {
-            set_last_error(error);
-            std::ptr::null_mut()
+) -> *mut TfEngine {
+    ffi_guard(std::ptr::null_mut(), || {
+        let Some(path) = (unsafe { c_path(pack_dir_utf8) }) else {
+            return std::ptr::null_mut();
+        };
+        match pack_dir_bundle(&path) {
+            Ok(bundle) => new_engine_or_error(bundle, config),
+            Err(error) => {
+                set_last_error(error);
+                std::ptr::null_mut()
+            }
         }
-    }
+    })
 }
 
 /// Allocates a new engine from a resolved host config.
@@ -573,29 +618,31 @@ pub unsafe extern "C" fn typeflow_engine_new_from_pack_dir_with_config(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn typeflow_engine_new_from_host_config(
     config: *const TfHostConfig,
-) -> *mut Engine {
-    let Some(config) = (unsafe { config.as_ref() }) else {
-        set_last_error("typeflow_engine_new_from_host_config received a null config pointer");
-        return std::ptr::null_mut();
-    };
-    let bundle = match host_config_bundle(&config.config) {
-        Ok(bundle) => bundle,
-        Err(error) => {
-            set_last_error(format!(
-                "failed to load language data for {}: {}",
-                config.config.engine_source_description(),
-                error
-            ));
+) -> *mut TfEngine {
+    ffi_guard(std::ptr::null_mut(), || {
+        let Some(config) = (unsafe { config.as_ref() }) else {
+            set_last_error("typeflow_engine_new_from_host_config received a null config pointer");
             return std::ptr::null_mut();
+        };
+        let bundle = match host_config_bundle(&config.config) {
+            Ok(bundle) => bundle,
+            Err(error) => {
+                set_last_error(format!(
+                    "failed to load language data for {}: {}",
+                    config.config.engine_source_description(),
+                    error
+                ));
+                return std::ptr::null_mut();
+            }
+        };
+        let engine = new_engine(bundle, engine_config_to_ffi(config.config.engine));
+        if engine.is_null() {
+            set_last_error("invalid engine config in resolved host config");
+        } else {
+            clear_last_error();
         }
-    };
-    let engine = new_engine(bundle, engine_config_to_ffi(config.config.engine));
-    if engine.is_null() {
-        set_last_error("invalid engine config in resolved host config");
-    } else {
-        clear_last_error();
-    }
-    engine
+        engine
+    })
 }
 
 unsafe fn c_path(path_utf8: *const c_char) -> Option<PathBuf> {
@@ -612,43 +659,47 @@ unsafe fn c_str<'a>(value_utf8: *const c_char) -> Option<&'a str> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn typeflow_host_config_load() -> *mut TfHostConfig {
-    let config = match ResolvedHostConfig::load(None) {
-        Ok(config) => config,
-        Err(error) => {
-            set_last_error(error);
+    ffi_guard(std::ptr::null_mut(), || {
+        let config = match ResolvedHostConfig::load(None) {
+            Ok(config) => config,
+            Err(error) => {
+                set_last_error(error);
+                return std::ptr::null_mut();
+            }
+        };
+        let Some(config) = host_config_to_ffi(config) else {
+            set_last_error("host config contains a path or language id with an embedded NUL byte");
             return std::ptr::null_mut();
-        }
-    };
-    let Some(config) = host_config_to_ffi(config) else {
-        set_last_error("host config contains a path or language id with an embedded NUL byte");
-        return std::ptr::null_mut();
-    };
-    clear_last_error();
-    Box::into_raw(Box::new(config))
+        };
+        clear_last_error();
+        Box::into_raw(Box::new(config))
+    })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn typeflow_host_config_load_defaults() -> *mut TfHostConfig {
-    let environment = HostEnvironment::from_process();
-    let source = ConfigSource {
-        config: Config::default(),
-        path: None,
-    };
-    let config = match ResolvedHostConfig::from_source(source, &environment) {
-        Ok(config) => config,
-        Err(error) => {
-            set_last_error(error);
+    ffi_guard(std::ptr::null_mut(), || {
+        let environment = HostEnvironment::from_process();
+        let source = ConfigSource {
+            config: Config::default(),
+            path: None,
+        };
+        let config = match ResolvedHostConfig::from_source(source, &environment) {
+            Ok(config) => config,
+            Err(error) => {
+                set_last_error(error);
+                return std::ptr::null_mut();
+            }
+        };
+        let Some(config) = host_config_to_ffi(config) else {
+            set_last_error(
+                "default host config contains a path or language id with an embedded NUL byte",
+            );
             return std::ptr::null_mut();
-        }
-    };
-    let Some(config) = host_config_to_ffi(config) else {
-        set_last_error(
-            "default host config contains a path or language id with an embedded NUL byte",
-        );
-        return std::ptr::null_mut();
-    };
-    clear_last_error();
-    Box::into_raw(Box::new(config))
+        };
+        clear_last_error();
+        Box::into_raw(Box::new(config))
+    })
 }
 
 /// Loads host config from caller-supplied environment values.
@@ -667,28 +718,30 @@ pub unsafe extern "C" fn typeflow_host_config_load_with_environment(
     data_dir_utf8: *const c_char,
     pack_dir_utf8: *const c_char,
 ) -> *mut TfHostConfig {
-    let explicit = unsafe { c_path(config_path_utf8) };
-    let environment = HostEnvironment {
-        config_path: None,
-        data_directory: unsafe { c_path(data_dir_utf8) },
-        pack_directory: unsafe { c_path(pack_dir_utf8) },
-        home: unsafe { c_path(home_utf8) },
-    };
+    ffi_guard(std::ptr::null_mut(), || {
+        let explicit = unsafe { c_path(config_path_utf8) };
+        let environment = HostEnvironment {
+            config_path: None,
+            data_directory: unsafe { c_path(data_dir_utf8) },
+            pack_directory: unsafe { c_path(pack_dir_utf8) },
+            home: unsafe { c_path(home_utf8) },
+        };
 
-    let config = match ResolvedHostConfig::load_with_environment(explicit.as_deref(), &environment)
-    {
-        Ok(config) => config,
-        Err(error) => {
-            set_last_error(error);
+        let config =
+            match ResolvedHostConfig::load_with_environment(explicit.as_deref(), &environment) {
+                Ok(config) => config,
+                Err(error) => {
+                    set_last_error(error);
+                    return std::ptr::null_mut();
+                }
+            };
+        let Some(config) = host_config_to_ffi(config) else {
+            set_last_error("host config contains a path or language id with an embedded NUL byte");
             return std::ptr::null_mut();
-        }
-    };
-    let Some(config) = host_config_to_ffi(config) else {
-        set_last_error("host config contains a path or language id with an embedded NUL byte");
-        return std::ptr::null_mut();
-    };
-    clear_last_error();
-    Box::into_raw(Box::new(config))
+        };
+        clear_last_error();
+        Box::into_raw(Box::new(config))
+    })
 }
 
 /// Frees host config allocated by Typeflow.
@@ -699,11 +752,13 @@ pub unsafe extern "C" fn typeflow_host_config_load_with_environment(
 /// constructor that has not already been freed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn typeflow_host_config_free(config: *mut TfHostConfig) {
-    if !config.is_null() {
-        unsafe {
-            drop(Box::from_raw(config));
+    ffi_guard_void(|| {
+        if !config.is_null() {
+            unsafe {
+                drop(Box::from_raw(config));
+            }
         }
-    }
+    });
 }
 
 /// Writes the resolved engine config into `out_config`.
@@ -717,12 +772,14 @@ pub unsafe extern "C" fn typeflow_host_config_engine_config(
     config: *const TfHostConfig,
     out_config: *mut TfEngineConfig,
 ) {
-    let Some(out) = (unsafe { out_config.as_mut() }) else {
-        return;
-    };
-    *out = unsafe { config.as_ref() }
-        .map(|config| engine_config_to_ffi(config.config.engine))
-        .unwrap_or_else(default_ffi_config);
+    ffi_guard_void(|| {
+        let Some(out) = (unsafe { out_config.as_mut() }) else {
+            return;
+        };
+        *out = unsafe { config.as_ref() }
+            .map(|config| engine_config_to_ffi(config.config.engine))
+            .unwrap_or_else(default_ffi_config);
+    });
 }
 
 /// Returns the config file path, or null when defaults were used.
@@ -737,10 +794,12 @@ pub unsafe extern "C" fn typeflow_host_config_engine_config(
 pub unsafe extern "C" fn typeflow_host_config_source_path(
     config: *const TfHostConfig,
 ) -> *const c_char {
-    unsafe { config.as_ref() }
-        .and_then(|config| config.source_path.as_ref())
-        .map(|value| value.as_ptr())
-        .unwrap_or(std::ptr::null())
+    ffi_guard(std::ptr::null(), || {
+        unsafe { config.as_ref() }
+            .and_then(|config| config.source_path.as_ref())
+            .map(|value| value.as_ptr())
+            .unwrap_or(std::ptr::null())
+    })
 }
 
 /// Returns the normalized secondary language id.
@@ -755,9 +814,11 @@ pub unsafe extern "C" fn typeflow_host_config_source_path(
 pub unsafe extern "C" fn typeflow_host_config_secondary_language(
     config: *const TfHostConfig,
 ) -> *const c_char {
-    unsafe { config.as_ref() }
-        .map(|config| config.secondary_language.as_ptr())
-        .unwrap_or(std::ptr::null())
+    ffi_guard(std::ptr::null(), || {
+        unsafe { config.as_ref() }
+            .map(|config| config.secondary_language.as_ptr())
+            .unwrap_or(std::ptr::null())
+    })
 }
 
 /// Returns the resolved pack directory, or null when none could be resolved.
@@ -769,10 +830,12 @@ pub unsafe extern "C" fn typeflow_host_config_secondary_language(
 pub unsafe extern "C" fn typeflow_host_config_pack_directory(
     config: *const TfHostConfig,
 ) -> *const c_char {
-    unsafe { config.as_ref() }
-        .and_then(|config| config.pack_directory.as_ref())
-        .map(|value| value.as_ptr())
-        .unwrap_or(std::ptr::null())
+    ffi_guard(std::ptr::null(), || {
+        unsafe { config.as_ref() }
+            .and_then(|config| config.pack_directory.as_ref())
+            .map(|value| value.as_ptr())
+            .unwrap_or(std::ptr::null())
+    })
 }
 
 /// Returns the resolved data directory, or null when none is configured.
@@ -784,10 +847,12 @@ pub unsafe extern "C" fn typeflow_host_config_pack_directory(
 pub unsafe extern "C" fn typeflow_host_config_data_directory(
     config: *const TfHostConfig,
 ) -> *const c_char {
-    unsafe { config.as_ref() }
-        .and_then(|config| config.data_directory.as_ref())
-        .map(|value| value.as_ptr())
-        .unwrap_or(std::ptr::null())
+    ffi_guard(std::ptr::null(), || {
+        unsafe { config.as_ref() }
+            .and_then(|config| config.data_directory.as_ref())
+            .map(|value| value.as_ptr())
+            .unwrap_or(std::ptr::null())
+    })
 }
 
 /// Returns `embedded`, `data_dir`, or `pack:<id>`.
@@ -799,9 +864,11 @@ pub unsafe extern "C" fn typeflow_host_config_data_directory(
 pub unsafe extern "C" fn typeflow_host_config_engine_source(
     config: *const TfHostConfig,
 ) -> *const c_char {
-    unsafe { config.as_ref() }
-        .map(|config| config.engine_source.as_ptr())
-        .unwrap_or(std::ptr::null())
+    ffi_guard(std::ptr::null(), || {
+        unsafe { config.as_ref() }
+            .map(|config| config.engine_source.as_ptr())
+            .unwrap_or(std::ptr::null())
+    })
 }
 
 /// Returns 1 when `bundle_id_utf8` is fully disabled.
@@ -815,13 +882,15 @@ pub unsafe extern "C" fn typeflow_host_config_is_bundle_disabled(
     config: *const TfHostConfig,
     bundle_id_utf8: *const c_char,
 ) -> u8 {
-    let Some(config) = (unsafe { config.as_ref() }) else {
-        return 0;
-    };
-    let Some(bundle_id) = (unsafe { c_str(bundle_id_utf8) }) else {
-        return 0;
-    };
-    u8::from(config.config.app_policy.disables_bundle(bundle_id))
+    ffi_guard(0, || {
+        let Some(config) = (unsafe { config.as_ref() }) else {
+            return 0;
+        };
+        let Some(bundle_id) = (unsafe { c_str(bundle_id_utf8) }) else {
+            return 0;
+        };
+        u8::from(config.config.app_policy.disables_bundle(bundle_id))
+    })
 }
 
 /// Returns 1 when automatic processing is disabled for `bundle_id_utf8`.
@@ -837,18 +906,20 @@ pub unsafe extern "C" fn typeflow_host_config_is_automatic_processing_disabled(
     config: *const TfHostConfig,
     bundle_id_utf8: *const c_char,
 ) -> u8 {
-    let Some(config) = (unsafe { config.as_ref() }) else {
-        return 0;
-    };
-    let Some(bundle_id) = (unsafe { c_str(bundle_id_utf8) }) else {
-        return 0;
-    };
-    u8::from(
-        config
-            .config
-            .app_policy
-            .disables_automatic_processing(bundle_id),
-    )
+    ffi_guard(0, || {
+        let Some(config) = (unsafe { config.as_ref() }) else {
+            return 0;
+        };
+        let Some(bundle_id) = (unsafe { c_str(bundle_id_utf8) }) else {
+            return 0;
+        };
+        u8::from(
+            config
+                .config
+                .app_policy
+                .disables_automatic_processing(bundle_id),
+        )
+    })
 }
 
 /// Returns the number of fully disabled bundle IDs.
@@ -860,9 +931,11 @@ pub unsafe extern "C" fn typeflow_host_config_is_automatic_processing_disabled(
 pub unsafe extern "C" fn typeflow_host_config_disabled_bundle_count(
     config: *const TfHostConfig,
 ) -> usize {
-    unsafe { config.as_ref() }
-        .map(|config| config.config.app_policy.disable_bundle_count())
-        .unwrap_or(0)
+    ffi_guard(0, || {
+        unsafe { config.as_ref() }
+            .map(|config| config.config.app_policy.disable_bundle_count())
+            .unwrap_or(0)
+    })
 }
 
 /// Returns the number of bundle IDs with automatic processing disabled.
@@ -877,9 +950,11 @@ pub unsafe extern "C" fn typeflow_host_config_disabled_bundle_count(
 pub unsafe extern "C" fn typeflow_host_config_auto_disabled_bundle_count(
     config: *const TfHostConfig,
 ) -> usize {
-    unsafe { config.as_ref() }
-        .map(|config| config.config.app_policy.disable_auto_bundle_count())
-        .unwrap_or(0)
+    ffi_guard(0, || {
+        unsafe { config.as_ref() }
+            .map(|config| config.config.app_policy.disable_auto_bundle_count())
+            .unwrap_or(0)
+    })
 }
 
 /// Resolves host-surface facts into Typeflow input policy.
@@ -899,16 +974,18 @@ pub unsafe extern "C" fn typeflow_host_config_resolve_input_policy(
     facts: TfHostSurfaceFacts,
     out_policy: *mut TfHostInputPolicy,
 ) {
-    let Some(out) = (unsafe { out_policy.as_mut() }) else {
-        return;
-    };
-    let Some(config) = (unsafe { config.as_ref() }) else {
+    ffi_guard_void(|| {
+        let Some(out) = (unsafe { out_policy.as_mut() }) else {
+            return;
+        };
         *out = unavailable_host_config_policy();
-        return;
-    };
+        let Some(config) = (unsafe { config.as_ref() }) else {
+            return;
+        };
 
-    let facts = unsafe { host_surface_facts_from_ffi(facts) };
-    *out = host_input_policy_to_ffi(config.config.resolve_input_policy_view(&facts));
+        let facts = unsafe { host_surface_facts_from_ffi(facts) };
+        *out = host_input_policy_to_ffi(config.config.resolve_input_policy_view(&facts));
+    });
 }
 
 /// Frees an engine pointer created by `typeflow_engine_new_embedded` or
@@ -923,12 +1000,14 @@ pub unsafe extern "C" fn typeflow_host_config_resolve_input_policy(
 /// `typeflow_engine_new_from_pack_dir`) that has not already been freed.
 /// After this call, the pointer must not be used again.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn typeflow_engine_free(engine: *mut Engine) {
-    if !engine.is_null() {
-        unsafe {
-            drop(Box::from_raw(engine));
+pub unsafe extern "C" fn typeflow_engine_free(engine: *mut TfEngine) {
+    ffi_guard_void(|| {
+        if !engine.is_null() {
+            unsafe {
+                drop(Box::from_raw(engine));
+            }
         }
-    }
+    });
 }
 
 /// Clears the current token buffer without changing the active layout.
@@ -937,10 +1016,12 @@ pub unsafe extern "C" fn typeflow_engine_free(engine: *mut Engine) {
 ///
 /// `engine` must be null or a valid live pointer returned by any Typeflow constructor.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn typeflow_engine_reset_token(engine: *mut Engine) {
-    if let Some(engine) = unsafe { engine.as_mut() } {
-        engine.reset_token();
-    }
+pub unsafe extern "C" fn typeflow_engine_reset_token(engine: *mut TfEngine) {
+    ffi_guard_void(|| {
+        if let Some(engine) = unsafe { engine.as_mut() } {
+            engine.engine.reset_token();
+        }
+    });
 }
 
 /// Resets both the active layout and the current token. Use when the host
@@ -954,14 +1035,16 @@ pub unsafe extern "C" fn typeflow_engine_reset_token(engine: *mut Engine) {
 ///
 /// `engine` must be null or a valid live pointer returned by a Typeflow constructor.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn typeflow_engine_reset_layout(engine: *mut Engine, layout: u8) {
-    let Some(engine) = (unsafe { engine.as_mut() }) else {
-        return;
-    };
-    let Some(layout) = layout_from_u8(layout) else {
-        return;
-    };
-    engine.reset_layout(layout);
+pub unsafe extern "C" fn typeflow_engine_reset_layout(engine: *mut TfEngine, layout: u8) {
+    ffi_guard_void(|| {
+        let Some(engine) = (unsafe { engine.as_mut() }) else {
+            return;
+        };
+        let Some(layout) = layout_from_u8(layout) else {
+            return;
+        };
+        engine.engine.reset_layout(layout);
+    });
 }
 
 /// Sets host-level bypass context.
@@ -978,10 +1061,14 @@ pub unsafe extern "C" fn typeflow_engine_reset_layout(engine: *mut Engine, layou
 ///
 /// `engine` must be null or a valid live pointer returned by a Typeflow constructor.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn typeflow_engine_set_host_context(engine: *mut Engine, flags: u32) {
-    if let Some(engine) = unsafe { engine.as_mut() } {
-        engine.set_host_context(host_context_from_flags(flags));
-    }
+pub unsafe extern "C" fn typeflow_engine_set_host_context(engine: *mut TfEngine, flags: u32) {
+    ffi_guard_void(|| {
+        if let Some(engine) = unsafe { engine.as_mut() } {
+            engine
+                .engine
+                .set_host_context(host_context_from_flags(flags));
+        }
+    });
 }
 
 /// Forces the current token to the opposite side of the active language pair.
@@ -992,18 +1079,21 @@ pub unsafe extern "C" fn typeflow_engine_set_host_context(engine: *mut Engine, f
 /// any other Typeflow constructor. `out_action` must point to writable memory for one `TfAction`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn typeflow_engine_force_switch_token(
-    engine: *mut Engine,
+    engine: *mut TfEngine,
     out_action: *mut TfAction,
 ) {
-    let Some(engine) = (unsafe { engine.as_mut() }) else {
-        return;
-    };
-    let Some(out) = (unsafe { out_action.as_mut() }) else {
-        return;
-    };
+    ffi_guard_void(|| {
+        let Some(engine) = (unsafe { engine.as_mut() }) else {
+            return;
+        };
+        let Some(out) = (unsafe { out_action.as_mut() }) else {
+            return;
+        };
+        out.write(Action::Keep);
 
-    let output = engine.force_switch_token();
-    out.write(output.action);
+        let output = engine.engine.force_switch_token();
+        out.write(output.action);
+    });
 }
 
 /// Converts the visible token supplied by the host to the opposite keyboard side.
@@ -1021,31 +1111,33 @@ pub unsafe extern "C" fn typeflow_engine_force_switch_token(
 /// point to writable memory for one `TfAction`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn typeflow_engine_convert_visible_token(
-    engine: *mut Engine,
+    engine: *mut TfEngine,
     token_utf8: *const c_char,
     out_action: *mut TfAction,
 ) {
-    let Some(engine) = (unsafe { engine.as_mut() }) else {
-        return;
-    };
-    let Some(out) = (unsafe { out_action.as_mut() }) else {
-        return;
-    };
-    out.write(Action::Keep);
+    ffi_guard_void(|| {
+        let Some(engine) = (unsafe { engine.as_mut() }) else {
+            return;
+        };
+        let Some(out) = (unsafe { out_action.as_mut() }) else {
+            return;
+        };
+        out.write(Action::Keep);
 
-    let Some(token) = (unsafe { c_str(token_utf8) }) else {
-        return;
-    };
-    let Some((layout, replacement)) = engine.convert_visible_token(token) else {
-        return;
-    };
+        let Some(token) = (unsafe { c_str(token_utf8) }) else {
+            return;
+        };
+        let Some((layout, replacement)) = engine.engine.convert_visible_token(token) else {
+            return;
+        };
 
-    let old_len = token.chars().count();
-    engine.reset_layout(layout);
-    out.write(Action::ReplaceToken {
-        old_len,
-        replacement,
-        layout,
+        let old_len = token.chars().count();
+        engine.engine.reset_layout(layout);
+        out.write(Action::ReplaceToken {
+            old_len,
+            replacement,
+            layout,
+        });
     });
 }
 
@@ -1062,30 +1154,33 @@ pub unsafe extern "C" fn typeflow_engine_convert_visible_token(
 /// `out_action` must point to writable memory for one `TfAction`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn typeflow_engine_convert_visible_tail(
-    engine: *mut Engine,
+    engine: *mut TfEngine,
     visible_tail_utf8: *const c_char,
     out_action: *mut TfAction,
 ) {
-    let Some(engine) = (unsafe { engine.as_mut() }) else {
-        return;
-    };
-    let Some(out) = (unsafe { out_action.as_mut() }) else {
-        return;
-    };
-    out.write(Action::Keep);
+    ffi_guard_void(|| {
+        let Some(engine) = (unsafe { engine.as_mut() }) else {
+            return;
+        };
+        let Some(out) = (unsafe { out_action.as_mut() }) else {
+            return;
+        };
+        out.write(Action::Keep);
 
-    let Some(visible_tail) = (unsafe { c_str(visible_tail_utf8) }) else {
-        return;
-    };
-    let Some((layout, replacement, old_len)) = engine.convert_visible_tail(visible_tail) else {
-        return;
-    };
+        let Some(visible_tail) = (unsafe { c_str(visible_tail_utf8) }) else {
+            return;
+        };
+        let Some((layout, replacement, old_len)) = engine.engine.convert_visible_tail(visible_tail)
+        else {
+            return;
+        };
 
-    engine.reset_layout(layout);
-    out.write(Action::ReplaceToken {
-        old_len,
-        replacement,
-        layout,
+        engine.engine.reset_layout(layout);
+        out.write(Action::ReplaceToken {
+            old_len,
+            replacement,
+            layout,
+        });
     });
 }
 
@@ -1104,39 +1199,45 @@ pub unsafe extern "C" fn typeflow_engine_convert_visible_tail(
 /// `out_action` must point to writable memory for one `TfAction`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn typeflow_engine_replace_visible_prefix_with_key(
-    engine: *mut Engine,
+    engine: *mut TfEngine,
     visible_prefix_utf8: *const c_char,
     physical: u8,
     modifiers: u8,
     target_layout: u8,
     out_action: *mut TfAction,
 ) {
-    let Some(engine) = (unsafe { engine.as_mut() }) else {
-        return;
-    };
-    let Some(out) = (unsafe { out_action.as_mut() }) else {
-        return;
-    };
-    out.write(Action::Keep);
+    ffi_guard_void(|| {
+        let Some(engine) = (unsafe { engine.as_mut() }) else {
+            return;
+        };
+        let Some(out) = (unsafe { out_action.as_mut() }) else {
+            return;
+        };
+        out.write(Action::Keep);
 
-    let Some(visible_prefix) = (unsafe { c_str(visible_prefix_utf8) }) else {
-        return;
-    };
-    let Some(physical_key) = PhysicalKey::from_index(physical) else {
-        return;
-    };
-    let Some(target) = layout_from_u8(target_layout) else {
-        return;
-    };
+        let Some(visible_prefix) = (unsafe { c_str(visible_prefix_utf8) }) else {
+            return;
+        };
+        let Some(physical_key) = PhysicalKey::from_index(physical) else {
+            return;
+        };
+        let Some(target) = layout_from_u8(target_layout) else {
+            return;
+        };
 
-    let event = LetterEvent {
-        physical_key,
-        shift: modifiers & TF_MOD_SHIFT != 0,
-    };
-    let Some(action) = engine.replace_visible_prefix_with_key(visible_prefix, event, target) else {
-        return;
-    };
-    out.write(action);
+        let event = LetterEvent {
+            physical_key,
+            shift: modifiers & TF_MOD_SHIFT != 0,
+        };
+        let Some(action) =
+            engine
+                .engine
+                .replace_visible_prefix_with_key(visible_prefix, event, target)
+        else {
+            return;
+        };
+        out.write(action);
+    });
 }
 
 /// Rebuilds a replacement action from a bounded host-visible text tail plus the
@@ -1153,39 +1254,44 @@ pub unsafe extern "C" fn typeflow_engine_replace_visible_prefix_with_key(
 /// `out_action` must point to writable memory for one `TfAction`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn typeflow_engine_replace_visible_tail_with_key(
-    engine: *mut Engine,
+    engine: *mut TfEngine,
     visible_tail_utf8: *const c_char,
     physical: u8,
     modifiers: u8,
     target_layout: u8,
     out_action: *mut TfAction,
 ) {
-    let Some(engine) = (unsafe { engine.as_mut() }) else {
-        return;
-    };
-    let Some(out) = (unsafe { out_action.as_mut() }) else {
-        return;
-    };
-    out.write(Action::Keep);
+    ffi_guard_void(|| {
+        let Some(engine) = (unsafe { engine.as_mut() }) else {
+            return;
+        };
+        let Some(out) = (unsafe { out_action.as_mut() }) else {
+            return;
+        };
+        out.write(Action::Keep);
 
-    let Some(visible_tail) = (unsafe { c_str(visible_tail_utf8) }) else {
-        return;
-    };
-    let Some(physical_key) = PhysicalKey::from_index(physical) else {
-        return;
-    };
-    let Some(target) = layout_from_u8(target_layout) else {
-        return;
-    };
+        let Some(visible_tail) = (unsafe { c_str(visible_tail_utf8) }) else {
+            return;
+        };
+        let Some(physical_key) = PhysicalKey::from_index(physical) else {
+            return;
+        };
+        let Some(target) = layout_from_u8(target_layout) else {
+            return;
+        };
 
-    let event = LetterEvent {
-        physical_key,
-        shift: modifiers & TF_MOD_SHIFT != 0,
-    };
-    let Some(action) = engine.replace_visible_tail_with_key(visible_tail, event, target) else {
-        return;
-    };
-    out.write(action);
+        let event = LetterEvent {
+            physical_key,
+            shift: modifiers & TF_MOD_SHIFT != 0,
+        };
+        let Some(action) = engine
+            .engine
+            .replace_visible_tail_with_key(visible_tail, event, target)
+        else {
+            return;
+        };
+        out.write(action);
+    });
 }
 
 /// Returns the engine's current inferred layout.
@@ -1194,11 +1300,11 @@ pub unsafe extern "C" fn typeflow_engine_replace_visible_tail_with_key(
 ///
 /// `engine` must be null or a valid live pointer returned by any Typeflow constructor.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn typeflow_engine_current_layout(engine: *mut Engine) -> u8 {
-    match unsafe { engine.as_ref() } {
-        Some(engine) => layout_to_u8(engine.current_layout()),
+pub unsafe extern "C" fn typeflow_engine_current_layout(engine: *mut TfEngine) -> u8 {
+    ffi_guard(TF_LAYOUT_ENGLISH, || match unsafe { engine.as_ref() } {
+        Some(engine) => layout_to_u8(engine.engine.current_layout()),
         None => TF_LAYOUT_ENGLISH,
-    }
+    })
 }
 
 /// Processes a single input event and writes the resulting action into `out_action`.
@@ -1211,23 +1317,26 @@ pub unsafe extern "C" fn typeflow_engine_current_layout(engine: *mut Engine) -> 
 /// `out_action` must point to writable memory for one `TfAction`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn typeflow_engine_process(
-    engine: *mut Engine,
+    engine: *mut TfEngine,
     event: TfEvent,
     out_action: *mut TfAction,
 ) {
-    let Some(engine) = (unsafe { engine.as_mut() }) else {
-        return;
-    };
-    let Some(out) = (unsafe { out_action.as_mut() }) else {
-        return;
-    };
-    match decode_event(event) {
-        Some(input) => {
-            let action = engine.process_action(input);
-            out.write(action);
+    ffi_guard_void(|| {
+        let Some(engine) = (unsafe { engine.as_mut() }) else {
+            return;
+        };
+        let Some(out) = (unsafe { out_action.as_mut() }) else {
+            return;
+        };
+        out.write(Action::Keep);
+        match decode_event(event) {
+            Some(input) => {
+                let action = engine.engine.process_action(input);
+                out.write(action);
+            }
+            None => out.write(Action::Keep),
         }
-        None => out.write(Action::Keep),
-    }
+    });
 }
 
 /// Writes the default runtime config into `out_config`.
@@ -1237,9 +1346,11 @@ pub unsafe extern "C" fn typeflow_engine_process(
 /// `out_config` must be null or point to writable memory for one `TfEngineConfig`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn typeflow_engine_default_config(out_config: *mut TfEngineConfig) {
-    if let Some(out) = unsafe { out_config.as_mut() } {
-        *out = default_ffi_config();
-    }
+    ffi_guard_void(|| {
+        if let Some(out) = unsafe { out_config.as_mut() } {
+            *out = default_ffi_config();
+        }
+    });
 }
 
 #[cfg(test)]
@@ -1390,6 +1501,21 @@ mod tests {
         unsafe {
             typeflow_engine_default_config(std::ptr::null_mut());
         }
+    }
+
+    #[test]
+    fn ffi_guard_catches_panic_and_sets_last_error() {
+        let old_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let value = super::ffi_guard(7, || -> i32 {
+            panic!("ffi boundary test");
+        });
+        std::panic::set_hook(old_hook);
+
+        assert_eq!(value, 7);
+        let error = unsafe { c_string(typeflow_last_error_message()) };
+        assert!(error.contains("panic crossed Typeflow FFI boundary: ffi boundary test"));
+        super::clear_last_error();
     }
 
     #[test]

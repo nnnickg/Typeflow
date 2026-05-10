@@ -3,8 +3,8 @@ use std::ffi::CString;
 use typeflow_ffi::{
     TF_ACTION_COMMIT, TF_ACTION_KEEP, TF_ACTION_REPLACE, TF_ACTION_RESET,
     TF_CONTEXT_AUTOMATIC_SWITCHING_DISABLED, TF_EVENT_BACKSPACE, TF_EVENT_LETTER, TF_EVENT_LITERAL,
-    TF_LAYOUT_ENGLISH, TF_LAYOUT_SECONDARY, TF_REPLACE_BUF_LEN, TfAction, TfEngineConfig, TfEvent,
-    typeflow_engine_convert_visible_tail, typeflow_engine_current_layout,
+    TF_LAYOUT_ENGLISH, TF_LAYOUT_SECONDARY, TF_REPLACE_BUF_LEN, TfAction, TfEngine, TfEngineConfig,
+    TfEvent, typeflow_engine_convert_visible_tail, typeflow_engine_current_layout,
     typeflow_engine_default_config, typeflow_engine_free, typeflow_engine_new_embedded,
     typeflow_engine_new_embedded_with_config, typeflow_engine_process,
     typeflow_engine_replace_visible_tail_with_key, typeflow_engine_reset_layout,
@@ -49,7 +49,7 @@ fn backspace() -> TfEvent {
     }
 }
 
-fn process(engine: *mut typeflow_core::Engine, event: TfEvent) -> TfAction {
+fn process(engine: *mut TfEngine, event: TfEvent) -> TfAction {
     let mut action = blank_action();
     unsafe {
         typeflow_engine_process(engine, event, &mut action);

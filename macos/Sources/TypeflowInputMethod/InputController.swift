@@ -13,6 +13,8 @@ private let maxVisibleTailUTF16Length = 1024
 
 @objc(TypeflowInputController)
 final class TypeflowInputController: IMKInputController {
+    private static var accessibilityTrustPromptRequested = false
+
     private let hostConfig: TypeflowHostConfig?
     private let engine: TypeflowEngine?
     private var hostPolicyLogKey = ""
@@ -57,6 +59,7 @@ final class TypeflowInputController: IMKInputController {
 
     override func activateServer(_ sender: Any!) {
         logger.debug("activated input controller")
+        promptForAccessibilityTrustIfNeeded()
         resetTrackedHostState()
         engine?.resetToken()
     }
@@ -428,6 +431,25 @@ final class TypeflowInputController: IMKInputController {
         accessibilityCacheExpiresAt = now + 0.10
         accessibilityCache = snapshot
         return snapshot
+    }
+
+    private func promptForAccessibilityTrustIfNeeded() {
+        guard !Self.accessibilityTrustPromptRequested else {
+            return
+        }
+        Self.accessibilityTrustPromptRequested = true
+
+        guard !AXIsProcessTrusted() else {
+            return
+        }
+
+        let options = [
+            kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true
+        ] as NSDictionary
+        let trusted = AXIsProcessTrustedWithOptions(options)
+        logger.notice(
+            "accessibility trust prompt requested trusted=\(trusted, privacy: .public)"
+        )
     }
 
     private struct AccessibilitySnapshot {

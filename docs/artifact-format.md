@@ -1,17 +1,19 @@
 # Artifact And Pack Compatibility
 
-This document defines what version `3` means for embedded artifacts and
+This document defines what version `4` means for embedded artifacts and
 external secondary-language packs.
 
 ## Embedded Artifacts
 
-The release binary embeds four files from `crates/typeflow-core/data/`:
+The release binary embeds six files from `crates/typeflow-core/data/`:
 
 ```text
 en.ngrams.bin
 en.dict.fst
+en.dict-prefix.bin
 uk.ngrams.bin
 uk.dict.fst
+uk.dict-prefix.bin
 ```
 
 `*.ngrams.bin` is a Typeflow n-gram artifact containing `CompiledLanguageData`:
@@ -29,6 +31,10 @@ pub struct CompiledLanguageData {
 `*.dict.fst` is a BurntSushi `fst::Map` keyed by UTF-8 word bytes with `u64`
 frequency values.
 
+`*.dict-prefix.bin` is a Typeflow dictionary-prefix artifact. It stores two
+prebuilt `fst::Map` blobs keyed by UTF-8 prefix bytes: one for capped prefix
+frequency sums and one for capped sample counts.
+
 Embedded artifacts do not have an external manifest. Their compatibility is
 compiled into the binary:
 
@@ -45,18 +51,20 @@ External packs are directories with exactly the files referenced by
 pack.toml
 ngrams.bin
 dict.fst
+dict-prefix.bin
 ```
 
 `pack.toml` contains:
 
 ```toml
-format_version = 3
+format_version = 4
 id = "secondary"
 display_name = "Secondary"
 script = "Cyrillic"
 layout = "custom"
 ngrams = "ngrams.bin"
 dict = "dict.fst"
+dict_prefix = "dict-prefix.bin"
 
 [keyboard]
 unshifted = "..."
@@ -77,16 +85,19 @@ External packs inherit the licenses and redistribution terms of their corpus and
 dictionary inputs. Pack authors should fill `source_corpus` and
 `source_dictionary` in `pack.toml` and ship attribution next to the pack.
 
-## Format Version 3
+## Format Version 4
 
-`PACK_FORMAT_VERSION = 3` means:
+`PACK_FORMAT_VERSION = 4` means:
 
 - `pack.toml` uses the fields above.
-- `ngrams` and `dict` paths are relative paths contained inside the pack
-  directory.
+- `ngrams`, `dict`, and `dict_prefix` paths are relative paths contained inside
+  the pack directory.
 - `ngrams.bin` starts with `TFNG0002`, followed by little-endian numeric fields
   and length-prefixed UTF-8 n-gram strings.
 - `dict.fst` is an `fst::Map<Vec<u8>>`.
+- `dict-prefix.bin` starts with `TFPX0001`, followed by two length-prefixed
+  `fst::Map<Vec<u8>>` blobs: prefix → `prefix_sum`, then prefix →
+  `prefix_sample`.
 - The n-gram artifact's `language_tag` must exactly match manifest `id`.
 - `id = "en"` is invalid for secondary packs.
 - Keyboard rows, when provided, must contain exactly `PhysicalKey::COUNT`

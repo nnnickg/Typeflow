@@ -6,10 +6,13 @@ license.workspace = true
 publish = false
 
 [dependencies]
-typeflow-core = { path = "../typeflow-core" }
+typeflow-core = { version = "0.1.0", path = "../typeflow-core" }
 ureq = "3.3.0"
 flate2 = "1.1.9"
 fst = "0.4.7"
 serde = { version = "1.0.228", features = ["derive"] }
 anyhow = "1.0.102"
 toml = "1.1.2"
+
+[lints]
+workspace = true

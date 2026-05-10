@@ -20,6 +20,7 @@ the complete state-of-the-project snapshot.
 ```text
 crates/
 ├── typeflow-core/   pure Rust engine; scoring, decision, data types
+├── typeflow-host-config/  TOML/env/app-policy resolution for CLI + macOS host
 ├── typeflow-data/   xtask: downloads OpenSubtitles + hermitdave word lists, builds n-grams + FSTs
 ├── typeflow-cli/    user-facing CLI: type / stream / repl / predict / pack / config
 └── typeflow-ffi/    C ABI bridge for the Swift/IMK bundle
@@ -56,7 +57,9 @@ crates/typeflow-core/data/
 ├── en.ngrams.bin
 ├── uk.ngrams.bin
 ├── en.dict.fst
-└── uk.dict.fst
+├── uk.dict.fst
+├── en.dict-prefix.bin
+└── uk.dict-prefix.bin
 ```
 
 The cache is not needed at runtime. Keep it only to avoid re-downloading when

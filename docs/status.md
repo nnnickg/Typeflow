@@ -50,16 +50,16 @@ limitations, and the areas that still need validation before a stable release.
 
 `cargo run --release -p typeflow-data` downloads ~3.7 GB into
 `target/typeflow-data-cache/` (resumable — won't re-download on subsequent
-runs), processes everything, and writes four artifacts to
+runs), processes everything, and writes six artifacts to
 `crates/typeflow-core/data/`. Those artifacts are compile-time inputs embedded
 into release binaries with `include_bytes!`. The embedded pair is English plus
 Ukrainian; other secondary languages use the external language-pack workflow.
 The raw subtitle cache is never needed at runtime.
 
 `cargo run --release -p typeflow-data -- build-pack <spec.toml> --out <dir>`
-builds an external pack directory (`pack.toml`, `ngrams.bin`, `dict.fst`) from
-local files or HTTP/HTTPS corpus/dictionary inputs. The spec format is documented
-in `docs/pack-spec.md`.
+builds an external pack directory (`pack.toml`, `ngrams.bin`, `dict.fst`,
+`dict-prefix.bin`) from local files or HTTP/HTTPS corpus/dictionary inputs. The
+spec format is documented in `docs/pack-spec.md`.
 
 ### CLI (typeflow-cli) — done
 
@@ -73,7 +73,7 @@ Subcommands all driving the same engine:
 - `typeflow model` — print language-pack metadata/fingerprints
 - `typeflow pack install/list/use/inspect` — external language-pack workflow.
   Installed packs are directories containing `pack.toml`, `ngrams.bin`, and
-  `dict.fst`; the release binary remains standalone.
+  `dict.fst`/`dict-prefix.bin`; the release binary remains standalone.
 - `typeflow repl` — interactive raw-mode TTY with live score panel and
   "what you would see in TextEdit" simulated commit buffer
 - `typeflow config init/show` — manage `~/.config/typeflow/config.toml`

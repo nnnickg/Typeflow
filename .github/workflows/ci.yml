@@ -19,9 +19,13 @@ env:
 
 jobs:
   rust:
-    name: Rust core
-    runs-on: macos-latest
+    name: Rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
 
     steps:
       - name: Checkout
@@ -32,6 +36,9 @@ jobs:
           rustup show
           cargo --version
           rustc --version
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2.8.1
 
       - name: Format
         run: cargo fmt --all --check
@@ -52,18 +59,56 @@ jobs:
         run: cargo build --release --locked -p typeflow-cli -p typeflow-ffi
 
       - name: macOS Staticlib Smoke
+        if: runner.os == 'macOS'
         run: make -C macos smoke CARGO_TARGET_DIR="$PWD/target" BUILD_DIR="$RUNNER_TEMP/typeflow-macos-build"
 
       - name: macOS Bundle Build
+        if: runner.os == 'macOS'
         run: make -C macos bundle CARGO_TARGET_DIR="$PWD/target" BUILD_DIR="$RUNNER_TEMP/typeflow-macos-build"
 
       - name: Release Artifact Smoke
         run: |
           test -x target/release/typeflow
           test -f target/release/libtypeflow_ffi.a
-          test -f target/release/libtypeflow_ffi.dylib
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            test -f target/release/libtypeflow_ffi.dylib
+          else
+            test -f target/release/libtypeflow_ffi.so
+          fi
           touch /tmp/typeflow-empty.toml
           target/release/typeflow --config /tmp/typeflow-empty.toml model
           target/release/typeflow --config /tmp/typeflow-empty.toml predict ghsdbn
           target/release/typeflow --config /tmp/typeflow-empty.toml pack inspect uk
           target/release/typeflow --config /tmp/typeflow-empty.toml eval --generated 500
+
+  security:
+    name: Security
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          rustup show
+          cargo --version
+          rustc --version
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2.8.1
+        with:
+          cache-all-crates: "true"
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --version 0.19.4 --locked
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --version 0.22.1 --locked
+
+      - name: Dependency Policy
+        run: cargo deny check
+
+      - name: RustSec Audit
+        run: cargo audit --deny warnings

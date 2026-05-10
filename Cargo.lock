@@ -945,11 +945,14 @@ checksum = "756daf9b1013ebe47a8776667b466417e2d4c5679d441c26230efd9ef78692db"
 name = "typeflow-cli"
 version = "0.1.0"
 dependencies = [
+ "clap",
  "crossterm",
  "fst",
  "serde",
+ "serde_json",
  "toml",
  "typeflow-core",
+ "typeflow-host-config",
 ]
 
 [[package]]
@@ -980,6 +983,16 @@ name = "typeflow-ffi"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "typeflow-core",
+ "typeflow-host-config",
+]
+
+[[package]]
+name = "typeflow-host-config"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "toml",
  "typeflow-core",
 ]
 

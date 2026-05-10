@@ -18,6 +18,7 @@ The output directory contains:
 pack.toml
 ngrams.bin
 dict.fst
+dict-prefix.bin
 ```
 
 ## Spec Format
@@ -40,6 +41,10 @@ plaintext_budget_bytes = 200000000
 # Optional. Default: 500000
 dictionary_top_k = 500000
 
+# Optional. If set, local files and downloaded cache files must match.
+corpus_sha256 = "..."
+dictionary_sha256 = "..."
+
 source_corpus = "secondary corpus"
 source_dictionary = "secondary dictionary"
 build_id = "secondary-2026-05-07"
@@ -58,7 +63,13 @@ Built-in layouts currently accepted without `[keyboard]`:
 
 The corpus is used for character bigram/trigram probabilities. The dictionary
 must be whitespace-separated `word count` lines; the builder lowercases and
-filters words through `alphabet`, then builds the FST dictionary.
+filters words through `alphabet`, then builds the FST dictionary and serialized
+prefix-evidence index.
+
+For HTTP/HTTPS inputs, `typeflow-data` validates `Content-Length` when the
+server provides it. Embedded EN/UK sources are additionally pinned by byte count
+and SHA-256. External pack specs should set `corpus_sha256` and
+`dictionary_sha256` when the input source is expected to be reproducible.
 
 ## Limits
 

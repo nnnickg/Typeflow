@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use crate::data::LanguageBundle;
-use crate::score::{has_dictionary_evidence, score_layout};
+use crate::data::{LanguageBundle, LanguageModel};
+use crate::score::{NgramTotals, has_dictionary_evidence, score_layout, score_layout_with_ngrams};
 use crate::{
     Action, Decision, EngineConfig, EngineOutput, HostContext, InputEvent, Layout,
-    LayoutCandidates, LetterEvent, PhysicalKey, ScoreAnalysis,
+    LayoutCandidates, LetterEvent, MAX_CONFIG_TOKEN_LEN, PhysicalKey, ScoreAnalysis,
 };
 
 pub struct Engine {
@@ -12,11 +12,88 @@ pub struct Engine {
     bundle: Arc<LanguageBundle>,
     token: Vec<LetterEvent>,
     candidates: LayoutCandidates,
+    ngrams: LayoutNgrams,
     score_cache: Option<ScoreAnalysis>,
     layout: Layout,
     token_start_layout: Layout,
     bypass_until_boundary: bool,
     host_context: HostContext,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct LayoutNgrams {
+    english: RollingNgrams,
+    secondary: RollingNgrams,
+}
+
+impl LayoutNgrams {
+    fn clear(&mut self) {
+        self.english.clear();
+        self.secondary.clear();
+    }
+
+    fn from_candidates(candidates: &LayoutCandidates, bundle: &LanguageBundle) -> Self {
+        Self {
+            english: RollingNgrams::from_text(
+                &bundle.pack(Layout::English).model,
+                &candidates.english,
+            ),
+            secondary: RollingNgrams::from_text(
+                &bundle.pack(Layout::Secondary).model,
+                &candidates.secondary,
+            ),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct RollingNgrams {
+    raw_bigram: f32,
+    raw_trigram: f32,
+    char_count: usize,
+    previous_two: char,
+    previous_one: char,
+}
+
+impl RollingNgrams {
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    fn from_text(model: &LanguageModel, text: &str) -> Self {
+        let mut ngrams = Self::default();
+        for character in text.chars() {
+            ngrams.push(model, character);
+        }
+        ngrams
+    }
+
+    fn push(&mut self, model: &LanguageModel, character: char) {
+        for normalized in character.to_lowercase() {
+            self.push_normalized(model, normalized);
+        }
+    }
+
+    fn push_normalized(&mut self, model: &LanguageModel, current: char) {
+        self.char_count += 1;
+        if self.char_count >= 2 {
+            self.raw_bigram += model.bigram_log_prob_for_chars(self.previous_one, current);
+        }
+        if self.char_count >= 3 {
+            self.raw_trigram +=
+                model.trigram_log_prob_for_chars(self.previous_two, self.previous_one, current);
+        }
+        self.previous_two = self.previous_one;
+        self.previous_one = current;
+    }
+
+    fn totals(self) -> NgramTotals {
+        NgramTotals {
+            raw_bigram: self.raw_bigram,
+            raw_trigram: self.raw_trigram,
+            char_count: self.char_count,
+        }
+    }
 }
 
 impl Engine {
@@ -25,11 +102,16 @@ impl Engine {
     }
 
     pub fn with_shared_bundle(config: EngineConfig, bundle: Arc<LanguageBundle>) -> Self {
+        let token_capacity = config.max_token_len.min(MAX_CONFIG_TOKEN_LEN);
         Self {
             config,
             bundle,
-            token: Vec::new(),
-            candidates: LayoutCandidates::default(),
+            token: Vec::with_capacity(token_capacity),
+            candidates: LayoutCandidates {
+                english: String::with_capacity(token_capacity),
+                secondary: String::with_capacity(token_capacity * 4),
+            },
+            ngrams: LayoutNgrams::default(),
             score_cache: None,
             layout: Layout::English,
             token_start_layout: Layout::English,
@@ -66,6 +148,7 @@ impl Engine {
         self.token.clear();
         self.candidates.english.clear();
         self.candidates.secondary.clear();
+        self.ngrams.clear();
         self.score_cache = None;
         self.bypass_until_boundary = false;
         self.token_start_layout = self.layout;
@@ -76,6 +159,7 @@ impl Engine {
         self.token.clear();
         self.candidates.english.clear();
         self.candidates.secondary.clear();
+        self.ngrams.clear();
         self.score_cache = None;
         self.bypass_until_boundary = false;
         self.token_start_layout = layout;
@@ -238,6 +322,7 @@ impl Engine {
 
         self.token = letters;
         self.candidates = candidates;
+        self.recompute_ngrams();
         self.score_cache = None;
         self.bypass_until_boundary = false;
         self.layout = target;
@@ -356,6 +441,7 @@ impl Engine {
         self.token.pop();
         self.candidates.english.pop();
         self.candidates.secondary.pop();
+        self.recompute_ngrams();
         self.score_cache = None;
         if self.host_context.automatic_switching_disabled {
             return (Action::Keep, Decision::Bypass);
@@ -375,19 +461,23 @@ impl Engine {
     /// only applies to `self.candidates` via `score_current()`. Use this method
     /// for one-off comparisons; use `token_score()` for the cached hot path.
     pub fn score(&self, candidates: &LayoutCandidates) -> ScoreAnalysis {
+        let english = self.bundle.pack(Layout::English);
+        let secondary = self.bundle.pack(Layout::Secondary);
         ScoreAnalysis {
             english: score_layout(
                 Layout::English,
                 &candidates.english,
-                &self.bundle.pack(Layout::English).model,
-                &self.bundle.pack(Layout::English).dict,
+                &english.model,
+                &english.dict,
+                &english.dict_index,
                 &self.config,
             ),
             secondary: score_layout(
                 Layout::Secondary,
                 &candidates.secondary,
-                &self.bundle.pack(Layout::Secondary).model,
-                &self.bundle.pack(Layout::Secondary).dict,
+                &secondary.model,
+                &secondary.dict,
+                &secondary.dict_index,
                 &self.config,
             ),
         }
@@ -487,12 +577,16 @@ impl Engine {
     }
 
     fn push_candidate_chars(&mut self, event: LetterEvent) {
-        self.candidates
+        let english = self.bundle.render(event, Layout::English);
+        let secondary = self.bundle.render(event, Layout::Secondary);
+        self.ngrams
             .english
-            .push(self.bundle.render(event, Layout::English));
-        self.candidates
+            .push(&self.bundle.pack(Layout::English).model, english);
+        self.ngrams
             .secondary
-            .push(self.bundle.render(event, Layout::Secondary));
+            .push(&self.bundle.pack(Layout::Secondary).model, secondary);
+        self.candidates.english.push(english);
+        self.candidates.secondary.push(secondary);
         self.score_cache = None;
     }
 
@@ -501,9 +595,32 @@ impl Engine {
             return score;
         }
 
-        let score = self.score(&self.candidates);
+        let english = self.bundle.pack(Layout::English);
+        let secondary = self.bundle.pack(Layout::Secondary);
+        let score = ScoreAnalysis {
+            english: score_layout_with_ngrams(
+                Layout::English,
+                &self.candidates.english,
+                self.ngrams.english.totals(),
+                &english.dict,
+                &english.dict_index,
+                &self.config,
+            ),
+            secondary: score_layout_with_ngrams(
+                Layout::Secondary,
+                &self.candidates.secondary,
+                self.ngrams.secondary.totals(),
+                &secondary.dict,
+                &secondary.dict_index,
+                &self.config,
+            ),
+        };
         self.score_cache = Some(score);
         score
+    }
+
+    fn recompute_ngrams(&mut self) {
+        self.ngrams = LayoutNgrams::from_candidates(&self.candidates, &self.bundle);
     }
 
     fn is_visible_token_character(&self, character: char) -> bool {

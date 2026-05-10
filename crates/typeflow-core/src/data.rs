@@ -1,21 +1,23 @@
 use std::borrow::Cow;
+#[cfg(test)]
 use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::str;
 
-use fst::automaton::{Automaton, Str};
 use fst::{IntoStreamer, Streamer};
 use serde::{Deserialize, Serialize};
 
 use crate::{KeyboardMap, KeyboardMapError, Layout};
 
-pub const PACK_FORMAT_VERSION: u32 = 3;
+pub const PACK_FORMAT_VERSION: u32 = 4;
 pub const PACK_MANIFEST_FILE: &str = "pack.toml";
 pub const PACK_NGRAMS_FILE: &str = "ngrams.bin";
 pub const PACK_DICT_FILE: &str = "dict.fst";
+pub const PACK_DICT_PREFIX_FILE: &str = "dict-prefix.bin";
 const NGRAM_MAGIC: &[u8; 8] = b"TFNG0002";
+const DICT_PREFIX_MAGIC: &[u8; 8] = b"TFPX0001";
 const MAX_NGRAM_STRING_BYTES: usize = 256;
 const MAX_NGRAM_ENTRIES: usize = 10_000_000;
 
@@ -105,29 +107,388 @@ impl std::fmt::Display for NgramEncodeError {
 
 impl std::error::Error for NgramEncodeError {}
 
+#[derive(Debug)]
+pub enum DictPrefixDecodeError {
+    InvalidMagic,
+    Fst(fst::Error),
+    UnexpectedEof {
+        needed: usize,
+        remaining: usize,
+    },
+    InvalidUtf8(str::Utf8Error),
+    LengthTooLarge {
+        field: &'static str,
+        len: usize,
+        max: usize,
+    },
+    EmptyPrefix,
+    PrefixesNotSorted,
+    PrefixSampleTooLarge {
+        sample: u64,
+        max: usize,
+    },
+    TrailingBytes {
+        read: usize,
+        total: usize,
+    },
+}
+
+impl std::fmt::Display for DictPrefixDecodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidMagic => write!(f, "invalid dictionary prefix artifact magic"),
+            Self::Fst(error) => write!(f, "dictionary prefix FST error: {error}"),
+            Self::UnexpectedEof { needed, remaining } => write!(
+                f,
+                "unexpected end of dictionary prefix artifact: needed {needed} bytes, had {remaining}"
+            ),
+            Self::InvalidUtf8(error) => {
+                write!(f, "invalid UTF-8 in dictionary prefix artifact: {error}")
+            }
+            Self::LengthTooLarge { field, len, max } => write!(
+                f,
+                "dictionary prefix artifact field '{field}' is too large: {len} bytes/items, max {max}"
+            ),
+            Self::EmptyPrefix => write!(f, "dictionary prefix artifact contains an empty prefix"),
+            Self::PrefixesNotSorted => write!(
+                f,
+                "dictionary prefix artifact prefixes must be strictly sorted"
+            ),
+            Self::PrefixSampleTooLarge { sample, max } => write!(
+                f,
+                "dictionary prefix artifact sample count {sample} exceeds cap {max}"
+            ),
+            Self::TrailingBytes { read, total } => write!(
+                f,
+                "trailing bytes after dictionary prefix artifact: read {read} of {total}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for DictPrefixDecodeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Fst(error) => Some(error),
+            Self::InvalidUtf8(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+impl From<fst::Error> for DictPrefixDecodeError {
+    fn from(value: fst::Error) -> Self {
+        Self::Fst(value)
+    }
+}
+
+#[derive(Debug)]
+pub enum DictPrefixEncodeError {
+    Fst(fst::Error),
+    LengthTooLarge {
+        field: &'static str,
+        len: usize,
+        max: usize,
+    },
+}
+
+impl std::fmt::Display for DictPrefixEncodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Fst(error) => write!(f, "dictionary prefix FST error: {error}"),
+            Self::LengthTooLarge { field, len, max } => write!(
+                f,
+                "dictionary prefix artifact field '{field}' is too large: {len} bytes/items, max {max}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for DictPrefixEncodeError {}
+
+impl From<fst::Error> for DictPrefixEncodeError {
+    fn from(value: fst::Error) -> Self {
+        Self::Fst(value)
+    }
+}
+
 /// Runtime form of `CompiledLanguageData`. Built once at engine creation.
 pub struct LanguageModel {
     pub language_tag: String,
-    pub bigram: HashMap<u64, f32>,
-    pub trigram: HashMap<u64, f32>,
+    pub bigram: Vec<(u64, f32)>,
+    pub trigram: Vec<(u64, f32)>,
     pub bigram_floor: f32,
     pub trigram_floor: f32,
 }
 
+/// Precomputed dictionary prefix evidence for one immutable word-frequency FST.
+///
+/// Building this once at pack load keeps keystroke scoring out of the dictionary
+/// stream walker. Values match the capped lexicographic prefix sample used by
+/// `dict_lookup`: for each prefix, sum only the first `PREFIX_SAMPLE_CAP`
+/// dictionary entries that start with that prefix.
+pub struct DictionaryIndex {
+    storage: DictionaryIndexStorage,
+}
+
+enum DictionaryIndexStorage {
+    Entries(Vec<PrefixIndexEntry>),
+    Fst {
+        prefix_sum: fst::Map<Cow<'static, [u8]>>,
+        prefix_sample: fst::Map<Cow<'static, [u8]>>,
+    },
+}
+
+#[derive(Clone)]
+struct PrefixIndexEntry {
+    prefix: Vec<u8>,
+    sum: u64,
+    sample: u64,
+}
+
+impl DictionaryIndex {
+    pub fn from_dict<D: AsRef<[u8]>>(dict: &fst::Map<D>) -> Self {
+        Self {
+            storage: DictionaryIndexStorage::Entries(build_prefix_index_entries(dict)),
+        }
+    }
+
+    pub fn from_artifact_bytes(bytes: &[u8]) -> Result<Self, DictPrefixDecodeError> {
+        let (prefix_sum, prefix_sample) = dictionary_index_fst_slices(bytes)?;
+        Ok(Self {
+            storage: DictionaryIndexStorage::Fst {
+                prefix_sum: fst::Map::new(Cow::Owned(prefix_sum.to_vec()))?,
+                prefix_sample: fst::Map::new(Cow::Owned(prefix_sample.to_vec()))?,
+            },
+        })
+    }
+
+    pub fn from_static_artifact_bytes(bytes: &'static [u8]) -> Result<Self, DictPrefixDecodeError> {
+        let (prefix_sum, prefix_sample) = dictionary_index_fst_slices(bytes)?;
+        Ok(Self {
+            storage: DictionaryIndexStorage::Fst {
+                prefix_sum: fst::Map::new(Cow::Borrowed(prefix_sum))?,
+                prefix_sample: fst::Map::new(Cow::Borrowed(prefix_sample))?,
+            },
+        })
+    }
+
+    pub fn to_artifact_bytes(&self) -> Result<Vec<u8>, DictPrefixEncodeError> {
+        encode_dictionary_index(self)
+    }
+
+    pub fn len(&self) -> usize {
+        match &self.storage {
+            DictionaryIndexStorage::Entries(entries) => entries.len(),
+            DictionaryIndexStorage::Fst { prefix_sum, .. } => prefix_sum.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn lookup<D: AsRef<[u8]>>(&self, token: &str, dict: &fst::Map<D>) -> DictLookup {
+        let bytes = token.as_bytes();
+        match &self.storage {
+            DictionaryIndexStorage::Entries(entries) => {
+                let prefix = entries
+                    .binary_search_by(|entry| entry.prefix.as_slice().cmp(bytes))
+                    .ok()
+                    .map(|idx| &entries[idx]);
+
+                DictLookup {
+                    exact_count: dict.get(bytes).unwrap_or(0),
+                    prefix_sum: prefix.map(|entry| entry.sum).unwrap_or(0),
+                    prefix_sample: prefix
+                        .map(|entry| entry.sample.min(usize::MAX as u64) as usize)
+                        .unwrap_or(0),
+                }
+            }
+            DictionaryIndexStorage::Fst {
+                prefix_sum,
+                prefix_sample,
+            } => DictLookup {
+                exact_count: dict.get(bytes).unwrap_or(0),
+                prefix_sum: prefix_sum.get(bytes).unwrap_or(0),
+                prefix_sample: prefix_sample
+                    .get(bytes)
+                    .map(|value| value.min(usize::MAX as u64) as usize)
+                    .unwrap_or(0),
+            },
+        }
+    }
+}
+
+pub fn encode_dictionary_index(index: &DictionaryIndex) -> Result<Vec<u8>, DictPrefixEncodeError> {
+    let (prefix_sum, prefix_sample);
+    let (prefix_sum_bytes, prefix_sample_bytes) = match &index.storage {
+        DictionaryIndexStorage::Entries(entries) => {
+            prefix_sum = dictionary_index_fst(entries, |entry| entry.sum)?;
+            prefix_sample = dictionary_index_fst(entries, |entry| entry.sample)?;
+            (
+                prefix_sum.as_fst().as_bytes(),
+                prefix_sample.as_fst().as_bytes(),
+            )
+        }
+        DictionaryIndexStorage::Fst {
+            prefix_sum,
+            prefix_sample,
+        } => (
+            prefix_sum.as_fst().as_bytes(),
+            prefix_sample.as_fst().as_bytes(),
+        ),
+    };
+
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(DICT_PREFIX_MAGIC);
+    push_dict_prefix_blob(&mut bytes, prefix_sum_bytes);
+    push_dict_prefix_blob(&mut bytes, prefix_sample_bytes);
+    Ok(bytes)
+}
+
+fn dictionary_index_fst(
+    entries: &[PrefixIndexEntry],
+    value: impl Fn(&PrefixIndexEntry) -> u64,
+) -> Result<fst::Map<Vec<u8>>, fst::Error> {
+    fst::Map::from_iter(
+        entries
+            .iter()
+            .map(|entry| (entry.prefix.as_slice(), value(entry))),
+    )
+}
+
+fn dictionary_index_fst_slices(bytes: &[u8]) -> Result<(&[u8], &[u8]), DictPrefixDecodeError> {
+    let mut reader = DictPrefixReader::new(bytes);
+    if reader.read_exact(DICT_PREFIX_MAGIC.len())? != DICT_PREFIX_MAGIC {
+        return Err(DictPrefixDecodeError::InvalidMagic);
+    }
+    let prefix_sum = reader.read_blob()?;
+    let prefix_sample = reader.read_blob()?;
+    reader.finish()?;
+    Ok((prefix_sum, prefix_sample))
+}
+
+fn push_dict_prefix_blob(bytes: &mut Vec<u8>, blob: &[u8]) {
+    bytes.extend_from_slice(&(blob.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(blob);
+}
+
+fn build_prefix_index_entries<D: AsRef<[u8]>>(dict: &fst::Map<D>) -> Vec<PrefixIndexEntry> {
+    let mut active = Vec::<PrefixIndexEntry>::new();
+    let mut entries = Vec::<PrefixIndexEntry>::new();
+    let mut stream = dict.stream();
+
+    while let Some((key, value)) = stream.next() {
+        let Ok(text) = str::from_utf8(key) else {
+            continue;
+        };
+        let bytes = text.as_bytes();
+        let keep = active
+            .iter()
+            .take_while(|entry| bytes.starts_with(&entry.prefix))
+            .count();
+        entries.extend(active.drain(keep..));
+
+        for (idx, end) in text
+            .char_indices()
+            .skip(1)
+            .map(|(end, _)| end)
+            .chain(std::iter::once(text.len()))
+            .enumerate()
+        {
+            if idx >= keep {
+                active.push(PrefixIndexEntry {
+                    prefix: bytes[..end].to_vec(),
+                    sum: 0,
+                    sample: 0,
+                });
+            }
+        }
+
+        for entry in &mut active {
+            record_prefix_sample(entry, value);
+        }
+    }
+
+    entries.extend(active);
+    entries.sort_unstable_by(|left, right| left.prefix.cmp(&right.prefix));
+    entries
+}
+
+fn record_prefix_sample(entry: &mut PrefixIndexEntry, value: u64) {
+    if entry.sample >= PREFIX_SAMPLE_CAP as u64 {
+        return;
+    }
+    entry.sum = entry.sum.saturating_add(value);
+    entry.sample += 1;
+}
+
+struct DictPrefixReader<'a> {
+    bytes: &'a [u8],
+    position: usize,
+}
+
+impl<'a> DictPrefixReader<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, position: 0 }
+    }
+
+    fn read_blob(&mut self) -> Result<&'a [u8], DictPrefixDecodeError> {
+        let len = self.read_u64()? as usize;
+        self.read_exact(len)
+    }
+
+    fn read_u64(&mut self) -> Result<u64, DictPrefixDecodeError> {
+        let bytes = self.read_exact(8)?;
+        let mut raw = [0u8; 8];
+        raw.copy_from_slice(bytes);
+        Ok(u64::from_le_bytes(raw))
+    }
+
+    fn read_exact(&mut self, len: usize) -> Result<&'a [u8], DictPrefixDecodeError> {
+        let remaining = self.bytes.len().saturating_sub(self.position);
+        if remaining < len {
+            return Err(DictPrefixDecodeError::UnexpectedEof {
+                needed: len,
+                remaining,
+            });
+        }
+        let start = self.position;
+        self.position += len;
+        Ok(&self.bytes[start..self.position])
+    }
+
+    fn finish(self) -> Result<(), DictPrefixDecodeError> {
+        if self.position != self.bytes.len() {
+            return Err(DictPrefixDecodeError::TrailingBytes {
+                read: self.position,
+                total: self.bytes.len(),
+            });
+        }
+        Ok(())
+    }
+}
+
 impl LanguageModel {
     pub fn from_compiled(compiled: CompiledLanguageData) -> Self {
+        let mut bigram = compiled
+            .bigrams
+            .into_iter()
+            .filter_map(|(key, score)| bigram_key(&key).map(|key| (key, score)))
+            .collect::<Vec<_>>();
+        let mut trigram = compiled
+            .trigrams
+            .into_iter()
+            .filter_map(|(key, score)| trigram_key(&key).map(|key| (key, score)))
+            .collect::<Vec<_>>();
+        bigram.sort_unstable_by_key(|(key, _)| *key);
+        trigram.sort_unstable_by_key(|(key, _)| *key);
+
         Self {
             language_tag: compiled.language_tag,
-            bigram: compiled
-                .bigrams
-                .into_iter()
-                .filter_map(|(key, score)| bigram_key(&key).map(|key| (key, score)))
-                .collect(),
-            trigram: compiled
-                .trigrams
-                .into_iter()
-                .filter_map(|(key, score)| trigram_key(&key).map(|key| (key, score)))
-                .collect(),
+            bigram,
+            trigram,
             bigram_floor: compiled.bigram_floor,
             trigram_floor: compiled.trigram_floor,
         }
@@ -140,16 +501,24 @@ impl LanguageModel {
 
     pub fn bigram_log_prob(&self, bigram: u64) -> f32 {
         self.bigram
-            .get(&bigram)
-            .copied()
+            .binary_search_by_key(&bigram, |(key, _)| *key)
+            .map(|idx| self.bigram[idx].1)
             .unwrap_or(self.bigram_floor)
     }
 
     pub fn trigram_log_prob(&self, trigram: u64) -> f32 {
         self.trigram
-            .get(&trigram)
-            .copied()
+            .binary_search_by_key(&trigram, |(key, _)| *key)
+            .map(|idx| self.trigram[idx].1)
             .unwrap_or(self.trigram_floor)
+    }
+
+    pub fn bigram_log_prob_for_chars(&self, first: char, second: char) -> f32 {
+        self.bigram_log_prob(encode_bigram(first, second))
+    }
+
+    pub fn trigram_log_prob_for_chars(&self, first: char, second: char, third: char) -> f32 {
+        self.trigram_log_prob(encode_trigram(first, second, third))
     }
 
     pub fn score_ngrams(&self, text: &str) -> (f32, f32, usize) {
@@ -199,6 +568,7 @@ pub struct LanguagePackManifest {
     pub layout: String,
     pub ngrams: PathBuf,
     pub dict: PathBuf,
+    pub dict_prefix: PathBuf,
     pub source_corpus: Option<String>,
     pub source_dictionary: Option<String>,
     pub build_id: Option<String>,
@@ -215,6 +585,7 @@ impl LanguagePackManifest {
             layout: "ukrainian-jcuken-osx".to_owned(),
             ngrams: PathBuf::from(PACK_NGRAMS_FILE),
             dict: PathBuf::from(PACK_DICT_FILE),
+            dict_prefix: PathBuf::from(PACK_DICT_PREFIX_FILE),
             source_corpus: Some("OPUS OpenSubtitles2018 mono".to_owned()),
             source_dictionary: Some("hermitdave/FrequencyWords 2018".to_owned()),
             build_id: Some("embedded".to_owned()),
@@ -238,10 +609,14 @@ impl LanguagePackManifest {
         Ok(())
     }
 
-    pub fn artifact_paths(&self, pack_dir: &Path) -> Result<(PathBuf, PathBuf), BundleError> {
+    pub fn artifact_paths(
+        &self,
+        pack_dir: &Path,
+    ) -> Result<(PathBuf, PathBuf, PathBuf), BundleError> {
         Ok((
             resolve_pack_file(pack_dir, &self.ngrams)?,
             resolve_pack_file(pack_dir, &self.dict)?,
+            resolve_pack_file(pack_dir, &self.dict_prefix)?,
         ))
     }
 
@@ -249,6 +624,7 @@ impl LanguagePackManifest {
         let mut manifest = self.clone();
         manifest.ngrams = PathBuf::from(PACK_NGRAMS_FILE);
         manifest.dict = PathBuf::from(PACK_DICT_FILE);
+        manifest.dict_prefix = PathBuf::from(PACK_DICT_PREFIX_FILE);
         manifest
     }
 
@@ -281,6 +657,7 @@ impl LanguagePackManifest {
         require_non_empty("layout", self.layout.as_str())?;
         validate_pack_relative_path("ngrams", &self.ngrams)?;
         validate_pack_relative_path("dict", &self.dict)?;
+        validate_pack_relative_path("dict_prefix", &self.dict_prefix)?;
         Ok(())
     }
 }
@@ -293,13 +670,15 @@ pub struct PackMetadata {
     pub build_id: String,
     pub ngram_bytes: usize,
     pub dict_bytes: usize,
+    pub dict_prefix_bytes: usize,
     pub fingerprint: u64,
 }
 
 impl PackMetadata {
-    fn from_bytes(ngram_bytes: &[u8], dict_bytes: &[u8]) -> Self {
+    fn from_bytes(ngram_bytes: &[u8], dict_bytes: &[u8], dict_prefix_bytes: &[u8]) -> Self {
         let mut fingerprint = fnv1a64(ngram_bytes);
         fingerprint = fnv1a64_extend(fingerprint, dict_bytes);
+        fingerprint = fnv1a64_extend(fingerprint, dict_prefix_bytes);
 
         Self {
             format_version: PACK_FORMAT_VERSION,
@@ -308,6 +687,7 @@ impl PackMetadata {
             build_id: "embedded".to_owned(),
             ngram_bytes: ngram_bytes.len(),
             dict_bytes: dict_bytes.len(),
+            dict_prefix_bytes: dict_prefix_bytes.len(),
             fingerprint,
         }
     }
@@ -321,7 +701,33 @@ pub struct LanguagePack {
     pub keyboard: KeyboardMap,
     pub model: LanguageModel,
     pub dict: fst::Map<Cow<'static, [u8]>>,
+    pub dict_index: DictionaryIndex,
     pub metadata: PackMetadata,
+}
+
+pub struct DictionaryArtifacts<'a, D> {
+    pub dict: D,
+    pub prefix: DictionaryPrefixBytes<'a>,
+}
+
+pub enum DictionaryPrefixBytes<'a> {
+    Borrowed(&'a [u8]),
+    Static(&'static [u8]),
+}
+
+impl<'a> DictionaryPrefixBytes<'a> {
+    fn as_bytes(&self) -> &[u8] {
+        match self {
+            Self::Borrowed(bytes) | Self::Static(bytes) => bytes,
+        }
+    }
+
+    fn decode_index(&self) -> Result<DictionaryIndex, DictPrefixDecodeError> {
+        match self {
+            Self::Borrowed(bytes) => DictionaryIndex::from_artifact_bytes(bytes),
+            Self::Static(bytes) => DictionaryIndex::from_static_artifact_bytes(bytes),
+        }
+    }
 }
 
 impl LanguagePack {
@@ -345,7 +751,11 @@ impl LanguagePack {
                 actual: compiled.language_tag,
             });
         }
-        let metadata = PackMetadata::from_bytes(ngrams, dict_bytes.as_ref());
+        let dict = fst::Map::new(dict_bytes)?;
+        let dict_index = DictionaryIndex::from_dict(&dict);
+        let dict_prefix_bytes = dict_index.to_artifact_bytes()?;
+        let metadata =
+            PackMetadata::from_bytes(ngrams, dict.as_fst().as_bytes(), &dict_prefix_bytes);
         Ok(Self {
             id: id.to_owned(),
             display_name: display_name.to_owned(),
@@ -353,7 +763,48 @@ impl LanguagePack {
             keyboard_layout: keyboard_layout.to_owned(),
             keyboard,
             model: LanguageModel::from_compiled(compiled),
-            dict: fst::Map::new(dict_bytes)?,
+            dict,
+            dict_index,
+            metadata,
+        })
+    }
+
+    pub fn from_bytes_with_prefix<D>(
+        id: &str,
+        display_name: &str,
+        script: &str,
+        keyboard_layout: &str,
+        keyboard: KeyboardMap,
+        ngrams: &[u8],
+        dictionary: DictionaryArtifacts<'_, D>,
+    ) -> Result<Self, BundleError>
+    where
+        D: Into<Cow<'static, [u8]>>,
+    {
+        let dict_bytes = dictionary.dict.into();
+        let compiled = decode_compiled_language_data(ngrams)?;
+        if compiled.language_tag != id {
+            return Err(BundleError::LanguageTagMismatch {
+                expected: id.to_owned(),
+                actual: compiled.language_tag,
+            });
+        }
+        let dict = fst::Map::new(dict_bytes)?;
+        let dict_index = dictionary.prefix.decode_index()?;
+        let metadata = PackMetadata::from_bytes(
+            ngrams,
+            dict.as_fst().as_bytes(),
+            dictionary.prefix.as_bytes(),
+        );
+        Ok(Self {
+            id: id.to_owned(),
+            display_name: display_name.to_owned(),
+            script: script.to_owned(),
+            keyboard_layout: keyboard_layout.to_owned(),
+            keyboard,
+            model: LanguageModel::from_compiled(compiled),
+            dict,
+            dict_index,
             metadata,
         })
     }
@@ -361,18 +812,22 @@ impl LanguagePack {
     pub fn from_pack_dir(pack_dir: &Path) -> Result<Self, BundleError> {
         let manifest = LanguagePackManifest::read_from_dir(pack_dir)?;
         let keyboard = manifest.keyboard_map()?;
-        let (ngrams_path, dict_path) = manifest.artifact_paths(pack_dir)?;
+        let (ngrams_path, dict_path, dict_prefix_path) = manifest.artifact_paths(pack_dir)?;
         let ngrams = fs::read(&ngrams_path)?;
         let dict_bytes = fs::read(&dict_path)?;
+        let dict_prefix_bytes = fs::read(&dict_prefix_path)?;
 
-        let mut pack = Self::from_bytes(
+        let mut pack = Self::from_bytes_with_prefix(
             manifest.id.as_str(),
             manifest.display_name.as_str(),
             manifest.script.as_str(),
             manifest.layout.as_str(),
             keyboard,
             ngrams.as_slice(),
-            Cow::Owned(dict_bytes),
+            DictionaryArtifacts {
+                dict: Cow::Owned(dict_bytes),
+                prefix: DictionaryPrefixBytes::Borrowed(dict_prefix_bytes.as_slice()),
+            },
         )?;
 
         pack.metadata.format_version = manifest.format_version;
@@ -398,6 +853,8 @@ pub struct LanguageBundle {
 pub enum BundleError {
     Io(io::Error),
     Ngram(NgramDecodeError),
+    DictPrefix(DictPrefixDecodeError),
+    DictPrefixEncode(DictPrefixEncodeError),
     Fst(fst::Error),
     TomlDe(toml::de::Error),
     TomlSer(toml::ser::Error),
@@ -411,6 +868,12 @@ impl std::fmt::Display for BundleError {
         match self {
             BundleError::Io(error) => write!(f, "io error: {error}"),
             BundleError::Ngram(error) => write!(f, "ngram artifact error: {error}"),
+            BundleError::DictPrefix(error) => {
+                write!(f, "dictionary prefix artifact error: {error}")
+            }
+            BundleError::DictPrefixEncode(error) => {
+                write!(f, "dictionary prefix artifact encode error: {error}")
+            }
             BundleError::Fst(error) => write!(f, "fst error: {error}"),
             BundleError::TomlDe(error) => write!(f, "toml parse error: {error}"),
             BundleError::TomlSer(error) => write!(f, "toml serialize error: {error}"),
@@ -435,6 +898,18 @@ impl From<io::Error> for BundleError {
 impl From<NgramDecodeError> for BundleError {
     fn from(value: NgramDecodeError) -> Self {
         BundleError::Ngram(value)
+    }
+}
+
+impl From<DictPrefixDecodeError> for BundleError {
+    fn from(value: DictPrefixDecodeError) -> Self {
+        BundleError::DictPrefix(value)
+    }
+}
+
+impl From<DictPrefixEncodeError> for BundleError {
+    fn from(value: DictPrefixEncodeError) -> Self {
+        BundleError::DictPrefixEncode(value)
     }
 }
 
@@ -468,39 +943,70 @@ impl LanguageBundle {
     /// The raw subtitle/frequency downloads are build-time inputs only. Runtime code should
     /// normally use this path so the CLI/IMK bundle is self-contained.
     pub fn embedded() -> Result<Self, BundleError> {
-        let (en_ngrams, en_dict) = Self::embedded_english_artifacts();
-        let (secondary_ngrams, secondary_dict) = Self::embedded_secondary_artifacts();
-        Self::from_bytes(
-            en_ngrams,
-            secondary_ngrams,
-            Cow::Borrowed(en_dict),
-            Cow::Borrowed(secondary_dict),
-        )
+        let (en_ngrams, en_dict, en_dict_prefix) = Self::embedded_english_artifacts();
+        let (secondary_ngrams, secondary_dict, secondary_dict_prefix) =
+            Self::embedded_secondary_artifacts();
+        Ok(Self {
+            english: LanguagePack::from_bytes_with_prefix(
+                "en",
+                "English",
+                "Latin",
+                "english-us",
+                KeyboardMap::english_us(),
+                en_ngrams,
+                DictionaryArtifacts {
+                    dict: Cow::Borrowed(en_dict),
+                    prefix: DictionaryPrefixBytes::Static(en_dict_prefix),
+                },
+            )?,
+            secondary: LanguagePack::from_bytes_with_prefix(
+                "uk",
+                "Ukrainian",
+                "Cyrillic",
+                "ukrainian-jcuken-osx",
+                KeyboardMap::ukrainian_jcuken_osx(),
+                secondary_ngrams,
+                DictionaryArtifacts {
+                    dict: Cow::Borrowed(secondary_dict),
+                    prefix: DictionaryPrefixBytes::Static(secondary_dict_prefix),
+                },
+            )?,
+        })
     }
 
-    pub fn embedded_english_artifacts() -> (&'static [u8], &'static [u8]) {
+    pub fn embedded_english_artifacts() -> (&'static [u8], &'static [u8], &'static [u8]) {
         (
             include_bytes!("../data/en.ngrams.bin"),
             include_bytes!("../data/en.dict.fst"),
+            include_bytes!("../data/en.dict-prefix.bin"),
         )
     }
 
-    pub fn embedded_secondary_artifacts() -> (&'static [u8], &'static [u8]) {
+    pub fn embedded_secondary_artifacts() -> (&'static [u8], &'static [u8], &'static [u8]) {
         (
             include_bytes!("../data/uk.ngrams.bin"),
             include_bytes!("../data/uk.dict.fst"),
+            include_bytes!("../data/uk.dict-prefix.bin"),
         )
     }
 
-    /// Loads a bundle from the four artifacts produced by `typeflow-data` in `data_dir`:
-    /// `en.ngrams.bin`, `uk.ngrams.bin`, `en.dict.fst`, `uk.dict.fst`.
+    /// Loads a bundle from the artifacts produced by `typeflow-data` in `data_dir`.
     pub fn from_data_dir(data_dir: &Path) -> Result<Self, BundleError> {
         let en_ngrams = fs::read(data_dir.join("en.ngrams.bin"))?;
         let secondary_ngrams = fs::read(data_dir.join("uk.ngrams.bin"))?;
         let en_dict = fs::read(data_dir.join("en.dict.fst"))?;
         let secondary_dict = fs::read(data_dir.join("uk.dict.fst"))?;
+        let en_dict_prefix = fs::read(data_dir.join("en.dict-prefix.bin"))?;
+        let secondary_dict_prefix = fs::read(data_dir.join("uk.dict-prefix.bin"))?;
 
-        Self::from_bytes(&en_ngrams, &secondary_ngrams, en_dict, secondary_dict)
+        Self::from_bytes_with_prefix(
+            &en_ngrams,
+            &secondary_ngrams,
+            en_dict,
+            secondary_dict,
+            &en_dict_prefix,
+            &secondary_dict_prefix,
+        )
     }
 
     /// Loads a bundle from in-memory bytes. Suitable for `include_bytes!` use from
@@ -537,6 +1043,46 @@ impl LanguageBundle {
         })
     }
 
+    pub fn from_bytes_with_prefix<EnDict, SecondaryDict>(
+        en_ngrams: &[u8],
+        secondary_ngrams: &[u8],
+        en_dict: EnDict,
+        secondary_dict: SecondaryDict,
+        en_dict_prefix: &[u8],
+        secondary_dict_prefix: &[u8],
+    ) -> Result<Self, BundleError>
+    where
+        EnDict: Into<Cow<'static, [u8]>>,
+        SecondaryDict: Into<Cow<'static, [u8]>>,
+    {
+        Ok(Self {
+            english: LanguagePack::from_bytes_with_prefix(
+                "en",
+                "English",
+                "Latin",
+                "english-us",
+                KeyboardMap::english_us(),
+                en_ngrams,
+                DictionaryArtifacts {
+                    dict: en_dict,
+                    prefix: DictionaryPrefixBytes::Borrowed(en_dict_prefix),
+                },
+            )?,
+            secondary: LanguagePack::from_bytes_with_prefix(
+                "uk",
+                "Ukrainian",
+                "Cyrillic",
+                "ukrainian-jcuken-osx",
+                KeyboardMap::ukrainian_jcuken_osx(),
+                secondary_ngrams,
+                DictionaryArtifacts {
+                    dict: secondary_dict,
+                    prefix: DictionaryPrefixBytes::Borrowed(secondary_dict_prefix),
+                },
+            )?,
+        })
+    }
+
     pub fn with_secondary_pack(secondary: LanguagePack) -> Result<Self, BundleError> {
         if secondary.id == "en" {
             return Err(BundleError::InvalidPack(
@@ -544,16 +1090,19 @@ impl LanguageBundle {
             ));
         }
 
-        let (en_ngrams, en_dict) = Self::embedded_english_artifacts();
+        let (en_ngrams, en_dict, en_dict_prefix) = Self::embedded_english_artifacts();
         Ok(Self {
-            english: LanguagePack::from_bytes(
+            english: LanguagePack::from_bytes_with_prefix(
                 "en",
                 "English",
                 "Latin",
                 "english-us",
                 KeyboardMap::english_us(),
                 en_ngrams,
-                Cow::Borrowed(en_dict),
+                DictionaryArtifacts {
+                    dict: Cow::Borrowed(en_dict),
+                    prefix: DictionaryPrefixBytes::Static(en_dict_prefix),
+                },
             )?,
             secondary,
         })
@@ -611,6 +1160,9 @@ fn synthetic_pack(
     keyboard: KeyboardMap,
     words: &[(&str, u64)],
 ) -> LanguagePack {
+    let dict = synthetic_fst(words);
+    let dict_index = DictionaryIndex::from_dict(&dict);
+
     LanguagePack {
         id: id.to_owned(),
         display_name: display_name.to_owned(),
@@ -618,7 +1170,8 @@ fn synthetic_pack(
         keyboard_layout: keyboard_layout.to_owned(),
         keyboard,
         model: synthetic_model(id, words),
-        dict: synthetic_fst(words),
+        dict,
+        dict_index,
         metadata: PackMetadata {
             format_version: PACK_FORMAT_VERSION,
             source_corpus: "test".to_owned(),
@@ -626,6 +1179,7 @@ fn synthetic_pack(
             build_id: "test".to_owned(),
             ngram_bytes: 0,
             dict_bytes: 0,
+            dict_prefix_bytes: 0,
             fingerprint: 0,
         },
     }
@@ -672,16 +1226,21 @@ fn synthetic_model(tag: &str, words: &[(&str, u64)]) -> LanguageModel {
         })
         .collect();
 
+    let mut bigram = bigram
+        .into_iter()
+        .filter_map(|(key, score)| bigram_key(&key).map(|key| (key, score)))
+        .collect::<Vec<_>>();
+    let mut trigram = trigram
+        .into_iter()
+        .filter_map(|(key, score)| trigram_key(&key).map(|key| (key, score)))
+        .collect::<Vec<_>>();
+    bigram.sort_unstable_by_key(|(key, _)| *key);
+    trigram.sort_unstable_by_key(|(key, _)| *key);
+
     LanguageModel {
         language_tag: tag.to_owned(),
-        bigram: bigram
-            .into_iter()
-            .filter_map(|(key, score)| bigram_key(&key).map(|key| (key, score)))
-            .collect(),
-        trigram: trigram
-            .into_iter()
-            .filter_map(|(key, score)| trigram_key(&key).map(|key| (key, score)))
-            .collect(),
+        bigram,
+        trigram,
         bigram_floor,
         trigram_floor,
     }
@@ -904,7 +1463,7 @@ impl<'a> ArtifactReader<'a> {
 }
 
 /// Outcome of a dictionary lookup against a single language's FST.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct DictLookup {
     /// Frequency of an exact match, if the token is itself a dictionary entry.
     pub exact_count: u64,
@@ -914,7 +1473,7 @@ pub struct DictLookup {
     pub prefix_sample: usize,
 }
 
-const PREFIX_SAMPLE_CAP: usize = 256;
+const PREFIX_SAMPLE_CAP: usize = 64;
 
 pub fn dict_lookup<D: AsRef<[u8]>>(token: &str, dict: &fst::Map<D>) -> DictLookup {
     let mut result = DictLookup::default();
@@ -923,8 +1482,12 @@ pub fn dict_lookup<D: AsRef<[u8]>>(token: &str, dict: &fst::Map<D>) -> DictLooku
         result.exact_count = count;
     }
 
-    let auto = Str::new(token).starts_with();
-    let mut stream = dict.search(&auto).into_stream();
+    let mut range = dict.range().ge(token.as_bytes());
+    let upper = prefix_upper_bound(token.as_bytes());
+    if let Some(upper) = upper.as_deref() {
+        range = range.lt(upper);
+    }
+    let mut stream = range.into_stream();
     let mut count = 0;
     while let Some((_, value)) = stream.next() {
         result.prefix_sum = result.prefix_sum.saturating_add(value);
@@ -935,6 +1498,17 @@ pub fn dict_lookup<D: AsRef<[u8]>>(token: &str, dict: &fst::Map<D>) -> DictLooku
     }
     result.prefix_sample = count;
     result
+}
+
+fn prefix_upper_bound(prefix: &[u8]) -> Option<Vec<u8>> {
+    let mut upper = prefix.to_vec();
+    while let Some(byte) = upper.pop() {
+        if byte < u8::MAX {
+            upper.push(byte + 1);
+            return Some(upper);
+        }
+    }
+    None
 }
 
 fn bigram_key(value: &str) -> Option<u64> {
@@ -985,9 +1559,38 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        CompiledLanguageData, LanguagePack, LanguagePackManifest, PACK_DICT_FILE,
-        PACK_FORMAT_VERSION, PACK_MANIFEST_FILE, PACK_NGRAMS_FILE, encode_compiled_language_data,
+        CompiledLanguageData, DictionaryIndex, LanguagePack, LanguagePackManifest, PACK_DICT_FILE,
+        PACK_DICT_PREFIX_FILE, PACK_FORMAT_VERSION, PACK_MANIFEST_FILE, PACK_NGRAMS_FILE,
+        dict_lookup, encode_compiled_language_data, encode_dictionary_index,
     };
+
+    #[test]
+    fn dictionary_index_matches_capped_prefix_lookup() {
+        let mut words = (0..70)
+            .map(|i| (format!("a{i:02}"), i + 1))
+            .collect::<Vec<_>>();
+        words.extend([
+            ("b".to_owned(), 1000),
+            ("при".to_owned(), 7),
+            ("привіт".to_owned(), 11),
+        ]);
+        words.sort_by(|left, right| left.0.cmp(&right.0));
+
+        let dict = fst::Map::from_iter(words.iter().map(|(word, count)| (word.as_str(), *count)))
+            .expect("test dictionary builds");
+        let index = DictionaryIndex::from_dict(&dict);
+        let encoded = encode_dictionary_index(&index).expect("dictionary index encodes");
+        let decoded =
+            DictionaryIndex::from_artifact_bytes(&encoded).expect("dictionary index decodes");
+
+        for token in ["a", "a00", "a64", "b", "z", "п", "пр", "при", "привіт"] {
+            assert_eq!(
+                decoded.lookup(token, &dict),
+                dict_lookup(token, &dict),
+                "{token}"
+            );
+        }
+    }
 
     #[test]
     fn pack_manifest_rejects_path_traversal() {
@@ -995,13 +1598,14 @@ mod tests {
         fs::write(
             dir.join(PACK_MANIFEST_FILE),
             r#"
-format_version = 3
+format_version = 4
 id = "xx"
 display_name = "Bad"
 script = "Latin"
 layout = "english-us"
 ngrams = "../ngrams.bin"
 dict = "dict.fst"
+dict_prefix = "dict-prefix.bin"
 "#,
         )
         .unwrap();
@@ -1023,6 +1627,7 @@ script = "Latin"
 layout = "english-us"
 ngrams = "ngrams.bin"
 dict = "dict.fst"
+dict_prefix = "dict-prefix.bin"
 "#,
         )
         .unwrap();
@@ -1046,6 +1651,7 @@ dict = "dict.fst"
         write_manifest(&dir, "xx");
         fs::write(dir.join(PACK_NGRAMS_FILE), b"not a typeflow ngram artifact").unwrap();
         fs::write(dir.join(PACK_DICT_FILE), valid_fst_bytes()).unwrap();
+        fs::write(dir.join(PACK_DICT_PREFIX_FILE), valid_dict_prefix_bytes()).unwrap();
 
         let error = LanguagePack::from_pack_dir(&dir).err().unwrap();
         assert!(error.to_string().contains("ngram artifact"));
@@ -1057,6 +1663,7 @@ dict = "dict.fst"
         write_manifest(&dir, "xx");
         fs::write(dir.join(PACK_NGRAMS_FILE), valid_ngram_bytes("yy")).unwrap();
         fs::write(dir.join(PACK_DICT_FILE), valid_fst_bytes()).unwrap();
+        fs::write(dir.join(PACK_DICT_PREFIX_FILE), valid_dict_prefix_bytes()).unwrap();
 
         let error = LanguagePack::from_pack_dir(&dir).err().unwrap();
         assert!(error.to_string().contains("language tag mismatch"));
@@ -1068,9 +1675,22 @@ dict = "dict.fst"
         write_manifest(&dir, "xx");
         fs::write(dir.join(PACK_NGRAMS_FILE), valid_ngram_bytes("xx")).unwrap();
         fs::write(dir.join(PACK_DICT_FILE), b"not an fst").unwrap();
+        fs::write(dir.join(PACK_DICT_PREFIX_FILE), valid_dict_prefix_bytes()).unwrap();
 
         let error = LanguagePack::from_pack_dir(&dir).err().unwrap();
         assert!(error.to_string().contains("fst"));
+    }
+
+    #[test]
+    fn pack_loader_rejects_malformed_dict_prefix_bytes() {
+        let dir = temp_pack_dir("bad-prefix");
+        write_manifest(&dir, "xx");
+        fs::write(dir.join(PACK_NGRAMS_FILE), valid_ngram_bytes("xx")).unwrap();
+        fs::write(dir.join(PACK_DICT_FILE), valid_fst_bytes()).unwrap();
+        fs::write(dir.join(PACK_DICT_PREFIX_FILE), b"not a prefix artifact").unwrap();
+
+        let error = LanguagePack::from_pack_dir(&dir).err().unwrap();
+        assert!(error.to_string().contains("dictionary prefix artifact"));
     }
 
     fn write_manifest(dir: &std::path::Path, id: &str) {
@@ -1085,6 +1705,7 @@ script = "Latin"
 layout = "english-us"
 ngrams = "{PACK_NGRAMS_FILE}"
 dict = "{PACK_DICT_FILE}"
+dict_prefix = "{PACK_DICT_PREFIX_FILE}"
 "#
             ),
         )
@@ -1106,6 +1727,11 @@ dict = "{PACK_DICT_FILE}"
         let mut builder = fst::MapBuilder::memory();
         builder.insert("abc", 1).unwrap();
         builder.into_inner().unwrap()
+    }
+
+    fn valid_dict_prefix_bytes() -> Vec<u8> {
+        let dict = fst::Map::new(valid_fst_bytes()).unwrap();
+        encode_dictionary_index(&DictionaryIndex::from_dict(&dict)).unwrap()
     }
 
     fn temp_pack_dir(name: &str) -> PathBuf {

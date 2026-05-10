@@ -1,29 +1,31 @@
+mod atomic;
 mod config;
 
 use std::collections::BTreeMap;
-use std::env;
 use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use clap::{Arg, ArgAction, ArgMatches, Command};
 use crossterm::{
     ExecutableCommand, cursor,
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     terminal::{self, ClearType},
 };
 use fst::Streamer;
+use serde_json::{Value, json};
 use typeflow_core::Layout;
 use typeflow_core::data::{
-    LanguageBundle, LanguagePack, LanguagePackManifest, PACK_DICT_FILE, PACK_MANIFEST_FILE,
-    PACK_NGRAMS_FILE,
+    LanguageBundle, LanguagePack, LanguagePackManifest, PACK_DICT_FILE, PACK_DICT_PREFIX_FILE,
+    PACK_MANIFEST_FILE, PACK_NGRAMS_FILE,
 };
-use typeflow_core::host_config::{self, HostEnvironment, ResolvedHostConfig};
 use typeflow_core::{
     Action, Decision, Engine, EngineConfig, InputEvent, LayoutCandidates, LayoutScore,
     ScoreAnalysis, has_dictionary_evidence,
 };
+use typeflow_host_config::{self as host_config, HostEnvironment, ResolvedHostConfig};
 
 use config::{Config, ConfigSource};
 
@@ -34,11 +36,23 @@ struct CliArgs {
 }
 
 fn main() -> ExitCode {
-    let parsed = match parse_args(env::args().skip(1).collect()) {
-        Ok(parsed) => parsed,
+    let parsed = match parse_args() {
+        Ok(Some(parsed)) => parsed,
+        Ok(None) => {
+            let mut command = cli();
+            if let Err(error) = command.print_help() {
+                eprintln!("error: print help: {error}");
+                return ExitCode::from(1);
+            }
+            println!();
+            return ExitCode::from(0);
+        }
         Err(error) => {
-            eprintln!("error: {error}\n\n{}", usage());
-            return ExitCode::from(2);
+            let code = error.exit_code();
+            if let Err(print_error) = error.print() {
+                eprintln!("error: print clap error: {print_error}");
+            }
+            return ExitCode::from(code as u8);
         }
     };
 
@@ -52,91 +66,212 @@ fn main() -> ExitCode {
         Some("model") => cmd_model(&parsed.rest, parsed.config_path.as_deref()),
         Some("pack") => cmd_pack(&parsed.rest, parsed.config_path.as_deref()),
         Some("config") => cmd_config(&parsed.rest, parsed.config_path.as_deref()),
-        Some("--help") | Some("-h") | None => {
-            print_usage();
-            return ExitCode::from(0);
-        }
-        Some(other) => Err(format!("unknown subcommand: {other}\n\n{}", usage())),
+        Some(other) => Err(format!("unknown subcommand after clap parse: {other}")),
+        None => Ok(()),
     };
 
     match result {
         Ok(()) => ExitCode::from(0),
         Err(error) => {
             eprintln!("error: {error}");
-            ExitCode::from(2)
+            ExitCode::from(1)
         }
     }
 }
 
-fn parse_args(raw: Vec<String>) -> Result<CliArgs, String> {
-    let mut subcommand: Option<String> = None;
-    let mut rest: Vec<String> = Vec::new();
-    let mut config_path: Option<PathBuf> = None;
+fn parse_args() -> Result<Option<CliArgs>, clap::Error> {
+    let matches = cli().try_get_matches()?;
+    Ok(cli_args_from_matches(&matches))
+}
 
-    let mut iter = raw.into_iter();
-    while let Some(arg) = iter.next() {
-        if arg == "--config" {
-            let value = iter
-                .next()
-                .ok_or_else(|| "missing path after --config".to_owned())?;
-            config_path = Some(PathBuf::from(value));
-        } else if let Some(value) = arg.strip_prefix("--config=") {
-            config_path = Some(PathBuf::from(value));
-        } else if subcommand.is_none() {
-            subcommand = Some(arg);
-        } else {
-            rest.push(arg);
+fn cli() -> Command {
+    Command::new("typeflow")
+        .version(env!("CARGO_PKG_VERSION"))
+        .about("Keyboard-layout inference CLI")
+        .arg(
+            Arg::new("config")
+                .long("config")
+                .value_name("PATH")
+                .help("Use this TOML file instead of the default search path")
+                .global(true),
+        )
+        .subcommand(
+            Command::new("type")
+                .about("Process one or more tokens and print a per-key trace")
+                .arg(
+                    Arg::new("keys")
+                        .value_name("KEYS")
+                        .num_args(1..)
+                        .required(true),
+                ),
+        )
+        .subcommand(Command::new("stream").about("Read one token per line from stdin"))
+        .subcommand(Command::new("repl").about("Run the interactive raw-mode TTY"))
+        .subcommand(
+            Command::new("predict")
+                .about("Print the picked layout and rendered text for one or more tokens")
+                .arg(
+                    Arg::new("json")
+                        .long("json")
+                        .help("Emit newline-delimited JSON")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("keys")
+                        .value_name("KEYS")
+                        .num_args(1..)
+                        .required(true),
+                ),
+        )
+        .subcommand(
+            Command::new("convert")
+                .about("Force-convert one token to the opposite layout")
+                .arg(Arg::new("keys").value_name("KEYS").required(true)),
+        )
+        .subcommand(
+            Command::new("eval")
+                .about("Run labeled layout checks")
+                .arg(
+                    Arg::new("generated")
+                        .long("generated")
+                        .value_name("LIMIT_PER_LAYOUT")
+                        .help("Generate dictionary-backed eval cases")
+                        .num_args(0..=1)
+                        .conflicts_with("tsv"),
+                )
+                .arg(
+                    Arg::new("tsv")
+                        .value_name("TSV")
+                        .help("Read cases as keys<TAB>expected-layout")
+                        .conflicts_with("generated"),
+                ),
+        )
+        .subcommand(Command::new("model").about("Print language-pack metadata"))
+        .subcommand(
+            Command::new("pack")
+                .about("Manage installed language packs")
+                .subcommand_required(true)
+                .subcommand(
+                    Command::new("install")
+                        .about("Validate and install a language pack")
+                        .arg(Arg::new("pack_dir").value_name("PACK_DIR").required(true)),
+                )
+                .subcommand(Command::new("list").about("List installed language packs"))
+                .subcommand(
+                    Command::new("use")
+                        .about("Set the active secondary language")
+                        .arg(Arg::new("id").value_name("ID").required(true)),
+                )
+                .subcommand(
+                    Command::new("inspect")
+                        .about("Print pack manifest and model metadata")
+                        .arg(Arg::new("pack").value_name("PACK_DIR|ID").required(true)),
+                ),
+        )
+        .subcommand(
+            Command::new("config")
+                .about("Manage Typeflow CLI configuration")
+                .subcommand_required(true)
+                .subcommand(
+                    Command::new("init")
+                        .about("Write a fully-commented default config")
+                        .arg(Arg::new("path").value_name("PATH")),
+                )
+                .subcommand(Command::new("show").about("Print the resolved effective config")),
+        )
+}
+
+fn cli_args_from_matches(matches: &ArgMatches) -> Option<CliArgs> {
+    let config_path = matches.get_one::<String>("config").map(PathBuf::from);
+    let (subcommand, sub_matches) = matches.subcommand()?;
+
+    let rest = match subcommand {
+        "type" => string_values(sub_matches, "keys"),
+        "stream" | "repl" | "model" => Vec::new(),
+        "predict" => {
+            let mut rest = Vec::new();
+            if sub_matches.get_flag("json") {
+                rest.push("--json".to_owned());
+            }
+            rest.extend(string_values(sub_matches, "keys"));
+            rest
         }
-    }
+        "convert" => required_string(sub_matches, "keys").into_iter().collect(),
+        "eval" => eval_args_from_matches(sub_matches),
+        "pack" => pack_args_from_matches(sub_matches),
+        "config" => config_args_from_matches(sub_matches),
+        _ => Vec::new(),
+    };
 
-    Ok(CliArgs {
-        subcommand,
+    Some(CliArgs {
+        subcommand: Some(subcommand.to_owned()),
         rest,
         config_path,
     })
 }
 
-fn print_usage() {
-    eprintln!("{}", usage());
+fn eval_args_from_matches(matches: &ArgMatches) -> Vec<String> {
+    if matches.contains_id("generated") {
+        let mut args = vec!["--generated".to_owned()];
+        if let Some(limit) = matches.get_one::<String>("generated") {
+            args.push(limit.to_owned());
+        }
+        return args;
+    }
+
+    required_string(matches, "tsv").into_iter().collect()
 }
 
-fn usage() -> &'static str {
-    "typeflow — feel the engine before macOS exists.
+fn pack_args_from_matches(matches: &ArgMatches) -> Vec<String> {
+    let Some((subcommand, sub_matches)) = matches.subcommand() else {
+        return Vec::new();
+    };
 
-Usage:
-  typeflow [--config <path>] type <KEYS> [<KEYS>...]
-                                 process one or more tokens, print per-key trace + final score
-  typeflow [--config <path>] stream
-                                 read stdin token-per-line, output TSV decisions
-  typeflow [--config <path>] repl
-                                 interactive raw-mode TTY; type live, see scores update
-  typeflow [--config <path>] predict [--json] <KEYS>
-                                 one-shot: print the picked layout + rendered text. Pipeline-friendly.
-  typeflow [--config <path>] convert <KEYS>
-                                 force-convert one token to the opposite layout
-  typeflow [--config <path>] eval [--generated [limit-per-layout] | <tsv>]
-                                 run labeled checks. TSV: keys<TAB>expected-layout
-  typeflow [--config <path>] model
-                                 print embedded/loaded language-pack metadata
-  typeflow [--config <path>] pack install <PACK_DIR>
-                                 validate and install a language pack
-  typeflow [--config <path>] pack list
-                                 list installed language packs
-  typeflow [--config <path>] pack use <ID>
-                                 set the active secondary language in config
-  typeflow [--config <path>] pack inspect <PACK_DIR|ID>
-                                 print pack manifest/model metadata
-  typeflow config init [<path>]  write a fully-commented default config to <path>
-                                 (defaults to ~/.config/typeflow/config.toml)
-  typeflow config show           print the resolved effective config (after merging sources)
+    match subcommand {
+        "install" => vec![
+            "install".to_owned(),
+            required_string(sub_matches, "pack_dir").unwrap_or_default(),
+        ],
+        "list" => vec!["list".to_owned()],
+        "use" => vec![
+            "use".to_owned(),
+            required_string(sub_matches, "id").unwrap_or_default(),
+        ],
+        "inspect" => vec![
+            "inspect".to_owned(),
+            required_string(sub_matches, "pack").unwrap_or_default(),
+        ],
+        _ => Vec::new(),
+    }
+}
 
-Flags:
-  --config <path>                use this TOML file instead of the default search path
+fn config_args_from_matches(matches: &ArgMatches) -> Vec<String> {
+    let Some((subcommand, sub_matches)) = matches.subcommand() else {
+        return Vec::new();
+    };
 
-Environment:
-  TYPEFLOW_DATA_DIR              override the language-bundle directory
-  TYPEFLOW_PACK_DIR              override the installed pack directory
-  TYPEFLOW_CONFIG                path to config TOML (overridden by --config)"
+    match subcommand {
+        "init" => {
+            let mut args = vec!["init".to_owned()];
+            if let Some(path) = sub_matches.get_one::<String>("path") {
+                args.push(path.to_owned());
+            }
+            args
+        }
+        "show" => vec!["show".to_owned()],
+        _ => Vec::new(),
+    }
+}
+
+fn string_values(matches: &ArgMatches, name: &str) -> Vec<String> {
+    matches
+        .get_many::<String>(name)
+        .map(|values| values.cloned().collect())
+        .unwrap_or_default()
+}
+
+fn required_string(matches: &ArgMatches, name: &str) -> Option<String> {
+    matches.get_one::<String>(name).cloned()
 }
 
 fn load_config(explicit: Option<&Path>) -> Result<ConfigSource, String> {
@@ -312,19 +447,18 @@ fn cmd_predict(args: &[String], explicit_config: Option<&Path>) -> Result<(), St
         let margin = score.english.total - score.secondary.total;
 
         if json {
-            writeln!(
-                stdout,
-                "{{\"keys\":\"{}\",\"layout\":\"{}\",\"rendered\":\"{}\",\"primary_id\":\"{}\",\"secondary_id\":\"{}\",\"primary_total\":{:.4},\"secondary_total\":{:.4},\"margin\":{:+.4}}}",
-                escape_json(token),
-                escape_json(layout_label(&engine, layout)),
-                escape_json(&rendered),
-                escape_json(token_label(&engine, Layout::English)),
-                escape_json(token_label(&engine, Layout::Secondary)),
-                score.english.total,
-                score.secondary.total,
-                margin,
-            )
-            .map_err(io_str)?;
+            let output = json!({
+                "keys": token,
+                "layout": layout_label(&engine, layout),
+                "rendered": rendered,
+                "primary_id": token_label(&engine, Layout::English),
+                "secondary_id": token_label(&engine, Layout::Secondary),
+                "primary_total": json_float(score.english.total),
+                "secondary_total": json_float(score.secondary.total),
+                "margin": json_float(margin),
+            });
+            serde_json::to_writer(&mut stdout, &output).map_err(|e| format!("write json: {e}"))?;
+            writeln!(stdout).map_err(io_str)?;
         } else {
             writeln!(stdout, "{}\t{}", layout_label(&engine, layout), rendered).map_err(io_str)?;
         }
@@ -742,7 +876,7 @@ fn cmd_model(args: &[String], explicit_config: Option<&Path>) -> Result<(), Stri
     for layout in [Layout::English, Layout::Secondary] {
         let pack = engine.bundle().pack(layout);
         println!(
-            "{}\tid={}\tscript={}\tlayout={}\tformat={}\tbuild={}\tngrams={}B\tdict={}B\tfingerprint={:016x}",
+            "{}\tid={}\tscript={}\tlayout={}\tformat={}\tbuild={}\tngrams={}B\tdict={}B\tdict_prefix={}B\tfingerprint={:016x}",
             pack.display_name,
             pack.id,
             pack.script,
@@ -751,6 +885,7 @@ fn cmd_model(args: &[String], explicit_config: Option<&Path>) -> Result<(), Stri
             pack.metadata.build_id,
             pack.metadata.ngram_bytes,
             pack.metadata.dict_bytes,
+            pack.metadata.dict_prefix_bytes,
             pack.metadata.fingerprint,
         );
     }
@@ -799,7 +934,7 @@ fn install_pack(source_dir: &Path, explicit_config: Option<&Path>) -> Result<(),
         .map_err(|e| format!("read pack {}: {e}", source_dir.display()))?;
     let pack = LanguagePack::from_pack_dir(source_dir)
         .map_err(|e| format!("validate pack {}: {e}", source_dir.display()))?;
-    let (ngrams_src, dict_src) = manifest
+    let (ngrams_src, dict_src, dict_prefix_src) = manifest
         .artifact_paths(source_dir)
         .map_err(|e| format!("resolve pack artifacts: {e}"))?;
 
@@ -807,10 +942,8 @@ fn install_pack(source_dir: &Path, explicit_config: Option<&Path>) -> Result<(),
     fs::create_dir_all(&target_dir).map_err(|e| format!("create {}: {e}", target_dir.display()))?;
     copy_pack_file(&ngrams_src, &target_dir.join(PACK_NGRAMS_FILE))?;
     copy_pack_file(&dict_src, &target_dir.join(PACK_DICT_FILE))?;
-    manifest
-        .normalized_for_install()
-        .write_to_dir(&target_dir)
-        .map_err(|e| format!("write installed manifest: {e}"))?;
+    copy_pack_file(&dict_prefix_src, &target_dir.join(PACK_DICT_PREFIX_FILE))?;
+    write_pack_manifest(&manifest.normalized_for_install(), &target_dir)?;
 
     let installed = LanguagePack::from_pack_dir(&target_dir)
         .map_err(|e| format!("validate installed pack {}: {e}", target_dir.display()))?;
@@ -931,6 +1064,7 @@ fn print_pack_details(pack: &LanguagePack, location: &str) {
     println!("source_dictionary: {}", pack.metadata.source_dictionary);
     println!("ngrams: {}B", pack.metadata.ngram_bytes);
     println!("dict: {}B", pack.metadata.dict_bytes);
+    println!("dict_prefix: {}B", pack.metadata.dict_prefix_bytes);
     println!("fingerprint: {:016x}", pack.metadata.fingerprint);
 }
 
@@ -977,9 +1111,13 @@ fn copy_pack_file(source: &Path, dest: &Path) -> Result<(), String> {
     if paths_same(source, dest) {
         return Ok(());
     }
-    fs::copy(source, dest)
-        .map(|_| ())
-        .map_err(|e| format!("copy {} -> {}: {e}", source.display(), dest.display()))
+    atomic::copy(source, dest)
+}
+
+fn write_pack_manifest(manifest: &LanguagePackManifest, target_dir: &Path) -> Result<(), String> {
+    let serialized = toml::to_string_pretty(manifest)
+        .map_err(|e| format!("serialize installed manifest: {e}"))?;
+    atomic::write(&target_dir.join(PACK_MANIFEST_FILE), serialized.as_bytes())
 }
 
 fn paths_same(left: &Path, right: &Path) -> bool {
@@ -989,20 +1127,12 @@ fn paths_same(left: &Path, right: &Path) -> bool {
     }
 }
 
-fn escape_json(input: &str) -> String {
-    let mut output = String::with_capacity(input.len());
-    for character in input.chars() {
-        match character {
-            '"' => output.push_str("\\\""),
-            '\\' => output.push_str("\\\\"),
-            '\n' => output.push_str("\\n"),
-            '\r' => output.push_str("\\r"),
-            '\t' => output.push_str("\\t"),
-            c if (c as u32) < 0x20 => output.push_str(&format!("\\u{:04x}", c as u32)),
-            c => output.push(c),
-        }
+fn json_float(value: f32) -> Value {
+    if value.is_finite() {
+        json!(value)
+    } else {
+        Value::Null
     }
-    output
 }
 
 fn cmd_repl(explicit_config: Option<&Path>) -> Result<(), String> {

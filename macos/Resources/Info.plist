@@ -41,6 +41,8 @@
   <string>14.0</string>
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
+  <key>NSAccessibilityUsageDescription</key>
+  <string>Typeflow uses Accessibility to identify terminal-like text fields and avoid automatic text rewriting there.</string>
   <key>NSSupportsSuddenTermination</key>
   <true/>
   <key>TISInputSourceID</key>

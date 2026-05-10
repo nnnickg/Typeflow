@@ -1,33 +1,63 @@
 use std::borrow::Cow;
 
-use crate::data::{DictLookup, LanguageModel, dict_lookup};
+use crate::data::{DictLookup, DictionaryIndex, LanguageModel};
 use crate::{EngineConfig, Layout, LayoutScore};
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct NgramTotals {
+    pub raw_bigram: f32,
+    pub raw_trigram: f32,
+    pub char_count: usize,
+}
 
 pub(crate) fn score_layout(
     layout: Layout,
     text: &str,
     model: &LanguageModel,
     dict: &fst::Map<Cow<'static, [u8]>>,
+    dict_index: &DictionaryIndex,
     config: &EngineConfig,
 ) -> LayoutScore {
     let normalized = lowercase_if_needed(text);
     let score_text = normalized.as_ref();
 
     let (raw_bigram, raw_trigram, char_count) = model.score_ngrams(score_text);
-    let char_count = char_count as f32;
+    score_layout_from_ngrams(
+        layout,
+        score_text,
+        NgramTotals {
+            raw_bigram,
+            raw_trigram,
+            char_count,
+        },
+        dict,
+        dict_index,
+        config,
+    )
+}
+
+pub(crate) fn score_layout_from_ngrams(
+    layout: Layout,
+    text: &str,
+    ngrams: NgramTotals,
+    dict: &fst::Map<Cow<'static, [u8]>>,
+    dict_index: &DictionaryIndex,
+    config: &EngineConfig,
+) -> LayoutScore {
+    let char_count = ngrams.char_count as f32;
     let (bigram_div, trigram_div) = if config.length_normalize {
         ((char_count - 1.0).max(1.0), (char_count - 2.0).max(1.0))
     } else {
         (1.0, 1.0)
     };
 
-    let bigram = config.bigram_weight * raw_bigram / bigram_div;
-    let trigram = config.trigram_weight * raw_trigram / trigram_div;
+    let bigram = config.bigram_weight * ngrams.raw_bigram / bigram_div;
+    let trigram = config.trigram_weight * ngrams.raw_trigram / trigram_div;
 
-    let lookup: DictLookup = if score_text.is_empty() {
+    let lookup: DictLookup = if text.is_empty() {
         DictLookup::default()
     } else {
-        dict_lookup(score_text, dict)
+        dict_index.lookup(text, dict)
     };
 
     let dict_exact_bonus = if lookup.exact_count > 0 {
@@ -58,6 +88,25 @@ pub(crate) fn score_layout(
         exact_count: lookup.exact_count,
         prefix_sum: lookup.prefix_sum,
     }
+}
+
+pub(crate) fn score_layout_with_ngrams(
+    layout: Layout,
+    text: &str,
+    ngrams: NgramTotals,
+    dict: &fst::Map<Cow<'static, [u8]>>,
+    dict_index: &DictionaryIndex,
+    config: &EngineConfig,
+) -> LayoutScore {
+    let normalized = lowercase_if_needed(text);
+    score_layout_from_ngrams(
+        layout,
+        normalized.as_ref(),
+        ngrams,
+        dict,
+        dict_index,
+        config,
+    )
 }
 
 pub fn has_dictionary_evidence(score: LayoutScore) -> bool {

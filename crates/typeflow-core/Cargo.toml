@@ -11,6 +11,9 @@ serde = { version = "1.0.228", features = ["derive"] }
 fst = "0.4.7"
 toml = "1.1.2"
 
+[lints]
+workspace = true
+
 [dev-dependencies]
 criterion.workspace = true
 
