@@ -67,10 +67,9 @@ final class TypeflowInputController: IMKInputController {
     private var accessibilityTrustLogged = false
     private var pendingOptionManualConvert = false
     private var manualConvertCancelled = false
-    private let compositionOverlay = TypeflowCompositionOverlay()
+    private var compositionRenderer: any TypeflowCompositionRenderer = TypeflowMarkedTextRenderer()
     private var trackedClientID: ObjectIdentifier?
     private var activeComposition = ""
-    private var compositionAnchor: TypeflowOverlayAnchor?
 
     override init!(server: IMKServer!, delegate: Any!, client inputClient: Any!) {
         var loadedConfig: TypeflowHostConfig?
@@ -202,7 +201,7 @@ final class TypeflowInputController: IMKInputController {
             updateHostContext(client: sender)
         }
         if hostContext.keyProcessingDisabled {
-            clearComposition(reason: "disabled")
+            clearComposition(client: client, reason: "disabled")
             engine.resetToken()
             return false
         }
@@ -249,7 +248,7 @@ final class TypeflowInputController: IMKInputController {
             return applyComposition(action, client: client, reason: "literal")
         } catch {
             engine.resetToken()
-            clearComposition(reason: "error")
+            clearComposition(client: client, reason: "error")
             return false
         }
     }
@@ -313,7 +312,7 @@ final class TypeflowInputController: IMKInputController {
             return handled
         } catch {
             engine.resetToken()
-            clearComposition(reason: "manualError")
+            clearComposition(client: client, reason: "manualError")
             return false
         }
     }
@@ -330,15 +329,17 @@ final class TypeflowInputController: IMKInputController {
         case let .render(text, _):
             return renderComposition(text, client: client, reason: reason)
         case let .commit(text, consumeEvent):
-            resetCompositionRender()
+            activeComposition = ""
             if !text.isEmpty {
                 measured("insertText.commit.\(reason)", thresholdMs: slowHostThresholdMs) {
-                    client.insertText(text, replacementRange: insertionReplacementRange())
+                    compositionRenderer.commit(text: text, client: client)
                 }
+            } else {
+                clearComposition(client: client, reason: reason)
             }
             return consumeEvent
         case let .clear(consumeEvent):
-            clearComposition(reason: reason)
+            clearComposition(client: client, reason: reason)
             return consumeEvent
         }
     }
@@ -349,72 +350,29 @@ final class TypeflowInputController: IMKInputController {
         reason: String
     ) -> Bool {
         guard !text.isEmpty else {
-            clearComposition(reason: reason)
+            clearComposition(client: client, reason: reason)
             return true
         }
 
-        if compositionAnchor == nil {
-            compositionAnchor = currentOverlayAnchor(client: client, reason: reason)
-        }
-        guard let compositionAnchor else {
-            logger.debug("compositionOverlay missing caret anchor; bypassing composition")
-            resetCompositionRender()
-            engine?.resetToken()
-            return false
-        }
-
         activeComposition = text
-        measured("overlay.render.\(reason)", thresholdMs: slowHostThresholdMs) {
-            compositionOverlay.render(text: text, anchor: compositionAnchor)
+        measured("composition.render.\(compositionRenderer.kind).\(reason)", thresholdMs: slowHostThresholdMs) {
+            compositionRenderer.render(text: text, client: client)
         }
         return true
     }
 
-    private func currentOverlayAnchor(client: IMKTextInput, reason: String) -> TypeflowOverlayAnchor? {
-        var lineRect = NSRect.zero
-        let attributes = measured("client.attributes.\(reason)", thresholdMs: slowHostThresholdMs) {
-            client.attributes(forCharacterIndex: 0, lineHeightRectangle: &lineRect)
-        }
-        guard isUsableLineRect(lineRect) else {
-            return nil
-        }
-        let windowLevel = measured("client.windowLevel.\(reason)", thresholdMs: slowCallThresholdMs) {
-            Int(client.windowLevel())
-        }
-        return TypeflowOverlayAnchor(
-            lineRect: lineRect,
-            windowLevel: windowLevel,
-            style: TypeflowOverlayStyle.from(attributes: attributes)
-        )
-    }
-
-    private func isUsableLineRect(_ rect: NSRect) -> Bool {
-        rect.origin.x.isFinite
-            && rect.origin.y.isFinite
-            && rect.width.isFinite
-            && rect.height.isFinite
-            && abs(rect.height) >= 1
-    }
-
-    private func clearComposition(reason: String) {
-        guard !activeComposition.isEmpty || compositionAnchor != nil else {
+    private func clearComposition(client: IMKTextInput, reason: String) {
+        guard !activeComposition.isEmpty else {
             return
         }
         activeComposition = ""
-        compositionAnchor = nil
-        measured("overlay.clear.\(reason)", thresholdMs: slowHostThresholdMs) {
-            compositionOverlay.clear()
+        measured("composition.clear.\(compositionRenderer.kind).\(reason)", thresholdMs: slowHostThresholdMs) {
+            compositionRenderer.clear(client: client)
         }
     }
 
     private func resetCompositionRender() {
         activeComposition = ""
-        compositionAnchor = nil
-        compositionOverlay.clear()
-    }
-
-    private func insertionReplacementRange() -> NSRange {
-        NSRange(location: NSNotFound, length: NSNotFound)
     }
 
     private func syncClient(_ client: IMKTextInput) {
@@ -430,6 +388,7 @@ final class TypeflowInputController: IMKInputController {
     private struct HostContextSnapshot {
         let keyProcessingDisabled: Bool
         let manualConversionDisabled: Bool
+        let rendererKind: TypeflowCompositionRendererKind
     }
 
     private func updateHostContext(client sender: Any!) -> HostContextSnapshot {
@@ -444,8 +403,9 @@ final class TypeflowInputController: IMKInputController {
            secureInput == hostContextCacheSecureInput,
            now < hostContextCacheExpiresAt
         {
+            setCompositionRenderer(cachedHostContextSnapshot.rendererKind, client: sender as? IMKTextInput)
             if cachedHostContextSnapshot.manualConversionDisabled {
-                resetCompositionRender()
+                clearCompositionIfPossible(client: sender, reason: "cachedPolicyDisabled")
             }
             return cachedHostContextSnapshot
         }
@@ -482,14 +442,17 @@ final class TypeflowInputController: IMKInputController {
         measured("ffi.setHostContext", thresholdMs: slowCallThresholdMs) {
             engine?.setHostContext(flags: flags)
         }
+        let rendererKind = rendererKind(for: policy)
+        setCompositionRenderer(rendererKind, client: sender as? IMKTextInput)
         if policy.manualConversionDisabled {
-            resetCompositionRender()
+            clearCompositionIfPossible(client: sender, reason: "policyDisabled")
         }
 
         let logKey = [
             String(flags),
             String(policy.flags),
             String(policy.reason),
+            String(describing: rendererKind),
             facts.bundleID ?? "",
             facts.inputClientClass ?? "",
             facts.focusedElementIdentifier ?? "",
@@ -498,14 +461,15 @@ final class TypeflowInputController: IMKInputController {
 
         if logKey != hostPolicyLogKey {
             logger.debug(
-                "hostPolicy reason=\(policy.reasonDescription, privacy: .public) secure=\(policy.secureInput, privacy: .private) autoDisabled=\(policy.automaticProcessingDisabled, privacy: .private) manualDisabled=\(policy.manualConversionDisabled, privacy: .private) terminal=\(policy.terminalSurface, privacy: .private) bundleID=\(facts.bundleID ?? "unknown", privacy: .private) client=\(facts.inputClientClass ?? "unknown", privacy: .private) axRole=\(facts.focusedElementRole ?? "unknown", privacy: .private) axSubrole=\(facts.focusedElementSubrole ?? "unknown", privacy: .private) axID=\(facts.focusedElementIdentifier ?? "unknown", privacy: .private)"
+                "hostPolicy reason=\(policy.reasonDescription, privacy: .public) renderer=\(String(describing: rendererKind), privacy: .public) secure=\(policy.secureInput, privacy: .private) autoDisabled=\(policy.automaticProcessingDisabled, privacy: .private) manualDisabled=\(policy.manualConversionDisabled, privacy: .private) terminal=\(policy.terminalSurface, privacy: .private) bundleID=\(facts.bundleID ?? "unknown", privacy: .private) client=\(facts.inputClientClass ?? "unknown", privacy: .private) axRole=\(facts.focusedElementRole ?? "unknown", privacy: .private) axSubrole=\(facts.focusedElementSubrole ?? "unknown", privacy: .private) axID=\(facts.focusedElementIdentifier ?? "unknown", privacy: .private)"
             )
             hostPolicyLogKey = logKey
         }
 
         let snapshot = HostContextSnapshot(
             keyProcessingDisabled: policy.manualConversionDisabled,
-            manualConversionDisabled: policy.manualConversionDisabled
+            manualConversionDisabled: policy.manualConversionDisabled,
+            rendererKind: rendererKind
         )
         if let clientID {
             hostContextCacheClientID = clientID
@@ -514,6 +478,35 @@ final class TypeflowInputController: IMKInputController {
             cachedHostContextSnapshot = snapshot
         }
         return snapshot
+    }
+
+    private func rendererKind(for policy: TypeflowHostInputPolicy) -> TypeflowCompositionRendererKind {
+        policy.directCommitRenderer ? .directCommit : .markedText
+    }
+
+    private func setCompositionRenderer(_ kind: TypeflowCompositionRendererKind, client: IMKTextInput?) {
+        guard compositionRenderer.kind != kind else {
+            return
+        }
+        if let client {
+            clearComposition(client: client, reason: "rendererSwitch")
+        } else {
+            resetCompositionRender()
+        }
+        switch kind {
+        case .markedText:
+            compositionRenderer = TypeflowMarkedTextRenderer()
+        case .directCommit:
+            compositionRenderer = TypeflowDirectCommitRenderer()
+        }
+    }
+
+    private func clearCompositionIfPossible(client sender: Any!, reason: String) {
+        if let client = sender as? IMKTextInput {
+            clearComposition(client: client, reason: reason)
+        } else {
+            resetCompositionRender()
+        }
     }
 
     private func hostPolicyKey(for facts: TypeflowHostSurfaceFacts) -> String {

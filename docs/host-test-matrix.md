@@ -51,6 +51,8 @@ Expected host behavior:
   selected manual layout without automatic switching.
 - Apps in `apps.disable_bundle_ids` bypass both automatic changes and
   standalone Option conversion.
+- Apps in `apps.direct_commit_bundle_ids` should still produce the same final
+  committed text, but live native composition is intentionally skipped.
 - Terminal-like surfaces bypass both automatic changes and standalone Option
   conversion even when the app is not listed in config. Normal editor buffers in
   the same app should still follow the app's normal policy.

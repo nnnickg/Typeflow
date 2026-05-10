@@ -219,8 +219,12 @@ The engine returns one of four `CompositionAction` variants:
 | `Commit { text, consume_event }` | Insert the finalized text once. If `consume_event` is false, pass the original boundary event through after the commit. |
 | `Clear { consume_event }` | Clear active composition without committing text. |
 
-For the macOS IMK host, `Render` maps to the Typeflow-owned overlay renderer,
-and `Commit` maps to one `insertText` call. There is no normal per-key document
+For the macOS IMK host, `Render` maps to the active composition renderer. The
+default renderer is native marked text because that lets the text client own
+inline layout, scrolling, caret, font metrics, and editor decorations. Apps can
+be configured to use the direct-commit renderer when marked text is too slow or
+broken; in that mode `Render` updates Typeflow's internal composition state and
+`Commit` performs the only document mutation. There is no normal per-key
 replacement path. Manual Option conversion calls `force_switch_token()` and
 receives another `Render`; it changes the active composition, not committed
 document text.

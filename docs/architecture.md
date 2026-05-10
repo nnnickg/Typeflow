@@ -201,10 +201,10 @@ Current files:
   `IMKInputController`, collects host-surface facts, applies Rust input policy,
   handles raw keyDown and flagsChanged events, dispatches keyDown events to the
   Rust engine, binds standalone Option press/release to manual conversion, and
-  applies `TypeflowCompositionAction` to the overlay renderer or final
+  applies `TypeflowCompositionAction` to the selected renderer or final
   `IMKTextInput` commit.
-- `Sources/TypeflowInputMethod/CompositionOverlay.swift` owns the transparent
-  non-activating overlay panel used for live composition.
+- `Sources/TypeflowInputMethod/CompositionRenderer.swift` owns the native
+  marked-text renderer and the direct-commit renderer.
 - `Sources/TypeflowInputMethod/main.swift` starts the `IMKServer`.
 - `Sources/TypeflowRegister/main.swift` calls `TISRegisterInputSource` after
   install, enables/selects the Typeflow input method, and writes the
@@ -250,9 +250,9 @@ conversion. Remaining IMK validation work:
      the winning layout if its margin clears the required confidence threshold.
 5. Returns a `CompositionOutput { candidates, score, decision, action }`.
 6. Host applies the `action`:
-   - `Render { text, layout }` → redraw active overlay composition. The macOS
-     host caches cursor geometry at composition start rather than reading host
-     text per key.
+   - `Render { text, layout }` → redraw active composition through the selected
+     renderer. The default macOS renderer is native marked text; configured
+     direct-commit apps keep this text internal until commit.
    - `Commit { text, consume_event }` → insert finalized text once.
    - `Clear { consume_event }` → clear active composition.
    - `Bypass` → let the host app process the event normally.

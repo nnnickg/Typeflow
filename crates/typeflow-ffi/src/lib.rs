@@ -15,8 +15,8 @@ use typeflow_core::{
     PhysicalKey,
 };
 use typeflow_host_config::{
-    Config, ConfigSource, HostEnvironment, HostInputPolicy, HostInputPolicyReason,
-    HostSurfaceFactsView, ResolvedHostConfig,
+    CompositionRenderer, Config, ConfigSource, HostEnvironment, HostInputPolicy,
+    HostInputPolicyReason, HostSurfaceFactsView, ResolvedHostConfig,
 };
 
 pub const TF_EVENT_LETTER: u8 = 0;
@@ -37,6 +37,7 @@ pub const TF_HOST_POLICY_SECURE_INPUT: u32 = 0x01;
 pub const TF_HOST_POLICY_AUTOMATIC_PROCESSING_DISABLED: u32 = 0x02;
 pub const TF_HOST_POLICY_MANUAL_CONVERSION_DISABLED: u32 = 0x04;
 pub const TF_HOST_POLICY_TERMINAL_SURFACE: u32 = 0x08;
+pub const TF_HOST_POLICY_DIRECT_COMMIT_RENDERER: u32 = 0x10;
 
 pub const TF_HOST_POLICY_REASON_NORMAL: u8 = 0;
 pub const TF_HOST_POLICY_REASON_SECURE_INPUT: u8 = 1;
@@ -455,6 +456,9 @@ fn host_input_policy_to_ffi(policy: HostInputPolicy) -> TfHostInputPolicy {
     }
     if policy.terminal_surface {
         flags |= TF_HOST_POLICY_TERMINAL_SURFACE;
+    }
+    if policy.composition_renderer == CompositionRenderer::DirectCommit {
+        flags |= TF_HOST_POLICY_DIRECT_COMMIT_RENDERER;
     }
 
     TfHostInputPolicy {
@@ -1191,7 +1195,9 @@ mod tests {
         TF_COMPOSITION_TEXT_BUF_LEN, TF_CONTEXT_AUTOMATIC_PROCESSING_DISABLED,
         TF_CONTEXT_AUTOMATIC_SWITCHING_DISABLED, TF_CONTEXT_SECURE_INPUT, TF_EVENT_BACKSPACE,
         TF_EVENT_END_TOKEN, TF_EVENT_LETTER, TF_EVENT_LITERAL,
-        TF_HOST_POLICY_AUTOMATIC_PROCESSING_DISABLED, TF_HOST_POLICY_MANUAL_CONVERSION_DISABLED,
+        TF_HOST_POLICY_AUTOMATIC_PROCESSING_DISABLED, TF_HOST_POLICY_DIRECT_COMMIT_RENDERER,
+        TF_HOST_POLICY_MANUAL_CONVERSION_DISABLED,
+        TF_HOST_POLICY_REASON_AUTOMATIC_PROCESSING_DISABLED_BUNDLE,
         TF_HOST_POLICY_REASON_TERMINAL_BUNDLE, TF_HOST_POLICY_REASON_TERMINAL_SURFACE,
         TF_HOST_POLICY_SECURE_INPUT, TF_HOST_POLICY_TERMINAL_SURFACE, TF_LAYOUT_ENGLISH,
         TF_LAYOUT_SECONDARY, TF_MOD_COMMAND, TF_MOD_CONTROL, TF_MOD_OPTION, TF_MOD_SHIFT,
@@ -1456,6 +1462,7 @@ directory = "/config/data"
 [apps]
 disable_bundle_ids = ["dev.zed.Zed", "com.tinyspeck.slackmacgap"]
 disable_auto_bundle_ids = ["com.tinyspeck.slackmacgap", "com.apple.TextEdit"]
+direct_commit_bundle_ids = ["com.apple.TextEdit"]
 "#,
         )
         .unwrap();
@@ -1540,6 +1547,20 @@ disable_auto_bundle_ids = ["com.tinyspeck.slackmacgap", "com.apple.TextEdit"]
             },
             1
         );
+        let mut facts = empty_host_surface_facts();
+        facts.bundle_id_utf8 = textedit.as_ptr();
+        let mut policy = TfHostInputPolicy {
+            flags: 0,
+            reason: 0,
+        };
+        unsafe {
+            typeflow_host_config_resolve_input_policy(config, facts, &mut policy);
+        }
+        assert_eq!(
+            policy.reason,
+            TF_HOST_POLICY_REASON_AUTOMATIC_PROCESSING_DISABLED_BUNDLE
+        );
+        assert_ne!(policy.flags & TF_HOST_POLICY_DIRECT_COMMIT_RENDERER, 0);
 
         // Engine construction fails here because /env/data is intentionally not
         // a language data directory. The constructor decision still lives in Rust.
@@ -1733,6 +1754,10 @@ disable_bundle_ids = [
             (
                 "TF_HOST_POLICY_TERMINAL_SURFACE",
                 TF_HOST_POLICY_TERMINAL_SURFACE as usize,
+            ),
+            (
+                "TF_HOST_POLICY_DIRECT_COMMIT_RENDERER",
+                TF_HOST_POLICY_DIRECT_COMMIT_RENDERER as usize,
             ),
             ("TF_COMPOSITION_BYPASS", TF_COMPOSITION_BYPASS as usize),
             ("TF_COMPOSITION_RENDER", TF_COMPOSITION_RENDER as usize),

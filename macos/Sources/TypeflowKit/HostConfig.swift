@@ -119,6 +119,10 @@ public struct TypeflowHostInputPolicy {
         flags & UInt32(TF_HOST_POLICY_TERMINAL_SURFACE) != 0
     }
 
+    public var directCommitRenderer: Bool {
+        flags & UInt32(TF_HOST_POLICY_DIRECT_COMMIT_RENDERER) != 0
+    }
+
     public var reasonDescription: String {
         switch reason {
         case UInt8(TF_HOST_POLICY_REASON_NORMAL):

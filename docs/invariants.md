@@ -114,8 +114,11 @@ accident.
 - The host is responsible for setting these flags before sending letter events.
   Secure-input detection is a host signal. App disable policy and
   terminal-surface policy are evaluated by Rust from `HostSurfaceFacts`,
-  `apps.disable_bundle_ids`, and `apps.disable_auto_bundle_ids`; the macOS host
-  supplies facts, not decisions.
+  `apps.disable_bundle_ids`, `apps.disable_auto_bundle_ids`, and
+  `apps.direct_commit_bundle_ids`; the macOS host supplies facts, not decisions.
+- Renderer choice does not change engine semantics. The default macOS renderer
+  is native marked text; direct-commit policy only changes how `Render` is
+  presented before the boundary `Commit`.
 - Secure input, terminal-like surfaces, and fully disabled apps bypass
   everything.
 - Clearing host context does not restore a previous token. The next letter

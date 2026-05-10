@@ -129,6 +129,7 @@ pub struct AppsSection {
     pub disable_bundle_ids: Vec<String>,
     #[serde(alias = "exclude_bundle_ids")]
     pub disable_auto_bundle_ids: Vec<String>,
+    pub direct_commit_bundle_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -165,6 +166,7 @@ pub struct HostEnvironment {
 pub struct AppDisablePolicy {
     disable_bundle_ids: HashSet<String>,
     disable_auto_bundle_ids: HashSet<String>,
+    direct_commit_bundle_ids: HashSet<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -206,10 +208,17 @@ pub enum HostInputPolicyReason {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CompositionRenderer {
+    MarkedText,
+    DirectCommit,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HostInputPolicy {
     pub disable_automatic_processing: bool,
     pub disable_manual_conversion: bool,
     pub terminal_surface: bool,
+    pub composition_renderer: CompositionRenderer,
     pub reason: HostInputPolicyReason,
 }
 
@@ -219,6 +228,7 @@ impl Default for HostInputPolicy {
             disable_automatic_processing: false,
             disable_manual_conversion: false,
             terminal_surface: false,
+            composition_renderer: CompositionRenderer::MarkedText,
             reason: HostInputPolicyReason::Normal,
         }
     }
@@ -295,6 +305,7 @@ impl ResolvedHostConfig {
             app_policy: AppDisablePolicy::from_bundle_ids(
                 source.config.apps.disable_bundle_ids.clone(),
                 source.config.apps.disable_auto_bundle_ids.clone(),
+                source.config.apps.direct_commit_bundle_ids.clone(),
             ),
             source_path: source.path,
         })
@@ -348,6 +359,7 @@ impl ResolvedHostConfig {
                 disable_automatic_processing: true,
                 disable_manual_conversion: true,
                 terminal_surface: false,
+                composition_renderer: CompositionRenderer::MarkedText,
                 reason: HostInputPolicyReason::SecureInput,
             };
         }
@@ -366,6 +378,7 @@ impl ResolvedHostConfig {
                     disable_automatic_processing: true,
                     disable_manual_conversion: true,
                     terminal_surface: false,
+                    composition_renderer: CompositionRenderer::MarkedText,
                     reason: HostInputPolicyReason::DisabledBundle,
                 };
             }
@@ -374,7 +387,14 @@ impl ResolvedHostConfig {
                     disable_automatic_processing: true,
                     disable_manual_conversion: false,
                     terminal_surface: false,
+                    composition_renderer: self.app_policy.composition_renderer(bundle_id),
                     reason: HostInputPolicyReason::AutomaticProcessingDisabledBundle,
+                };
+            }
+            if self.app_policy.uses_direct_commit_renderer(bundle_id) {
+                return HostInputPolicy {
+                    composition_renderer: CompositionRenderer::DirectCommit,
+                    ..HostInputPolicy::default()
                 };
             }
         }
@@ -400,20 +420,25 @@ impl AppDisablePolicy {
         Ok(Self::from_bundle_ids(
             config.apps.disable_bundle_ids,
             config.apps.disable_auto_bundle_ids,
+            config.apps.direct_commit_bundle_ids,
         ))
     }
 
     pub fn from_bundle_ids(
         disable_bundle_ids: impl IntoIterator<Item = String>,
         disable_auto_bundle_ids: impl IntoIterator<Item = String>,
+        direct_commit_bundle_ids: impl IntoIterator<Item = String>,
     ) -> Self {
         let disable_bundle_ids = normalized_bundle_ids(disable_bundle_ids);
         let mut disable_auto_bundle_ids = normalized_bundle_ids(disable_auto_bundle_ids);
         disable_auto_bundle_ids.retain(|bundle_id| !disable_bundle_ids.contains(bundle_id));
+        let mut direct_commit_bundle_ids = normalized_bundle_ids(direct_commit_bundle_ids);
+        direct_commit_bundle_ids.retain(|bundle_id| !disable_bundle_ids.contains(bundle_id));
 
         Self {
             disable_bundle_ids,
             disable_auto_bundle_ids,
+            direct_commit_bundle_ids,
         }
     }
 
@@ -426,6 +451,18 @@ impl AppDisablePolicy {
             || self.disable_auto_bundle_ids.contains(bundle_id)
     }
 
+    pub fn uses_direct_commit_renderer(&self, bundle_id: &str) -> bool {
+        !self.disables_bundle(bundle_id) && self.direct_commit_bundle_ids.contains(bundle_id)
+    }
+
+    pub fn composition_renderer(&self, bundle_id: &str) -> CompositionRenderer {
+        if self.uses_direct_commit_renderer(bundle_id) {
+            CompositionRenderer::DirectCommit
+        } else {
+            CompositionRenderer::MarkedText
+        }
+    }
+
     pub fn disable_bundle_count(&self) -> usize {
         self.disable_bundle_ids.len()
     }
@@ -435,7 +472,9 @@ impl AppDisablePolicy {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.disable_bundle_ids.is_empty() && self.disable_auto_bundle_ids.is_empty()
+        self.disable_bundle_ids.is_empty()
+            && self.disable_auto_bundle_ids.is_empty()
+            && self.direct_commit_bundle_ids.is_empty()
     }
 }
 
@@ -477,6 +516,7 @@ fn terminal_policy(reason: HostInputPolicyReason) -> HostInputPolicy {
         disable_automatic_processing: true,
         disable_manual_conversion: true,
         terminal_surface: true,
+        composition_renderer: CompositionRenderer::MarkedText,
         reason,
     }
 }
@@ -591,10 +631,10 @@ pub fn normalized_secondary_id(config: &Config) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppDisablePolicy, Config, ConfigSource, HostEnvironment, HostInputPolicyReason,
-        HostSurfaceFacts, ResolvedHostConfig, configured_data_dir_with_environment,
-        configured_pack_dir_with_environment, default_pack_dir_with_environment,
-        home_default_with_environment, normalized_secondary_id,
+        AppDisablePolicy, CompositionRenderer, Config, ConfigSource, HostEnvironment,
+        HostInputPolicyReason, HostSurfaceFacts, ResolvedHostConfig,
+        configured_data_dir_with_environment, configured_pack_dir_with_environment,
+        default_pack_dir_with_environment, home_default_with_environment, normalized_secondary_id,
     };
 
     #[test]
@@ -615,6 +655,11 @@ disable_auto_bundle_ids = [
     "com.tinyspeck.slackmacgap",
     "dev.zed.Zed",
 ]
+
+direct_commit_bundle_ids = [
+    "com.microsoft.VSCode",
+    "dev.zed.Zed",
+]
 "#,
         )
         .unwrap();
@@ -625,8 +670,14 @@ disable_auto_bundle_ids = [
         assert!(policy.disables_bundle("com.apple.Terminal"));
         assert!(policy.disables_automatic_processing("dev.zed.Zed"));
         assert!(policy.disables_automatic_processing("com.tinyspeck.slackmacgap"));
+        assert!(policy.uses_direct_commit_renderer("com.microsoft.VSCode"));
+        assert!(!policy.uses_direct_commit_renderer("dev.zed.Zed"));
         assert!(!policy.disables_bundle("com.tinyspeck.slackmacgap"));
         assert!(!policy.disables_automatic_processing("com.apple.TextEdit"));
+        assert_eq!(
+            policy.composition_renderer("com.microsoft.VSCode"),
+            CompositionRenderer::DirectCommit
+        );
     }
 
     #[test]
@@ -740,6 +791,34 @@ disable_auto_bundle_ids = ["dev.zed.Zed"]
         assert!(policy.disable_automatic_processing);
         assert!(!policy.disable_manual_conversion);
         assert!(!policy.terminal_surface);
+    }
+
+    #[test]
+    fn direct_commit_bundle_changes_renderer_only() {
+        let config = toml::from_str::<Config>(
+            r#"
+[apps]
+direct_commit_bundle_ids = ["com.microsoft.VSCode"]
+"#,
+        )
+        .unwrap();
+        let resolved = ResolvedHostConfig::from_source(
+            ConfigSource { config, path: None },
+            &HostEnvironment::default(),
+        )
+        .unwrap();
+        let policy = resolved.resolve_input_policy(&HostSurfaceFacts {
+            bundle_id: Some("com.microsoft.VSCode".to_owned()),
+            ..HostSurfaceFacts::default()
+        });
+
+        assert_eq!(policy.reason, HostInputPolicyReason::Normal);
+        assert_eq!(
+            policy.composition_renderer,
+            CompositionRenderer::DirectCommit
+        );
+        assert!(!policy.disable_automatic_processing);
+        assert!(!policy.disable_manual_conversion);
     }
 
     #[test]

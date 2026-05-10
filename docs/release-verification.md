@@ -175,7 +175,10 @@ In a normal app/text field with Typeflow selected:
 7. Add an app bundle id under `[apps].disable_bundle_ids`, restart Typeflow,
    and confirm neither automatic composition nor standalone Option conversion
    fires. Repeat in a password field and confirm it does not fire.
-8. In Terminal.app and iTerm2, type a normally-switching token such as `ghsdbn`.
+8. Add an app bundle id under `[apps].direct_commit_bundle_ids`, restart
+   Typeflow, and confirm the final committed token is still correct without
+   native live composition in that app.
+9. In Terminal.app and iTerm2, type a normally-switching token such as `ghsdbn`.
    It must stay unchanged. Standalone Option must also pass through without
    conversion. Repeat in an embedded terminal pane when the host app exposes
    terminal-like accessibility metadata.
@@ -196,6 +199,10 @@ disable_bundle_ids = [
 
 disable_auto_bundle_ids = [
     "dev.zed.Zed",
+]
+
+direct_commit_bundle_ids = [
+    "com.example.BrokenEditor",
 ]
 ```
 

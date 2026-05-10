@@ -108,11 +108,19 @@ disable_bundle_ids = [
 # Bundle IDs where automatic conversion is disabled but standalone Option
 # conversion is still allowed in normal, non-secure text fields. After
 # standalone Option conversion, subsequent keys commit in the selected manual
-# layout, but Typeflow still will not auto-score or auto-replace in these apps.
+# layout, but Typeflow still will not auto-score or auto-switch in these apps.
 disable_auto_bundle_ids = [
     # "dev.zed.Zed",
     # "com.microsoft.VSCode",
     # "com.jetbrains.intellij",
+]
+
+# Bundle IDs where live composition should use the direct-commit renderer
+# instead of native marked text. This is a UX downgrade: typed text is committed
+# at token boundaries only. Use it only for apps where marked text is too slow
+# or broken.
+direct_commit_bundle_ids = [
+    # "com.example.BrokenEditor",
 ]
 
 # Manual conversion is intentionally not configurable here. The macOS host
