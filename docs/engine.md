@@ -219,10 +219,11 @@ The engine returns one of four `CompositionAction` variants:
 | `Commit { text, consume_event }` | Insert the finalized text once. If `consume_event` is false, pass the original boundary event through after the commit. |
 | `Clear { consume_event }` | Clear active composition without committing text. |
 
-For the macOS IMK host, `Render` maps to `setMarkedText`, and `Commit` maps to
-one `insertText` call. There is no normal per-key document replacement path.
-Manual Option conversion calls `force_switch_token()` and receives another
-`Render`; it changes the active composition, not committed document text.
+For the macOS IMK host, `Render` maps to the Typeflow-owned overlay renderer,
+and `Commit` maps to one `insertText` call. There is no normal per-key document
+replacement path. Manual Option conversion calls `force_switch_token()` and
+receives another `Render`; it changes the active composition, not committed
+document text.
 
 If the user backspaces inside the current token, the engine re-evaluates the
 shortened token. If the shortened token no longer justifies a switch, layout

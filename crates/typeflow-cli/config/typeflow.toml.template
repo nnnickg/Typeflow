@@ -93,7 +93,7 @@ secondary = "uk"
 
 # Terminal-like surfaces are disabled by built-in Rust host policy. Shell prompts
 # are not normal document editors, and terminal apps vary in how they handle IMK
-# marked text and commit events. That includes Terminal.app, iTerm2, common
+# commit events and cursor geometry. That includes Terminal.app, iTerm2, common
 # terminal apps, and embedded terminal panes when macOS exposes terminal-like
 # accessibility metadata.
 

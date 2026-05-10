@@ -72,7 +72,7 @@ accident.
 - `CompositionAction::Commit { text, consume_event }` means insert `text` once
   with host commit semantics. If `consume_event` is false, the host may pass the
   original boundary event through after committing the text.
-- `CompositionAction::Clear { consume_event }` means clear active marked/overlay
+- `CompositionAction::Clear { consume_event }` means clear active rendered
   composition without committing text.
 - `CompositionAction::Bypass` means Typeflow is not handling the event. The host
   should let the app process it normally.

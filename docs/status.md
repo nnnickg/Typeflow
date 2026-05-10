@@ -120,8 +120,9 @@ the input-method executable linked against `libtypeflow_ffi.a`.
 starts an `IMKServer` from `Info.plist`, exposes `TypeflowInputController`,
 receives raw `NSEvent` keyDown/flagsChanged events, maps ANSI keycodes to Rust
 physical key indexes, calls the FFI, and applies
-`TypeflowCompositionAction` through `IMKTextInput.setMarkedText` for active
-composition and `insertText(_:replacementRange:)` for final commits.
+`TypeflowCompositionAction` through a Typeflow-owned overlay for active
+composition and `IMKTextInput.insertText(_:replacementRange:)` for final
+commits.
 
 `make -C macos release-universal` builds arm64 and x86_64 Rust/Swift artifacts,
 merges them with `lipo`, signs with hardened runtime when a Developer ID
@@ -140,6 +141,9 @@ input. Auto-disabled apps bypass automatic scoring/switching but still allow
 explicit Option conversion in normal, non-secure text fields. After explicit
 conversion, subsequent keys compose and commit in the selected manual layout
 until the user converts back or the engine layout is reset.
+Active composition is rendered in a transparent Typeflow-owned overlay. The
+overlay reads IMK cursor geometry once when a composition starts, then redraws
+without host document mutation until the boundary commit.
 Fully disabled apps and terminal-like surfaces bypass both automatic processing
 and Option conversion. Terminal-like surfaces are detected from Rust-owned
 policy using bundle ids plus focused accessibility metadata supplied by Swift.
@@ -173,7 +177,7 @@ The host also resets token/composition state when input stops, the client
 changes, explicit composition commit runs, or host policy disables processing.
 
 The input method logs slow host-path timings under the `Performance` category
-for `processKey`, host policy/AX refresh, FFI calls, `setMarkedText`, and
+for `processKey`, host policy/AX refresh, FFI calls, overlay render/clear, and
 `insertText`. To watch them live:
 
 ```sh
