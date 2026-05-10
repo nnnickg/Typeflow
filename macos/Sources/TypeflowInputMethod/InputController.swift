@@ -24,7 +24,6 @@ private let hostContextCacheTTLSeconds: TimeInterval = 0.25
 private let selectionPollAfterIdleSeconds: TimeInterval = 0.20
 private let selectionPollIntervalSeconds: TimeInterval = 1.0
 private let accessibilityTrustCacheTTLSeconds: TimeInterval = 1.0
-private let maxDeferredReplacementRetryCount = 2
 
 @inline(__always)
 private func measured<T>(
@@ -414,6 +413,18 @@ final class TypeflowInputController: IMKInputController {
             return false
         }
 
+        if let existingSession,
+           let handled = advanceRenderedSessionIfPossible(
+               session: existingSession,
+               desired: desired,
+               client: client,
+               selected: selected,
+               characters: characters
+           )
+        {
+            return handled
+        }
+
         var session = existingSession
             ?? DeferredTokenSession(
                 clientID: clientID,
@@ -424,21 +435,15 @@ final class TypeflowInputController: IMKInputController {
                 layout: desired.layout,
                 lastCaretLocation: selected.location,
                 lastCaretAuthoritative: true,
-                pendingHostMutationStartCaret: nil,
-                pendingHostMutationReadyCaret: nil,
-                applyGeneration: 0,
-                retryCount: 0
+                applyGeneration: 0
             )
 
-        let mutationStartCaret = selected.location
         session.nativeText.append(characters)
         session.visibleText.append(characters)
         session.desiredText = desired.text
         session.layout = desired.layout
         session.lastCaretLocation = session.visibleEndLocation
         session.lastCaretAuthoritative = false
-        session.pendingHostMutationStartCaret = mutationStartCaret
-        session.pendingHostMutationReadyCaret = session.visibleEndLocation
         expectedSelectedLocation = session.visibleEndLocation
         deferredToken = session
 
@@ -449,6 +454,118 @@ final class TypeflowInputController: IMKInputController {
             scheduleDeferredReplacement(client: client, reason: "key")
         }
         return false
+    }
+
+    private func advanceRenderedSessionIfPossible(
+        session existingSession: DeferredTokenSession,
+        desired: DeferredDesiredToken,
+        client: IMKTextInput,
+        selected: NSRange,
+        characters: String
+    ) -> Bool? {
+        guard existingSession.isRendered,
+              selected.location == existingSession.visibleEndLocation,
+              selected.length == 0
+        else {
+            return nil
+        }
+
+        guard desired.text.hasPrefix(existingSession.desiredText) else {
+            var session = existingSession
+            session.nativeText.append(characters)
+            session.desiredText = desired.text
+            session.layout = desired.layout
+            applyDeferredTailMutation(
+                session: session,
+                client: client,
+                reason: "renderedReconcile"
+            )
+            logger.debug("action=deferredRenderedReconcile")
+            return true
+        }
+
+        let suffix = String(desired.text.dropFirst(existingSession.desiredText.count))
+        guard !suffix.isEmpty else {
+            var session = existingSession
+            session.nativeText.append(characters)
+            session.desiredText = desired.text
+            session.layout = desired.layout
+            session.lastCaretLocation = session.visibleEndLocation
+            session.lastCaretAuthoritative = false
+            expectedSelectedLocation = session.visibleEndLocation
+            deferredToken = session
+            logger.debug("action=deferredRenderedNoop")
+            return true
+        }
+
+        var session = existingSession
+        session.nativeText.append(characters)
+        session.desiredText = desired.text
+        session.layout = desired.layout
+
+        if suffix == characters {
+            session.visibleText.append(characters)
+            session.lastCaretLocation = session.visibleEndLocation
+            session.lastCaretAuthoritative = false
+            expectedSelectedLocation = session.visibleEndLocation
+            deferredToken = session
+            logger.debug("action=deferredRenderedNative")
+            return false
+        }
+
+        measured("insertText.deferredAppend", thresholdMs: slowHostThresholdMs) {
+            client.insertText(suffix, replacementRange: replacementRange())
+        }
+        session.visibleText.append(suffix)
+        session.lastCaretLocation = session.visibleEndLocation
+        session.lastCaretAuthoritative = false
+        expectedSelectedLocation = session.visibleEndLocation
+        deferredToken = session
+        logger.debug(
+            "action=deferredRenderedAppend suffixLength=\(suffix.utf16.count, privacy: .private)"
+        )
+        return true
+    }
+
+    private func applyDeferredTailMutation(
+        session inputSession: DeferredTokenSession,
+        client: IMKTextInput,
+        reason: String
+    ) {
+        var session = inputSession
+        let mutation = deferredTailMutation(from: session)
+        if mutation.range.length > 0 || !mutation.replacement.isEmpty {
+            measured("insertText.deferredReplaceTail.\(reason)", thresholdMs: slowHostThresholdMs) {
+                client.insertText(mutation.replacement, replacementRange: mutation.range)
+            }
+        }
+        session.visibleText = session.desiredText
+        session.lastCaretLocation = session.desiredEndLocation
+        session.lastCaretAuthoritative = false
+        expectedSelectedLocation = session.desiredEndLocation
+        deferredToken = session
+    }
+
+    private func deferredTailMutation(from session: DeferredTokenSession) -> DeferredTailMutation {
+        var visibleIndex = session.visibleText.startIndex
+        var desiredIndex = session.desiredText.startIndex
+        while visibleIndex != session.visibleText.endIndex,
+              desiredIndex != session.desiredText.endIndex,
+              session.visibleText[visibleIndex] == session.desiredText[desiredIndex]
+        {
+            session.visibleText.formIndex(after: &visibleIndex)
+            session.desiredText.formIndex(after: &desiredIndex)
+        }
+
+        let prefixLength = session.visibleText[..<visibleIndex].utf16.count
+        let replacementRange = NSRange(
+            location: session.baseLocation + prefixLength,
+            length: session.visibleText[visibleIndex...].utf16.count
+        )
+        return DeferredTailMutation(
+            range: replacementRange,
+            replacement: String(session.desiredText[desiredIndex...])
+        )
     }
 
     private func desiredTokenText(
@@ -536,19 +653,9 @@ final class TypeflowInputController: IMKInputController {
                 session.visibleText = session.desiredText
                 session.lastCaretLocation = caret
                 session.lastCaretAuthoritative = selection.authoritative
-                session.pendingHostMutationStartCaret = nil
-                session.pendingHostMutationReadyCaret = nil
                 expectedSelectedLocation = caret
                 deferredToken = session
                 return .alreadySatisfied
-            } else if session.isWaitingForHostMutation(caret: caret) {
-                session.lastCaretLocation = caret
-                session.lastCaretAuthoritative = selection.authoritative
-                deferredToken = session
-                logger.debug(
-                    "deferredReplace wait reason=\(reason, privacy: .public) caret=\(caret, privacy: .private) expected=\(session.visibleEndLocation, privacy: .private)"
-                )
-                return .waitingForCaret
             } else {
                 session.lastCaretLocation = caret
                 session.lastCaretAuthoritative = selection.authoritative
@@ -560,20 +667,9 @@ final class TypeflowInputController: IMKInputController {
             }
         }
 
-        let range = NSRange(location: session.baseLocation, length: session.visibleText.utf16.count)
-        measured("insertText.deferredReplace.\(reason)", thresholdMs: slowHostThresholdMs) {
-            client.insertText(session.desiredText, replacementRange: range)
-        }
-        session.visibleText = session.desiredText
-        session.lastCaretLocation = session.desiredEndLocation
-        session.lastCaretAuthoritative = false
-        session.pendingHostMutationStartCaret = nil
-        session.pendingHostMutationReadyCaret = nil
-        session.retryCount = 0
-        expectedSelectedLocation = session.desiredEndLocation
-        deferredToken = session
+        applyDeferredTailMutation(session: session, client: client, reason: reason)
         logger.debug(
-            "action=deferredReplace reason=\(reason, privacy: .public) visibleLength=\(session.visibleText.utf16.count, privacy: .private)"
+            "action=deferredReplaceTail reason=\(reason, privacy: .public) visibleLength=\(session.visibleText.utf16.count, privacy: .private)"
         )
         return .applied
     }
@@ -588,7 +684,6 @@ final class TypeflowInputController: IMKInputController {
         }
 
         session.applyGeneration &+= 1
-        session.retryCount = 0
         let generation = session.applyGeneration
         deferredToken = session
 
@@ -620,13 +715,10 @@ final class TypeflowInputController: IMKInputController {
             return
         }
 
-        let selected = measured("selectedRange.deferred", thresholdMs: slowCallThresholdMs) {
-            client.selectedRange()
-        }
         let selection = HostSelectionSnapshot(
-            selected: selected,
-            bypassesTextMutation: selected.location == NSNotFound || selected.length != 0,
-            authoritative: true
+            selected: NSRange(location: session.visibleEndLocation, length: 0),
+            bypassesTextMutation: false,
+            authoritative: false
         )
         let attempt = applyDeferredReplacementNow(
             client: client,
@@ -640,32 +732,6 @@ final class TypeflowInputController: IMKInputController {
             engine?.resetToken()
             resetDeferredSession(reason: "deferredCaretMismatch")
             return
-        case .waitingForCaret:
-            break
-        }
-
-        guard var current = deferredToken,
-              current.clientID == clientID,
-              current.applyGeneration == generation,
-              current.needsReplacement,
-              current.retryCount < maxDeferredReplacementRetryCount
-        else {
-            return
-        }
-
-        current.retryCount += 1
-        deferredToken = current
-        DispatchQueue.main.async { [weak self, weak clientObject = client as AnyObject] in
-            guard let self,
-                  let client = clientObject as? IMKTextInput
-            else {
-                return
-            }
-            self.applyScheduledDeferredReplacement(
-                client: client,
-                generation: generation,
-                reason: reason
-            )
         }
     }
 
@@ -739,8 +805,6 @@ final class TypeflowInputController: IMKInputController {
 
         session.lastCaretLocation = caretAfterBackspace
         session.lastCaretAuthoritative = false
-        session.pendingHostMutationStartCaret = selection.selected.location
-        session.pendingHostMutationReadyCaret = caretAfterBackspace
         deferredToken = session
         logger.debug(
             "action=deferredBackspace visibleLength=\(session.visibleText.utf16.count, privacy: .private) pending=\(session.needsReplacement, privacy: .private)"
@@ -837,10 +901,14 @@ final class TypeflowInputController: IMKInputController {
         let layout: TypeflowLayout
     }
 
+    private struct DeferredTailMutation {
+        let range: NSRange
+        let replacement: String
+    }
+
     private enum DeferredReplacementAttempt {
         case applied
         case alreadySatisfied
-        case waitingForCaret
         case abandoned
         case notNeeded
 
@@ -858,10 +926,7 @@ final class TypeflowInputController: IMKInputController {
         var layout: TypeflowLayout
         var lastCaretLocation: Int
         var lastCaretAuthoritative: Bool
-        var pendingHostMutationStartCaret: Int?
-        var pendingHostMutationReadyCaret: Int?
         var applyGeneration: UInt64
-        var retryCount: Int
 
         var visibleEndLocation: Int {
             baseLocation + visibleText.utf16.count
@@ -875,17 +940,8 @@ final class TypeflowInputController: IMKInputController {
             !visibleText.isEmpty && visibleText != desiredText
         }
 
-        func isWaitingForHostMutation(caret: Int) -> Bool {
-            guard let start = pendingHostMutationStartCaret,
-                  let ready = pendingHostMutationReadyCaret,
-                  caret != ready
-            else {
-                return false
-            }
-
-            let lowerBound = min(start, ready)
-            let upperBound = max(start, ready)
-            return (lowerBound...upperBound).contains(caret)
+        var isRendered: Bool {
+            !visibleText.isEmpty && visibleText == desiredText
         }
     }
 
