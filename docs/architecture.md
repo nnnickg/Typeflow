@@ -166,8 +166,9 @@ C ABI for the macOS bundle. Exports:
   where Swift passes a bounded committed-text tail and Rust owns token suffix
   extraction.
 
-Header at `crates/typeflow-ffi/include/typeflow.h`. Builds as both `staticlib`
-and `cdylib` (`libtypeflow_ffi.dylib`).
+Header at `crates/typeflow-ffi/include/typeflow.h` is generated with cbindgen
+from `crates/typeflow-ffi/src/lib.rs` and checked in CI. Builds as both
+`staticlib` and `cdylib` (`libtypeflow_ffi.dylib`).
 
 `TfEvent` supports physical-key letters, literals by Unicode codepoint,
 backspace, and end-token boundaries. The 4096-byte fixed `replace_text` buffer
@@ -181,6 +182,8 @@ Staticlib bridge smoke plus the current IMKInputController bundle.
 Current files:
 
 - `Makefile` builds `libtypeflow_ffi.a`, compiles Swift, and runs the smoke.
+- `Package.swift` defines the SwiftPM `TypeflowKit`, staticlib smoke,
+  registration helper, and input-method executable targets.
 - `TypeflowFFI/include/module.modulemap` exposes the C ABI to Swift.
 - `TypeflowFFI/include/typeflow_shim.h` includes the canonical Rust header and
   adds tiny C helpers for zeroed actions/events.

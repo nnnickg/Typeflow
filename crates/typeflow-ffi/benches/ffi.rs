@@ -1,3 +1,5 @@
+#![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+
 use std::ffi::CString;
 use std::hint::black_box;
 

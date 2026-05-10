@@ -98,6 +98,11 @@ public struct TypeflowHostInputPolicy {
     public let flags: UInt32
     public let reason: UInt8
 
+    public init(flags: UInt32, reason: UInt8) {
+        self.flags = flags
+        self.reason = reason
+    }
+
     public var secureInput: Bool {
         flags & UInt32(TF_HOST_POLICY_SECURE_INPUT) != 0
     }
@@ -146,7 +151,7 @@ public final class TypeflowHostConfig {
         return TypeflowHostConfig(raw: loaded)
     }
 
-    static func load(environment: [String: String]) throws -> TypeflowHostConfig {
+    public static func load(environment: [String: String]) throws -> TypeflowHostConfig {
         let configPath = environment["TYPEFLOW_CONFIG"].flatMap(nonEmpty)
         let home = environment["HOME"].flatMap(nonEmpty)
         let dataDirectory = environment["TYPEFLOW_DATA_DIR"].flatMap(nonEmpty)

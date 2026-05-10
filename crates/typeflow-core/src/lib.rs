@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::expect_used, clippy::panic, clippy::unwrap_used))]
+
 pub mod data;
 mod engine;
 mod keyboard;
@@ -23,6 +25,7 @@ mod tests {
         ScoreAnalysis,
     };
     use crate::data::LanguageBundle;
+    use proptest::prelude::*;
 
     fn fixture_bundle() -> LanguageBundle {
         LanguageBundle::for_testing(
@@ -68,6 +71,46 @@ mod tests {
 
     fn engine_with_config(config: EngineConfig) -> Engine {
         Engine::new(config, fixture_bundle())
+    }
+
+    fn physical_key_strategy() -> impl Strategy<Value = PhysicalKey> {
+        (0u8..PhysicalKey::COUNT as u8).prop_map(|index| {
+            PhysicalKey::from_index(index).expect("generated physical key index must be valid")
+        })
+    }
+
+    fn letter_event_strategy() -> impl Strategy<Value = LetterEvent> {
+        (physical_key_strategy(), any::<bool>()).prop_map(|(physical_key, shift)| LetterEvent {
+            physical_key,
+            shift,
+        })
+    }
+
+    fn input_event_strategy() -> impl Strategy<Value = InputEvent> {
+        prop_oneof![
+            8 => letter_event_strategy().prop_map(InputEvent::Letter),
+            3 => any::<char>().prop_map(InputEvent::Literal),
+            2 => Just(InputEvent::Backspace),
+            2 => Just(InputEvent::EndToken),
+            1 => Just(InputEvent::HostBypass),
+        ]
+    }
+
+    fn assert_finite_score(score: ScoreAnalysis) {
+        for value in [
+            score.english.total,
+            score.english.bigram,
+            score.english.trigram,
+            score.english.dict_exact_bonus,
+            score.english.dict_prefix_bonus,
+            score.secondary.total,
+            score.secondary.bigram,
+            score.secondary.trigram,
+            score.secondary.dict_exact_bonus,
+            score.secondary.dict_prefix_bonus,
+        ] {
+            assert!(value.is_finite(), "score component must stay finite");
+        }
     }
 
     #[test]
@@ -153,7 +196,7 @@ mod tests {
         ]) {
             engine.process(InputEvent::Letter(event));
         }
-        let score = engine.score(&engine.token_candidates());
+        let score = engine.score(engine.token_candidates());
         assert!(
             score.secondary.total > score.english.total,
             "expected ukrainian > english, got {:?} vs {:?}",
@@ -177,7 +220,7 @@ mod tests {
         ]) {
             engine.process(InputEvent::Letter(event));
         }
-        let score = engine.score(&engine.token_candidates());
+        let score = engine.score(engine.token_candidates());
         assert!(score.english.total > score.secondary.total);
     }
 
@@ -198,14 +241,14 @@ mod tests {
             engine.process(InputEvent::Letter(event));
             assert_scores_equal(
                 engine.token_score(),
-                engine.score(&engine.token_candidates()),
+                engine.score(engine.token_candidates()),
             );
         }
 
         engine.process(InputEvent::Backspace);
         assert_scores_equal(
             engine.token_score(),
-            engine.score(&engine.token_candidates()),
+            engine.score(engine.token_candidates()),
         );
     }
 
@@ -340,7 +383,7 @@ mod tests {
         }
         assert_eq!(engine.current_layout(), Layout::Secondary);
 
-        let score = engine.score(&engine.token_candidates());
+        let score = engine.score(engine.token_candidates());
         assert!(score.secondary.exact_count > 0);
     }
 
@@ -672,6 +715,64 @@ mod tests {
         assert_eq!(fast.current_layout(), full.current_layout());
     }
 
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        #[test]
+        fn action_only_path_matches_full_output_for_generated_events(
+            events in prop::collection::vec(input_event_strategy(), 0..256)
+        ) {
+            let mut full = engine();
+            let mut fast = engine();
+
+            for event in events {
+                let full_action = {
+                    let output = full.process(event);
+                    output.action.clone()
+                };
+                let fast_action = fast.process_action(event);
+
+                prop_assert_eq!(fast_action, full_action);
+                prop_assert_eq!(fast.current_layout(), full.current_layout());
+                prop_assert_eq!(fast.token_len(), full.token_len());
+                prop_assert_eq!(fast.token_candidates(), full.token_candidates());
+            }
+        }
+
+        #[test]
+        fn generated_events_preserve_engine_state_invariants(
+            events in prop::collection::vec(input_event_strategy(), 0..512)
+        ) {
+            let mut engine = engine();
+            let max_token_len = engine.config().max_token_len;
+
+            for event in events {
+                let action = engine.process_action(event);
+                let token_len = engine.token_len();
+                let candidates = engine.token_candidates();
+
+                prop_assert!(token_len <= max_token_len);
+                prop_assert_eq!(candidates.english.chars().count(), token_len);
+                prop_assert_eq!(candidates.secondary.chars().count(), token_len);
+
+                match action {
+                    Action::ReplaceToken {
+                        old_len,
+                        replacement,
+                        ..
+                    } => {
+                        prop_assert!(old_len <= max_token_len);
+                        prop_assert!(!replacement.is_empty());
+                        prop_assert!(replacement.chars().count() <= max_token_len);
+                    }
+                    Action::Keep | Action::Commit(_) | Action::ResetToken => {}
+                }
+
+                assert_finite_score(engine.token_score());
+            }
+        }
+    }
+
     #[test]
     fn language_bundle_reverse_maps_secondary_characters() {
         let engine = engine();
@@ -767,11 +868,11 @@ mod tests {
             engine.process(InputEvent::Letter(event));
         }
 
-        let output = engine.force_switch_token();
+        let action = engine.force_switch_token().action;
 
         assert_eq!(engine.current_layout(), Layout::Secondary);
         assert_eq!(
-            output.action,
+            action,
             Action::ReplaceToken {
                 old_len: 4,
                 replacement: "ензу".to_owned(),

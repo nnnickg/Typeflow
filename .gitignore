@@ -11,6 +11,8 @@ target/
 # macOS/Xcode build output
 /DerivedData/
 /build/
+/macos/.build/
+/macos/.swiftpm/
 /macos/build/
 *.dSYM/
 *.profraw

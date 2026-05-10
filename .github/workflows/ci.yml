@@ -43,11 +43,17 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
 
+      - name: Fuzz Format
+        run: cargo fmt --manifest-path fuzz/Cargo.toml --all --check
+
       - name: Test
         run: cargo test --workspace --locked
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Fuzz Target Build
+        run: cargo build --manifest-path fuzz/Cargo.toml --bins --locked
 
       - name: Release Test
         run: cargo test --release --workspace --locked
@@ -66,6 +72,10 @@ jobs:
         if: runner.os == 'macOS'
         run: make -C macos bundle CARGO_TARGET_DIR="$PWD/target" BUILD_DIR="$RUNNER_TEMP/typeflow-macos-build"
 
+      - name: macOS SwiftPM Build
+        if: runner.os == 'macOS'
+        run: make -C macos swift-package CARGO_TARGET_DIR="$PWD/target"
+
       - name: Release Artifact Smoke
         run: |
           test -x target/release/typeflow
@@ -82,7 +92,7 @@ jobs:
           target/release/typeflow --config /tmp/typeflow-empty.toml eval --generated 500
 
   security:
-    name: Security
+    name: Security + ABI
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -107,8 +117,47 @@ jobs:
       - name: Install cargo-audit
         run: cargo install cargo-audit --version 0.22.1 --locked
 
+      - name: Install cbindgen
+        run: cargo install cbindgen --version 0.29.2 --locked
+
       - name: Dependency Policy
         run: cargo deny check
 
       - name: RustSec Audit
         run: cargo audit --deny warnings
+
+      - name: FFI Header Check
+        run: cbindgen --quiet --config cbindgen.toml --crate typeflow-ffi --output crates/typeflow-ffi/include/typeflow.h --verify
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          rustup show
+          rustup component add llvm-tools-preview
+          cargo --version
+          rustc --version
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2.8.1
+        with:
+          cache-all-crates: "true"
+
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --version 0.8.6 --locked
+
+      - name: Generate LCOV
+        run: cargo llvm-cov --workspace --locked --lcov --output-path lcov.info
+
+      - name: Upload LCOV
+        uses: actions/upload-artifact@v4
+        with:
+          name: lcov
+          path: lcov.info

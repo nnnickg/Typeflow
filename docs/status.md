@@ -54,7 +54,10 @@ runs), processes everything, and writes six artifacts to
 `crates/typeflow-core/data/`. Those artifacts are compile-time inputs embedded
 into release binaries with `include_bytes!`. The embedded pair is English plus
 Ukrainian; other secondary languages use the external language-pack workflow.
-The raw subtitle cache is never needed at runtime.
+N-gram counting batches lines across worker threads and counts packed `u64`
+bigram/trigram keys, avoiding per-observation string allocation; strings are
+only materialized when writing the artifact. The raw subtitle cache is never
+needed at runtime.
 
 `cargo run --release -p typeflow-data -- build-pack <spec.toml> --out <dir>`
 builds an external pack directory (`pack.toml`, `ngrams.bin`, `dict.fst`,
@@ -90,10 +93,11 @@ cargo bench -p typeflow-ffi
 
 ### FFI (typeflow-ffi) — surface ready
 
-Header at `crates/typeflow-ffi/include/typeflow.h`. Builds as `staticlib`,
-`cdylib`, and `rlib`. `macos/` has a Swift staticlib smoke target that links
-`libtypeflow_ffi.a`, calls the C ABI, and verifies `ghsdbn -> привіт`. Release
-hosts should use `typeflow_engine_new_embedded()` or
+Header at `crates/typeflow-ffi/include/typeflow.h`, generated from Rust with
+`cbindgen --config cbindgen.toml --crate typeflow-ffi`. CI verifies the checked-in
+header is not stale. Builds as `staticlib`, `cdylib`, and `rlib`. `macos/` has a
+Swift staticlib smoke target that links `libtypeflow_ffi.a`, calls the C ABI, and
+verifies `ghsdbn -> привіт`. Release hosts should use `typeflow_engine_new_embedded()` or
 `typeflow_engine_new_embedded_with_config(...)`.
 `typeflow_engine_new_from_data_dir(...)` is a dev override for testing rebuilt
 model artifacts. `typeflow_engine_new_from_pack_dir(...)` loads embedded English
@@ -108,11 +112,19 @@ plus one installed secondary language pack. FFI exposes `TF_EVENT_LITERAL`,
 Swift with the local module map, links against `libtypeflow_ffi.a`, and runs a
 host-buffer smoke test.
 
+`make -C macos swift-package` builds the SwiftPM target graph: `TypeflowKit` as
+a library, the SwiftPM staticlib smoke executable, the TIS register helper, and
+the input-method executable linked against `libtypeflow_ffi.a`.
+
 `make -C macos bundle` builds and ad-hoc signs `Typeflow.app`. The executable
 starts an `IMKServer` from `Info.plist`, exposes `TypeflowInputController`,
 receives raw `NSEvent` keyDown/flagsChanged events, maps ANSI keycodes to Rust
 physical key indexes, calls the FFI, and applies
 `TypeflowAction` through `IMKTextInput.insertText(_:replacementRange:)`.
+
+`make -C macos release-universal` builds arm64 and x86_64 Rust/Swift artifacts,
+merges them with `lipo`, signs with hardened runtime when a Developer ID
+identity is provided, and can notarize via `xcrun notarytool`.
 Rust now resolves the macOS host config through `TfHostConfig`: engine knobs,
 `language.secondary`, `packs.directory`, `data.directory`, environment
 overrides, `apps.disable_bundle_ids`, and `apps.disable_auto_bundle_ids`. Swift
@@ -160,6 +172,24 @@ The host also resets token state when the input client changes, selected text
 is active, or the caret location no longer matches the previous action's
 predicted location.
 
+The input method logs slow host-path timings under the `Performance` category
+for `processKey`, host policy/AX refresh, `selectedRange`, visible-tail reads,
+FFI calls, and `insertText`. To watch them live:
+
+```sh
+log stream --style compact --predicate 'subsystem == "io.github.nnnickg.typeflow.inputmethod.Typeflow" && category == "Performance"'
+```
+
+By default only calls over their local threshold are logged. To log every
+measured call for a short profiling session:
+
+```sh
+launchctl setenv TYPEFLOW_PERF_LOG_ALL 1
+pkill -x Typeflow
+```
+
+Unset it with `launchctl unsetenv TYPEFLOW_PERF_LOG_ALL` and restart Typeflow.
+
 Files:
 
 - `macos/TypeflowFFI/include/module.modulemap`
@@ -174,16 +204,30 @@ Files:
 - `macos/Resources/Info.plist`
 - `macos/Resources/PkgInfo`
 - `macos/Resources/Typeflow.png`
+- `macos/Package.swift`
 - `macos/Makefile`
 
 ### CI — enabled
 
 `.github/workflows/ci.yml` runs fmt, workspace tests, clippy with warnings
-denied, release workspace tests, benchmark compilation, release CLI/FFI build,
-Swift staticlib smoke, signed IMK bundle build, and release CLI smoke against
-embedded Ukrainian on macOS.
+denied, fuzz harness formatting/build checks, release workspace tests, benchmark
+compilation, release CLI/FFI build, dependency deny/audit checks, generated FFI
+header verification, LCOV coverage generation, Swift staticlib smoke, SwiftPM
+builds, signed IMK bundle build, and release CLI smoke against embedded
+Ukrainian on macOS.
+Workspace lints deny `dbg!`, `todo!`, `unimplemented!`, `unwrap`, `expect`, and
+`panic` in production targets; tests and benchmarks explicitly allow panic-style
+assertion helpers where they are the right shape.
 
 ## Not Done Yet
+
+### Supply-chain review provenance
+
+CI now runs `cargo-deny` and `cargo-audit`, but `cargo-vet` is not configured.
+Do not add a fake vet policy full of blanket exemptions just to make a badge
+green. If vetting becomes a release gate, the next step is to initialize
+`cargo-vet`, import trusted third-party audits where available, and explicitly
+review/certify the remaining direct dependencies.
 
 ### Broader macOS compatibility pass
 
@@ -269,8 +313,8 @@ If you're building the IMK bundle:
 - `docs/artifact-format.md` — embedded artifact and external pack compatibility
   policy.
 - `docs/panic-unsafe-audit.md` — FFI unsafe boundary and panic/indexing audit.
-- `docs/release-verification.md` — release artifact checks and the dylib
-  install-name caveat the packaging script must handle.
+- `docs/release-verification.md` — release artifact checks, universal package
+  signing/notarization, and the standalone dylib install-name caveat.
 - `macos/Sources/TypeflowKit/Engine.swift` — Swift wrapper already calling the
   staticlib through the C ABI.
 - `macos/Sources/TypeflowInputMethod/InputController.swift` — current IMK

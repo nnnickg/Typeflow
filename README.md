@@ -111,11 +111,23 @@ typeflow model
 cargo bench -p typeflow-core
 cargo bench -p typeflow-ffi
 
+# Compile fuzz harnesses for artifact and FFI abuse testing.
+cargo build --manifest-path fuzz/Cargo.toml --bins --locked
+
 # Verify Swift can link the Rust staticlib and call the C ABI.
 make -C macos smoke
 
+# Verify the SwiftPM library/executable targets.
+make -C macos swift-package
+
+# Verify the checked-in C header matches the Rust FFI declarations.
+cbindgen --quiet --config cbindgen.toml --crate typeflow-ffi --output crates/typeflow-ffi/include/typeflow.h --verify
+
 # Build and ad-hoc sign the minimal IMK app bundle.
 make -C macos bundle
+
+# Build a universal, hardened-runtime macOS release zip.
+make -C macos release-universal CODESIGN_IDENTITY="Developer ID Application: <name> (<team>)"
 
 # Install, register, and enable the input method for the current user.
 make -C macos install-user
@@ -173,8 +185,10 @@ exclude_bundle_ids = [
 cargo test --workspace
 ```
 
-CI runs fmt, tests, clippy, release tests, release build, and release CLI smoke
-on macOS for every push to `main` and every pull request.
+CI runs Linux and macOS Rust checks, fuzz target builds, dependency security
+checks, FFI header verification, LCOV coverage generation, Swift staticlib and
+SwiftPM builds, the IMK bundle build, and release CLI smoke for every push to
+`main` and every pull request.
 
 ## License
 

@@ -3,6 +3,7 @@ use std::env;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
+use std::thread;
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
@@ -46,6 +47,11 @@ const EN_PLAINTEXT_BUDGET_BYTES: u64 = 200 * 1024 * 1024;
 const UK_PLAINTEXT_BUDGET_BYTES: u64 = u64::MAX;
 
 const DICT_TOP_K: usize = 500_000;
+const NGRAM_BATCH_LINES: usize = 8192;
+const NGRAM_BATCH_BYTES: usize = 8 * 1024 * 1024;
+const TRIGRAM_CHAR_MASK: u64 = (1 << 21) - 1;
+
+type NgramCounts = HashMap<u64, u64>;
 
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -837,49 +843,161 @@ fn open_text_reader(path: &Path) -> Result<Box<dyn BufRead>> {
     Ok(Box::new(BufReader::with_capacity(1 << 20, file)))
 }
 
+fn count_normalized_ngrams(
+    line: &str,
+    normalizer: &Normalizer,
+    bigrams: &mut NgramCounts,
+    trigrams: &mut NgramCounts,
+) {
+    let mut previous_two: Option<char> = None;
+    let mut previous_one: Option<char> = None;
+
+    for character in line.chars() {
+        match normalizer.normalize(character) {
+            Some(letter) => {
+                if let Some(first) = previous_one {
+                    count_bigram(bigrams, first, letter);
+                }
+                if let (Some(first), Some(second)) = (previous_two, previous_one) {
+                    count_trigram(trigrams, first, second, letter);
+                }
+
+                previous_two = previous_one;
+                previous_one = Some(letter);
+            }
+            None => {
+                previous_two = None;
+                previous_one = None;
+            }
+        }
+    }
+}
+
+fn count_bigram(counts: &mut NgramCounts, first: char, second: char) {
+    *counts.entry(encode_bigram(first, second)).or_insert(0) += 1;
+}
+
+fn count_trigram(counts: &mut NgramCounts, first: char, second: char, third: char) {
+    *counts
+        .entry(encode_trigram(first, second, third))
+        .or_insert(0) += 1;
+}
+
+fn count_ngram_lines(
+    lines: &[String],
+    normalizer: &Normalizer,
+    worker_count: usize,
+) -> (NgramCounts, NgramCounts) {
+    let active_workers = worker_count.clamp(1, lines.len().max(1));
+    if active_workers == 1 {
+        let mut bigrams = HashMap::new();
+        let mut trigrams = HashMap::new();
+        for line in lines {
+            count_normalized_ngrams(line, normalizer, &mut bigrams, &mut trigrams);
+        }
+        return (bigrams, trigrams);
+    }
+
+    let chunk_size = lines.len().div_ceil(active_workers);
+    let partials = thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(active_workers);
+        for chunk in lines.chunks(chunk_size) {
+            handles.push(scope.spawn(move || {
+                let mut bigrams = HashMap::new();
+                let mut trigrams = HashMap::new();
+                for line in chunk {
+                    count_normalized_ngrams(line, normalizer, &mut bigrams, &mut trigrams);
+                }
+                (bigrams, trigrams)
+            }));
+        }
+
+        let mut partials = Vec::with_capacity(handles.len());
+        for handle in handles {
+            match handle.join() {
+                Ok(counts) => partials.push(counts),
+                Err(payload) => std::panic::resume_unwind(payload),
+            }
+        }
+        partials
+    });
+
+    let mut bigrams = HashMap::new();
+    let mut trigrams = HashMap::new();
+    for (batch_bigrams, batch_trigrams) in partials {
+        merge_ngram_counts(&mut bigrams, batch_bigrams);
+        merge_ngram_counts(&mut trigrams, batch_trigrams);
+    }
+    (bigrams, trigrams)
+}
+
+fn merge_ngram_counts(target: &mut NgramCounts, source: NgramCounts) {
+    for (key, count) in source {
+        *target.entry(key).or_insert(0) += count;
+    }
+}
+
+fn merge_ngram_batch(
+    batch: &mut Vec<String>,
+    normalizer: &Normalizer,
+    worker_count: usize,
+    bigrams: &mut NgramCounts,
+    trigrams: &mut NgramCounts,
+) {
+    if batch.is_empty() {
+        return;
+    }
+
+    let (batch_bigrams, batch_trigrams) = count_ngram_lines(batch, normalizer, worker_count);
+    merge_ngram_counts(bigrams, batch_bigrams);
+    merge_ngram_counts(trigrams, batch_trigrams);
+    batch.clear();
+}
+
 fn count_ngrams(
     corpus_path: &Path,
     normalizer: &Normalizer,
     plaintext_budget: u64,
-) -> Result<(HashMap<String, u64>, HashMap<String, u64>)> {
+) -> Result<(NgramCounts, NgramCounts)> {
+    let worker_count = thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1);
+
     eprintln!(
-        "   counting n-grams (budget {})...",
-        human_bytes(plaintext_budget)
+        "   counting n-grams (budget {}, workers {})...",
+        human_bytes(plaintext_budget),
+        worker_count
     );
 
     let started = Instant::now();
     let reader = open_text_reader(corpus_path)?;
 
-    let mut bigrams: HashMap<String, u64> = HashMap::new();
-    let mut trigrams: HashMap<String, u64> = HashMap::new();
+    let mut bigrams: NgramCounts = HashMap::new();
+    let mut trigrams: NgramCounts = HashMap::new();
     let mut bytes_seen: u64 = 0;
     let mut last_progress = Instant::now();
-    let mut window: Vec<char> = Vec::with_capacity(3);
+    let mut batch: Vec<String> = Vec::with_capacity(NGRAM_BATCH_LINES);
+    let mut batch_bytes: usize = 0;
 
     for line_result in reader.lines() {
         let line = line_result?;
         bytes_seen = bytes_seen.saturating_add(line.len() as u64 + 1);
+        batch_bytes = batch_bytes.saturating_add(line.len() + 1);
+        batch.push(line);
 
-        for character in line.chars() {
-            match normalizer.normalize(character) {
-                Some(letter) => {
-                    window.push(letter);
-                    if window.len() > 3 {
-                        window.remove(0);
-                    }
-                    if window.len() >= 2 {
-                        let bigram: String = window[window.len() - 2..].iter().collect();
-                        *bigrams.entry(bigram).or_insert(0) += 1;
-                    }
-                    if window.len() == 3 {
-                        let trigram: String = window.iter().collect();
-                        *trigrams.entry(trigram).or_insert(0) += 1;
-                    }
-                }
-                None => window.clear(),
-            }
+        if batch.len() >= NGRAM_BATCH_LINES
+            || batch_bytes >= NGRAM_BATCH_BYTES
+            || bytes_seen >= plaintext_budget
+        {
+            merge_ngram_batch(
+                &mut batch,
+                normalizer,
+                worker_count,
+                &mut bigrams,
+                &mut trigrams,
+            );
+            batch_bytes = 0;
         }
-        window.clear();
 
         if last_progress.elapsed().as_secs() >= 5 {
             eprintln!(
@@ -896,6 +1014,14 @@ fn count_ngrams(
         }
     }
 
+    merge_ngram_batch(
+        &mut batch,
+        normalizer,
+        worker_count,
+        &mut bigrams,
+        &mut trigrams,
+    );
+
     eprintln!(
         "      done in {:.1}s | {} processed",
         started.elapsed().as_secs_f32(),
@@ -907,8 +1033,8 @@ fn count_ngrams(
 
 fn compile_ngrams(
     language_tag: &str,
-    bigrams: HashMap<String, u64>,
-    trigrams: HashMap<String, u64>,
+    bigrams: NgramCounts,
+    trigrams: NgramCounts,
 ) -> Result<CompiledLanguageData> {
     if bigrams.is_empty() {
         bail!("corpus produced no bigrams; check alphabet/corpus");
@@ -931,7 +1057,7 @@ fn compile_ngrams(
         .into_iter()
         .map(|(key, count)| {
             let prob = (count as f32 + 1.0) / (bigram_total as f32 + bigram_v);
-            (key, prob.log10())
+            (decode_bigram(key), prob.log10())
         })
         .collect();
     bigrams_vec.sort_by(|a, b| a.0.cmp(&b.0));
@@ -940,7 +1066,7 @@ fn compile_ngrams(
         .into_iter()
         .map(|(key, count)| {
             let prob = (count as f32 + 1.0) / (trigram_total as f32 + trigram_v);
-            (key, prob.log10())
+            (decode_trigram(key), prob.log10())
         })
         .collect();
     trigrams_vec.sort_by(|a, b| a.0.cmp(&b.0));
@@ -952,6 +1078,35 @@ fn compile_ngrams(
         bigram_floor,
         trigram_floor,
     })
+}
+
+fn encode_bigram(first: char, second: char) -> u64 {
+    ((first as u64) << 32) | second as u64
+}
+
+fn encode_trigram(first: char, second: char, third: char) -> u64 {
+    ((first as u64) << 42) | ((second as u64) << 21) | third as u64
+}
+
+fn decode_bigram(key: u64) -> String {
+    let mut out = String::with_capacity(8);
+    push_scalar(&mut out, key >> 32);
+    push_scalar(&mut out, key & u32::MAX as u64);
+    out
+}
+
+fn decode_trigram(key: u64) -> String {
+    let mut out = String::with_capacity(12);
+    push_scalar(&mut out, key >> 42);
+    push_scalar(&mut out, (key >> 21) & TRIGRAM_CHAR_MASK);
+    push_scalar(&mut out, key & TRIGRAM_CHAR_MASK);
+    out
+}
+
+fn push_scalar(out: &mut String, value: u64) {
+    if let Some(character) = char::from_u32(value as u32) {
+        out.push(character);
+    }
 }
 
 fn write_ngram_artifact(path: &Path, value: &CompiledLanguageData) -> Result<()> {
@@ -1045,7 +1200,12 @@ fn human_bytes(bytes: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::Sha256;
+    use std::collections::HashMap;
+
+    use super::{
+        NgramCounts, Normalizer, Sha256, count_ngram_lines, count_normalized_ngrams, encode_bigram,
+        encode_trigram,
+    };
 
     #[test]
     fn sha256_matches_known_vectors() {
@@ -1062,5 +1222,43 @@ mod tests {
             abc.finalize_hex(),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
+    }
+
+    #[test]
+    fn normalized_ngram_counting_lowercases_and_resets_on_non_letters() {
+        let normalizer = Normalizer::ascii_letters();
+        let mut bigrams = HashMap::new();
+        let mut trigrams = HashMap::new();
+
+        count_normalized_ngrams("ABc de", &normalizer, &mut bigrams, &mut trigrams);
+
+        assert_eq!(bigram_count(&bigrams, 'a', 'b'), Some(&1));
+        assert_eq!(bigram_count(&bigrams, 'b', 'c'), Some(&1));
+        assert_eq!(bigram_count(&bigrams, 'd', 'e'), Some(&1));
+        assert_eq!(bigram_count(&bigrams, 'c', 'd'), None);
+        assert_eq!(trigram_count(&trigrams, 'a', 'b', 'c'), Some(&1));
+        assert_eq!(trigram_count(&trigrams, 'b', 'c', 'd'), None);
+    }
+
+    #[test]
+    fn line_batch_counting_merges_worker_results() {
+        let normalizer = Normalizer::ascii_letters();
+        let lines = vec!["abc".to_owned(), "bcd".to_owned()];
+
+        let (bigrams, trigrams) = count_ngram_lines(&lines, &normalizer, 2);
+
+        assert_eq!(bigram_count(&bigrams, 'a', 'b'), Some(&1));
+        assert_eq!(bigram_count(&bigrams, 'b', 'c'), Some(&2));
+        assert_eq!(bigram_count(&bigrams, 'c', 'd'), Some(&1));
+        assert_eq!(trigram_count(&trigrams, 'a', 'b', 'c'), Some(&1));
+        assert_eq!(trigram_count(&trigrams, 'b', 'c', 'd'), Some(&1));
+    }
+
+    fn bigram_count(counts: &NgramCounts, first: char, second: char) -> Option<&u64> {
+        counts.get(&encode_bigram(first, second))
+    }
+
+    fn trigram_count(counts: &NgramCounts, first: char, second: char, third: char) -> Option<&u64> {
+        counts.get(&encode_trigram(first, second, third))
     }
 }

@@ -1,19 +1,29 @@
 ROOT_DIR := $(abspath ..)
 CARGO_TARGET_DIR ?= $(ROOT_DIR)/target
 RUST_PROFILE ?= release
+SWIFT ?= xcrun swift
 SWIFTC ?= xcrun swiftc
 CODESIGN ?= codesign
 CODESIGN_IDENTITY ?= -
+CODESIGN_FLAGS ?=
 INPUT_METHODS_DIR ?= $(HOME)/Library/Input Methods
 
 ifeq ($(RUST_PROFILE),release)
 CARGO_PROFILE_FLAG := --release
 RUST_LIB_DIR := $(CARGO_TARGET_DIR)/release
 SWIFT_OPT_FLAGS := -O -whole-module-optimization
+SWIFT_PACKAGE_CONFIG := release
 else
 CARGO_PROFILE_FLAG :=
 RUST_LIB_DIR := $(CARGO_TARGET_DIR)/debug
 SWIFT_OPT_FLAGS := -Onone
+SWIFT_PACKAGE_CONFIG := debug
+endif
+
+ifeq ($(CODESIGN_IDENTITY),-)
+CODESIGN_RUNTIME_FLAGS :=
+else
+CODESIGN_RUNTIME_FLAGS := --options runtime --timestamp
 endif
 
 FFI_INCLUDE_DIR := $(abspath TypeflowFFI/include)
@@ -42,7 +52,7 @@ SWIFT_COMMON_FLAGS := $(SWIFT_OPT_FLAGS) -module-cache-path $(MODULE_CACHE_DIR) 
 RUST_LINK_FLAGS := -Xlinker -force_load -Xlinker $(RUST_STATICLIB)
 IMK_FRAMEWORK_FLAGS := -framework AppKit -framework Carbon -framework InputMethodKit
 
-.PHONY: all rust-staticlib smoke bundle install-user clean
+.PHONY: all rust-staticlib smoke swift-package bundle release-universal install-user clean
 
 all: smoke bundle
 
@@ -55,6 +65,11 @@ $(SMOKE_BIN): $(SMOKE_SOURCES) TypeflowFFI/include/module.modulemap TypeflowFFI/
 
 smoke: $(SMOKE_BIN)
 	$(SMOKE_BIN)
+
+swift-package: rust-staticlib
+	CARGO_TARGET_DIR=$(CARGO_TARGET_DIR) RUST_PROFILE=$(RUST_PROFILE) $(SWIFT) run --package-path . -c $(SWIFT_PACKAGE_CONFIG) typeflow-staticlib-smoke
+	CARGO_TARGET_DIR=$(CARGO_TARGET_DIR) RUST_PROFILE=$(RUST_PROFILE) $(SWIFT) build --package-path . -c $(SWIFT_PACKAGE_CONFIG) --product typeflow-register-input-source
+	CARGO_TARGET_DIR=$(CARGO_TARGET_DIR) RUST_PROFILE=$(RUST_PROFILE) $(SWIFT) build --package-path . -c $(SWIFT_PACKAGE_CONFIG) --product Typeflow
 
 $(REGISTER_BIN): $(REGISTER_SOURCES)
 	mkdir -p $(BUILD_DIR) $(MODULE_CACHE_DIR)
@@ -86,9 +101,12 @@ $(APP_EXECUTABLE): $(INPUT_METHOD_SOURCES) $(APP_INFO_PLIST) $(APP_INFO_PLIST_ST
 
 bundle: $(APP_EXECUTABLE) $(REGISTER_BIN)
 	plutil -p $(APP_BUNDLE)/Contents/Info.plist >/dev/null
-	$(CODESIGN) --force --sign "$(CODESIGN_IDENTITY)" $(APP_BUNDLE)
+	$(CODESIGN) --force --sign "$(CODESIGN_IDENTITY)" $(CODESIGN_RUNTIME_FLAGS) $(CODESIGN_FLAGS) $(APP_BUNDLE)
 	$(CODESIGN) --verify --strict --verbose=2 $(APP_BUNDLE)
 	file $(APP_EXECUTABLE)
+
+release-universal:
+	./scripts/package-universal.sh
 
 install-user: bundle $(REGISTER_BIN)
 	mkdir -p "$(INPUT_METHODS_DIR)"

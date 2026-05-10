@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::expect_used, clippy::panic, clippy::unwrap_used))]
+
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -203,9 +205,7 @@ fn cached_language_bundle(
 }
 
 fn embedded_bundle() -> Result<Arc<LanguageBundle>, String> {
-    cached_language_bundle("embedded".to_owned(), || {
-        LanguageBundle::embedded().map_err(|error| format!("load embedded data: {error}"))
-    })
+    LanguageBundle::embedded_shared().map_err(|error| format!("load embedded data: {error}"))
 }
 
 fn data_dir_bundle(path: &Path) -> Result<Arc<LanguageBundle>, String> {
@@ -1305,6 +1305,51 @@ pub unsafe extern "C" fn typeflow_engine_current_layout(engine: *mut TfEngine) -
         Some(engine) => layout_to_u8(engine.engine.current_layout()),
         None => TF_LAYOUT_ENGLISH,
     })
+}
+
+/// Returns the engine's current tracked token length.
+///
+/// This is the number of logical token characters currently tracked by the
+/// engine, not a byte count. It is intended for hosts that maintain a small
+/// mirror of committed token text to avoid expensive host text reads.
+///
+/// # Safety
+///
+/// `engine` must be null or a valid live pointer returned by any Typeflow constructor.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn typeflow_engine_token_len(engine: *mut TfEngine) -> usize {
+    ffi_guard(0, || match unsafe { engine.as_ref() } {
+        Some(engine) => engine.engine.token_len(),
+        None => 0,
+    })
+}
+
+/// Writes the current rendered token as a replacement action.
+///
+/// This lets hosts using marked text redraw the whole active composition after
+/// non-inserting token operations such as backspace. The returned replacement
+/// length is the current logical token length.
+///
+/// # Safety
+///
+/// `engine` must be null or a valid live pointer returned by any Typeflow
+/// constructor. `out_action` must be null or point to writable memory for one
+/// `TfAction`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn typeflow_engine_current_token(
+    engine: *mut TfEngine,
+    out_action: *mut TfAction,
+) {
+    ffi_guard_void(|| {
+        let Some(out) = (unsafe { out_action.as_mut() }) else {
+            return;
+        };
+        out.write(Action::Keep);
+        let Some(engine) = (unsafe { engine.as_ref() }) else {
+            return;
+        };
+        out.write(engine.engine.current_token_action());
+    });
 }
 
 /// Processes a single input event and writes the resulting action into `out_action`.

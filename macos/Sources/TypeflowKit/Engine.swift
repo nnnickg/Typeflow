@@ -41,7 +41,6 @@ public enum TypeflowAction: Equatable {
 
 public final class TypeflowEngine {
     private let raw: OpaquePointer
-    private var scratchAction = typeflow_ffi_empty_action()
     public let sourceDescription: String
 
     public init() throws {
@@ -78,6 +77,10 @@ public final class TypeflowEngine {
         }
     }
 
+    public var tokenLength: Int {
+        Int(typeflow_engine_token_len(raw))
+    }
+
     public static func defaultConfig() -> TfEngineConfig {
         var config = TfEngineConfig()
         typeflow_engine_default_config(&config)
@@ -112,27 +115,36 @@ public final class TypeflowEngine {
         try process(event: typeflow_ffi_host_bypass_event(modifiers | UInt8(TF_MOD_COMMAND)))
     }
 
+    public func currentToken() throws -> TypeflowAction {
+        try withFreshAction {
+            typeflow_engine_current_token(raw, $0)
+        }
+    }
+
     public func endToken() throws -> TypeflowAction {
         try process(event: typeflow_ffi_end_token_event())
     }
 
     public func forceSwitchToken() throws -> TypeflowAction {
-        typeflow_engine_force_switch_token(raw, &scratchAction)
-        return try Self.decode(action: &scratchAction)
+        try withFreshAction {
+            typeflow_engine_force_switch_token(raw, $0)
+        }
     }
 
     public func convertVisibleToken(_ token: String) throws -> TypeflowAction {
-        token.withCString {
-            typeflow_engine_convert_visible_token(raw, $0, &scratchAction)
+        try withFreshAction { action in
+            token.withCString {
+                typeflow_engine_convert_visible_token(raw, $0, action)
+            }
         }
-        return try Self.decode(action: &scratchAction)
     }
 
     public func convertVisibleTail(_ tail: String) throws -> TypeflowAction {
-        tail.withCString {
-            typeflow_engine_convert_visible_tail(raw, $0, &scratchAction)
+        try withFreshAction { action in
+            tail.withCString {
+                typeflow_engine_convert_visible_tail(raw, $0, action)
+            }
         }
-        return try Self.decode(action: &scratchAction)
     }
 
     public func replaceVisiblePrefix(
@@ -141,17 +153,18 @@ public final class TypeflowEngine {
         modifiers: UInt8,
         targetLayout: TypeflowLayout
     ) throws -> TypeflowAction {
-        prefix.withCString {
-            typeflow_engine_replace_visible_prefix_with_key(
-                raw,
-                $0,
-                physicalKey,
-                modifiers,
-                targetLayout.rawValue,
-                &scratchAction
-            )
+        try withFreshAction { action in
+            prefix.withCString {
+                typeflow_engine_replace_visible_prefix_with_key(
+                    raw,
+                    $0,
+                    physicalKey,
+                    modifiers,
+                    targetLayout.rawValue,
+                    action
+                )
+            }
         }
-        return try Self.decode(action: &scratchAction)
     }
 
     public func replaceVisibleTail(
@@ -160,22 +173,32 @@ public final class TypeflowEngine {
         modifiers: UInt8,
         targetLayout: TypeflowLayout
     ) throws -> TypeflowAction {
-        tail.withCString {
-            typeflow_engine_replace_visible_tail_with_key(
-                raw,
-                $0,
-                physicalKey,
-                modifiers,
-                targetLayout.rawValue,
-                &scratchAction
-            )
+        try withFreshAction { action in
+            tail.withCString {
+                typeflow_engine_replace_visible_tail_with_key(
+                    raw,
+                    $0,
+                    physicalKey,
+                    modifiers,
+                    targetLayout.rawValue,
+                    action
+                )
+            }
         }
-        return try Self.decode(action: &scratchAction)
     }
 
     private func process(event: TfEvent) throws -> TypeflowAction {
-        typeflow_engine_process(raw, event, &scratchAction)
-        return try Self.decode(action: &scratchAction)
+        try withFreshAction {
+            typeflow_engine_process(raw, event, $0)
+        }
+    }
+
+    private func withFreshAction(
+        _ call: (UnsafeMutablePointer<TfAction>) -> Void
+    ) throws -> TypeflowAction {
+        var action = typeflow_ffi_empty_action()
+        call(&action)
+        return try Self.decode(action: &action)
     }
 
     private static func decode(action: inout TfAction) throws -> TypeflowAction {

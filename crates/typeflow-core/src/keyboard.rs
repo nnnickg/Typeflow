@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::data::LanguageBundle;
 use crate::{Layout, LayoutCandidates};
 
@@ -149,6 +151,7 @@ impl PhysicalKey {
 pub struct KeyboardMap {
     unshifted: [char; PhysicalKey::COUNT],
     shifted: [char; PhysicalKey::COUNT],
+    lookup: HashMap<char, LetterEvent>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -210,7 +213,11 @@ impl std::error::Error for KeyboardMapError {}
 
 impl KeyboardMap {
     pub fn new(unshifted: [char; PhysicalKey::COUNT], shifted: [char; PhysicalKey::COUNT]) -> Self {
-        Self { unshifted, shifted }
+        Self {
+            unshifted,
+            shifted,
+            lookup: Self::build_lookup(&unshifted, &shifted),
+        }
     }
 
     pub fn from_rows(unshifted: &str, shifted: &str) -> Result<Self, KeyboardMapError> {
@@ -249,25 +256,35 @@ impl KeyboardMap {
 
     pub fn letter_event_from_char(&self, value: char) -> Option<LetterEvent> {
         let lower = value.to_lowercase().next().unwrap_or(value);
-        for index in 0..PhysicalKey::COUNT {
-            let Some(key) = PhysicalKey::from_index(index as u8) else {
-                continue;
-            };
-            if self.unshifted[index] == lower {
-                return Some(LetterEvent {
-                    physical_key: key,
-                    shift: value.is_uppercase(),
-                });
+        if let Some(mut event) = self.lookup.get(&lower).copied() {
+            if !event.shift {
+                event.shift = value.is_uppercase();
             }
-            if self.shifted[index] == value {
-                return Some(LetterEvent {
-                    physical_key: key,
-                    shift: true,
-                });
-            }
+            return Some(event);
         }
 
-        None
+        self.lookup.get(&value).copied()
+    }
+
+    fn build_lookup(
+        unshifted: &[char; PhysicalKey::COUNT],
+        shifted: &[char; PhysicalKey::COUNT],
+    ) -> HashMap<char, LetterEvent> {
+        let mut lookup = HashMap::with_capacity(PhysicalKey::COUNT * 2);
+        for index in 0..PhysicalKey::COUNT {
+            let Some(physical_key) = PhysicalKey::from_index(index as u8) else {
+                continue;
+            };
+            lookup.entry(unshifted[index]).or_insert(LetterEvent {
+                physical_key,
+                shift: false,
+            });
+            lookup.entry(shifted[index]).or_insert(LetterEvent {
+                physical_key,
+                shift: true,
+            });
+        }
+        lookup
     }
 }
 

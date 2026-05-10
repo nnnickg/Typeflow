@@ -5,6 +5,7 @@ use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::str;
+use std::sync::{Arc, OnceLock};
 
 use fst::{IntoStreamer, Streamer};
 use serde::{Deserialize, Serialize};
@@ -938,6 +939,23 @@ impl From<KeyboardMapError> for BundleError {
 }
 
 impl LanguageBundle {
+    pub fn embedded_shared() -> Result<Arc<Self>, BundleError> {
+        static EMBEDDED_LANGUAGE_BUNDLE: OnceLock<Arc<LanguageBundle>> = OnceLock::new();
+
+        if let Some(bundle) = EMBEDDED_LANGUAGE_BUNDLE.get() {
+            return Ok(Arc::clone(bundle));
+        }
+
+        let bundle = Arc::new(Self::embedded()?);
+        if EMBEDDED_LANGUAGE_BUNDLE.set(Arc::clone(&bundle)).is_ok() {
+            Ok(bundle)
+        } else if let Some(existing) = EMBEDDED_LANGUAGE_BUNDLE.get() {
+            Ok(Arc::clone(existing))
+        } else {
+            Ok(bundle)
+        }
+    }
+
     /// Loads the language bundle embedded into the binary at compile time.
     ///
     /// The raw subtitle/frequency downloads are build-time inputs only. Runtime code should

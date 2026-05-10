@@ -58,6 +58,23 @@ Expected:
 staticlib smoke: ghsdbn -> привіт
 ```
 
+## macOS SwiftPM Build
+
+This verifies the Swift library/executable target graph outside the Makefile's
+single-module `swiftc` compile path. It builds `TypeflowKit`, runs the SwiftPM
+staticlib smoke executable, and builds the register helper plus input-method
+executable:
+
+```sh
+make -C macos swift-package
+```
+
+Expected:
+
+- `typeflow-staticlib-smoke` prints `staticlib smoke: ghsdbn -> привіт`.
+- `typeflow-register-input-source` builds as a SwiftPM executable.
+- `Typeflow` builds as a SwiftPM executable linked against `libtypeflow_ffi.a`.
+
 ## macOS IMK Bundle Build
 
 This verifies the input-method app bundle compiles, has a valid plist, has a
@@ -74,10 +91,47 @@ Expected:
 - `build/Typeflow.app/Contents/Resources/Typeflow.icns` exists for Finder/Dock.
 - `build/Typeflow.app/Contents/Resources/Typeflow.tiff` exists for TIS/input
   source menus.
-- `build/Typeflow.app/Contents/MacOS/Typeflow` is an arm64 Mach-O executable on
-  Apple Silicon.
+- `build/Typeflow.app/Contents/MacOS/Typeflow` is a Mach-O executable for the
+  local build host architecture.
 - `build/typeflow-register-input-source` compiles.
 - `codesign --verify --strict` passes.
+
+## macOS Universal Release Package
+
+The release packaging path builds separate Rust and Swift artifacts for arm64
+and x86_64, merges them with `lipo`, signs the app bundle, and writes a zip:
+
+```sh
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+make -C macos release-universal CODESIGN_IDENTITY="Developer ID Application: <name> (<team>)"
+```
+
+Expected:
+
+- `macos/build/release/Typeflow.app/Contents/MacOS/Typeflow` verifies both
+  `arm64` and `x86_64` with `lipo -verify_arch`.
+- `macos/build/release/typeflow-register-input-source` verifies both
+  architectures.
+- Codesigning uses hardened runtime and timestamp when `CODESIGN_IDENTITY` is
+  not `-`.
+- `macos/build/release/dist/Typeflow-macos-universal.zip` exists.
+
+For local unsigned smoke testing on the current machine only:
+
+```sh
+TYPEFLOW_MACOS_ARCHS=arm64 make -C macos release-universal
+```
+
+To notarize, either configure an App Store Connect keychain profile:
+
+```sh
+NOTARY_PROFILE=typeflow-notary \
+make -C macos release-universal CODESIGN_IDENTITY="Developer ID Application: <name> (<team>)"
+```
+
+or provide `APPLE_ID`, `APPLE_TEAM_ID`, and `APPLE_APP_PASSWORD`. The script
+submits the zip with `xcrun notarytool`, staples the app bundle, and recreates
+the zip after stapling.
 
 To install and register for the current user:
 
@@ -157,6 +211,33 @@ This must include the FFI ABI smoke tests:
 Running tests/abi_smoke.rs
 ```
 
+## Coverage
+
+The CI coverage job generates an LCOV artifact from the full Rust workspace:
+
+```sh
+rustup component add llvm-tools-preview
+cargo install cargo-llvm-cov --version 0.8.6 --locked
+cargo llvm-cov --workspace --locked --lcov --output-path lcov.info
+```
+
+## Fuzz Target Build
+
+The fuzz harnesses are kept outside the main workspace and compile with their
+own lockfile:
+
+```sh
+cargo build --manifest-path fuzz/Cargo.toml --bins --locked
+```
+
+For local fuzz campaigns, install `cargo-fuzz` and run a bounded target:
+
+```sh
+cargo install cargo-fuzz --locked
+cargo fuzz run artifact_decoders -- -max_total_time=60
+cargo fuzz run ffi_events -- -max_total_time=60
+```
+
 ## FFI Symbols
 
 ```sh
@@ -203,21 +284,23 @@ _typeflow_host_config_secondary_language
 _typeflow_host_config_source_path
 ```
 
-## Packaging Caveat
+## Standalone Dylib Caveat
 
-Current raw release dylib install name is produced by Cargo and points into the
-local `target` directory:
+The IMK app bundle links the Rust static archive, so the app packaging script
+does not ship `libtypeflow_ffi.dylib`. Standalone dylib releases still need the
+install name rewritten because Cargo points it into the local `target`
+directory:
 
 ```sh
 otool -D target/release/libtypeflow_ffi.dylib
 ```
 
-Before bundling the macOS app, the packaging step must rewrite the install name
-to an app-relative value, for example:
+Before shipping a standalone dylib package, rewrite the install name to a
+package-relative value, for example:
 
 ```sh
 install_name_tool -id @rpath/libtypeflow_ffi.dylib target/release/libtypeflow_ffi.dylib
 ```
 
-Do this in the macOS packaging/build script, not by committing mutated binary
-output.
+Do this in the standalone dylib packaging script, not by committing mutated
+binary output.

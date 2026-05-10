@@ -136,8 +136,20 @@ impl Engine {
         self.token.len()
     }
 
-    pub fn token_candidates(&self) -> LayoutCandidates {
-        self.candidates.clone()
+    pub fn token_candidates(&self) -> &LayoutCandidates {
+        &self.candidates
+    }
+
+    pub fn current_token_action(&self) -> Action {
+        if self.token.is_empty() {
+            return Action::Keep;
+        }
+
+        Action::ReplaceToken {
+            old_len: self.token.len(),
+            replacement: self.candidates.get(self.layout).to_owned(),
+            layout: self.layout,
+        }
     }
 
     pub fn token_score(&mut self) -> ScoreAnalysis {
@@ -200,12 +212,11 @@ impl Engine {
         self.reset_token();
     }
 
-    pub fn process(&mut self, event: InputEvent) -> EngineOutput {
+    pub fn process(&mut self, event: InputEvent) -> EngineOutput<'_> {
         let (action, decision) = self.step(event);
-        let candidates = self.candidates.clone();
         let score = self.score_current();
         EngineOutput {
-            candidates,
+            candidates: &self.candidates,
             score,
             decision,
             action,
@@ -216,7 +227,7 @@ impl Engine {
         self.step(event).0
     }
 
-    pub fn force_switch_token(&mut self) -> EngineOutput {
+    pub fn force_switch_token(&mut self) -> EngineOutput<'_> {
         if self.token.is_empty() {
             return self.snapshot(Action::Keep, Decision::Keep);
         }
@@ -227,8 +238,7 @@ impl Engine {
         };
         self.layout = target;
 
-        let candidates = self.candidates.clone();
-        let replacement = candidates.get(target).to_owned();
+        let replacement = self.candidates.get(target).to_owned();
         let score = self.score_current();
         let decision = Decision::Use(target);
         // The whole token has already been committed by the host (one Commit per
@@ -240,7 +250,7 @@ impl Engine {
         };
 
         EngineOutput {
-            candidates,
+            candidates: &self.candidates,
             score,
             decision,
             action,
@@ -564,12 +574,11 @@ impl Engine {
         is_english_separator_key_char(self.bundle.render(event, Layout::English))
     }
 
-    fn snapshot(&mut self, action: Action, decision: Decision) -> EngineOutput {
-        let candidates = self.candidates.clone();
+    fn snapshot(&mut self, action: Action, decision: Decision) -> EngineOutput<'_> {
         let score = self.score_current();
 
         EngineOutput {
-            candidates,
+            candidates: &self.candidates,
             score,
             decision,
             action,

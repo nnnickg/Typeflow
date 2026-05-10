@@ -89,8 +89,8 @@ impl ScoreAnalysis {
 }
 
 #[derive(Clone, Debug)]
-pub struct EngineOutput {
-    pub candidates: LayoutCandidates,
+pub struct EngineOutput<'a> {
+    pub candidates: &'a LayoutCandidates,
     pub score: ScoreAnalysis,
     pub decision: Decision,
     pub action: Action,

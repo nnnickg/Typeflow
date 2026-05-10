@@ -1,5 +1,8 @@
 import Foundation
 import Carbon
+#if SWIFT_PACKAGE
+import TypeflowKit
+#endif
 import TypeflowFFI
 
 enum SmokeError: Error, CustomStringConvertible {

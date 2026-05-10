@@ -1,7 +1,10 @@
+#![cfg_attr(test, allow(clippy::expect_used, clippy::panic, clippy::unwrap_used))]
+
 use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -312,14 +315,16 @@ impl ResolvedHostConfig {
         Some(pack_directory.join(&self.secondary_language))
     }
 
-    pub fn load_language_bundle(&self) -> Result<LanguageBundle, String> {
+    pub fn load_language_bundle(&self) -> Result<Arc<LanguageBundle>, String> {
         if let Some(data_directory) = self.data_directory.as_deref() {
-            return LanguageBundle::from_data_dir(data_directory).map_err(|error| {
-                format!("load data directory {}: {error}", data_directory.display())
-            });
+            return LanguageBundle::from_data_dir(data_directory)
+                .map(Arc::new)
+                .map_err(|error| {
+                    format!("load data directory {}: {error}", data_directory.display())
+                });
         }
         if self.secondary_language == "uk" {
-            return LanguageBundle::embedded()
+            return LanguageBundle::embedded_shared()
                 .map_err(|error| format!("load embedded data: {error}"));
         }
         let pack_path = self.selected_pack_path().ok_or_else(|| {
@@ -329,6 +334,7 @@ impl ResolvedHostConfig {
             )
         })?;
         LanguageBundle::from_secondary_pack_dir(&pack_path)
+            .map(Arc::new)
             .map_err(|error| format!("load pack {}: {error}", pack_path.display()))
     }
 

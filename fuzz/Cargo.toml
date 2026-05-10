@@ -1,0 +1,27 @@
+[package]
+name = "typeflow-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+typeflow-core = { path = "../crates/typeflow-core" }
+typeflow-ffi = { path = "../crates/typeflow-ffi" }
+
+[[bin]]
+name = "artifact_decoders"
+path = "fuzz_targets/artifact_decoders.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ffi_events"
+path = "fuzz_targets/ffi_events.rs"
+test = false
+doc = false
+bench = false

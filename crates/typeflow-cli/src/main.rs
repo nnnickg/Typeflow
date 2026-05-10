@@ -285,7 +285,7 @@ fn configured_pack_dir(config: &Config) -> Option<PathBuf> {
 fn build_engine(config: &Config) -> Result<Engine, String> {
     let resolved = resolve_runtime_config(config)?;
     let bundle = resolved.load_language_bundle()?;
-    Ok(Engine::new(resolved.engine, bundle))
+    Ok(Engine::with_shared_bundle(resolved.engine, bundle))
 }
 
 fn resolve_runtime_config(config: &Config) -> Result<ResolvedHostConfig, String> {
@@ -330,14 +330,18 @@ fn process_token_verbose(engine: &mut Engine, token: &str) -> Result<(), String>
     for character in token.chars() {
         let input = input_event_for_char(engine, character);
         let output = engine.process(input);
+        let english_candidate = output.candidates.english.clone();
+        let secondary_candidate = output.candidates.secondary.clone();
+        let decision = output.decision;
+        let action = output.action;
         println!(
             "key='{character}' {}='{}' {}='{}' decision={} action={}",
             token_label(engine, Layout::English),
-            output.candidates.english,
+            english_candidate,
             token_label(engine, Layout::Secondary),
-            output.candidates.secondary,
-            decision_label(engine, output.decision),
-            action_label(engine, &output.action)
+            secondary_candidate,
+            decision_label(engine, decision),
+            action_label(engine, &action)
         );
     }
     Ok(())
@@ -1037,7 +1041,7 @@ fn use_pack(id: &str, explicit_config: Option<&Path>) -> Result<(), String> {
 fn inspect_pack(value: &str, explicit_config: Option<&Path>) -> Result<(), String> {
     if value == "uk" {
         let bundle =
-            LanguageBundle::embedded().map_err(|e| format!("load embedded bundle: {e}"))?;
+            LanguageBundle::embedded_shared().map_err(|e| format!("load embedded bundle: {e}"))?;
         print_pack_details(&bundle.secondary, "embedded");
         return Ok(());
     }
@@ -1172,12 +1176,9 @@ fn cmd_repl(explicit_config: Option<&Path>) -> Result<(), String> {
             (KeyCode::Esc, _) => break,
             (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
             (KeyCode::Backspace, _) => {
-                let output = engine.process(InputEvent::Backspace);
+                let action = engine.process(InputEvent::Backspace).action;
                 committed.pop();
-                history.push(format!(
-                    "Backspace -> {}",
-                    action_label(&engine, &output.action)
-                ));
+                history.push(format!("Backspace -> {}", action_label(&engine, &action)));
             }
             (KeyCode::Char(' '), _) => {
                 engine.process(InputEvent::EndToken);
@@ -1191,11 +1192,13 @@ fn cmd_repl(explicit_config: Option<&Path>) -> Result<(), String> {
             }
             (KeyCode::Char(character), _) => {
                 let output = engine.process(input_event_for_char(&engine, character));
-                apply_action(&output.action, &mut committed);
+                let decision = output.decision;
+                let action = output.action;
+                apply_action(&action, &mut committed);
                 history.push(format!(
                     "'{character}' -> decision={} action={}",
-                    decision_label(&engine, output.decision),
-                    action_label(&engine, &output.action)
+                    decision_label(&engine, decision),
+                    action_label(&engine, &action)
                 ));
             }
             _ => {}
@@ -1279,8 +1282,8 @@ fn redraw(
     stdout.execute(terminal::Clear(ClearType::All))?;
     stdout.execute(cursor::MoveTo(0, 0))?;
 
-    let candidates = engine.token_candidates();
     let score = engine.token_score();
+    let candidates = engine.token_candidates();
 
     let mut buf = String::new();
     let _ = writeln_cr(
