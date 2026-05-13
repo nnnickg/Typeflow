@@ -3,8 +3,8 @@ use std::sync::Arc;
 use crate::data::{LanguageBundle, LanguageModel};
 use crate::score::{NgramTotals, has_dictionary_evidence, score_layout, score_layout_with_ngrams};
 use crate::{
-    CompositionAction, CompositionOutput, Decision, EngineConfig, HostContext, InputEvent, Layout,
-    LayoutCandidates, LetterEvent, MAX_CONFIG_TOKEN_LEN, ScoreAnalysis,
+    Decision, EngineConfig, HostContext, InputEvent, Layout, LayoutCandidates, LetterEvent,
+    MAX_CONFIG_TOKEN_LEN, ObservationAction, ObservationOutput, ScoreAnalysis,
 };
 
 pub struct Engine {
@@ -174,7 +174,7 @@ impl Engine {
     /// position (digits, most ASCII symbols) become `InputEvent::Literal`.
     ///
     /// This is the correct entry point when driving the engine from text input
-    /// (CLI, tests, pipes) rather than from physical keycodes (IMK/FFI).
+    /// (CLI, tests, pipes) rather than from physical keycodes (macOS/FFI).
     pub fn input_event_from_char(&self, character: char) -> InputEvent {
         if is_literal_bypass_char(character) {
             return InputEvent::Literal(character);
@@ -200,28 +200,29 @@ impl Engine {
         self.reset_token();
     }
 
-    pub fn process(&mut self, event: InputEvent) -> CompositionOutput<'_> {
+    pub fn observe(&mut self, event: InputEvent) -> ObservationOutput<'_> {
         let (action, decision) = self.step(event);
         self.snapshot(action, decision)
     }
 
-    pub fn force_switch_token(&mut self) -> CompositionOutput<'_> {
-        if self.token.is_empty() {
-            return self.snapshot(CompositionAction::Bypass, Decision::Keep);
-        }
-
+    pub fn force_switch_layout(&mut self) -> ObservationOutput<'_> {
         let target = match self.layout {
             Layout::English => Layout::Secondary,
             Layout::Secondary => Layout::English,
         };
         self.layout = target;
-        self.snapshot(self.render_action(), Decision::Use(target))
+        self.reset_token();
+        self.snapshot(
+            ObservationAction::SwitchFutureLayout(target),
+            Decision::Use(target),
+        )
     }
 
-    fn step(&mut self, event: InputEvent) -> (CompositionAction, Decision) {
+    fn step(&mut self, event: InputEvent) -> (ObservationAction, Decision) {
         if self.host_context.bypasses_engine() {
+            let action = self.reset_action();
             self.reset_token();
-            return (CompositionAction::Bypass, Decision::Bypass);
+            return (action, Decision::Bypass);
         }
 
         match event {
@@ -230,56 +231,62 @@ impl Engine {
             InputEvent::Backspace => self.step_backspace(),
             InputEvent::EndToken => self.step_end_token(),
             InputEvent::HostBypass => {
-                if self.token.is_empty() {
-                    (CompositionAction::Bypass, Decision::Bypass)
-                } else {
-                    (self.commit_action(false), Decision::Bypass)
-                }
+                let action = self.reset_action();
+                self.reset_token();
+                (action, Decision::Bypass)
             }
         }
     }
 
-    fn step_letter(&mut self, event: LetterEvent) -> (CompositionAction, Decision) {
+    fn step_letter(&mut self, event: LetterEvent) -> (ObservationAction, Decision) {
         if self.bypass_until_boundary {
             if is_english_separator_key_char(self.bundle.render(event, Layout::English)) {
+                let action = self.reset_action();
                 self.reset_token();
+                return (action, Decision::Bypass);
             }
-            return (CompositionAction::Bypass, Decision::Bypass);
+            return (ObservationAction::None, Decision::Bypass);
         }
 
         if self.token.is_empty() {
             self.token_start_layout = self.layout;
         }
 
-        if self.should_commit_auto_disabled_separator(event) {
-            return (self.commit_action_with(event), Decision::Bypass);
-        }
-        if self.should_commit_english_separator(event) {
-            return (self.commit_action_with(event), Decision::Keep);
-        }
-
         if self.token.len() >= self.config.max_token_len {
-            let action = self.commit_action_with(event);
+            let action = self.reset_action();
+            self.reset_token();
             self.bypass_until_boundary = true;
             return (action, Decision::Bypass);
         }
 
+        let had_token_before_event = !self.token.is_empty();
         self.token.push(event);
         self.push_candidate_chars(event);
 
+        if self.should_reset_on_separator(event) {
+            self.reset_token();
+            let action = if had_token_before_event {
+                ObservationAction::ResetToken
+            } else {
+                ObservationAction::None
+            };
+            return (action, Decision::Keep);
+        }
+
         if self.host_context.automatic_switching_disabled {
-            return (self.render_action(), Decision::Bypass);
+            return (ObservationAction::None, Decision::Bypass);
         }
 
         if self.token.len() < self.config.min_token_len {
-            return (self.render_action(), Decision::Keep);
+            return (ObservationAction::None, Decision::Keep);
         }
         if self.should_bypass_token() {
-            return (self.render_action(), Decision::Bypass);
+            return (ObservationAction::None, Decision::Bypass);
         }
 
         let score = self.score_current();
         let decision = self.decide(&score);
+        let previous_layout = self.layout;
         match decision {
             Decision::Keep | Decision::Bypass => {}
             Decision::Use(layout) if layout == self.layout => {}
@@ -287,29 +294,18 @@ impl Engine {
                 self.layout = layout;
             }
         }
-        (self.render_action(), decision)
+        (self.switch_action(previous_layout), decision)
     }
 
-    fn step_literal(&mut self, character: char) -> (CompositionAction, Decision) {
-        if self.token.is_empty() {
-            self.reset_token();
-            return (CompositionAction::Bypass, Decision::Keep);
-        }
-        let mut text = self.composition_text();
-        text.push(character);
+    fn step_literal(&mut self, _character: char) -> (ObservationAction, Decision) {
+        let action = self.reset_action();
         self.reset_token();
-        (
-            CompositionAction::Commit {
-                text,
-                consume_event: true,
-            },
-            Decision::Keep,
-        )
+        (action, Decision::Keep)
     }
 
-    fn step_backspace(&mut self) -> (CompositionAction, Decision) {
+    fn step_backspace(&mut self) -> (ObservationAction, Decision) {
         if self.bypass_until_boundary || self.token.is_empty() {
-            return (CompositionAction::Bypass, Decision::Bypass);
+            return (ObservationAction::None, Decision::Bypass);
         }
 
         self.token.pop();
@@ -319,26 +315,20 @@ impl Engine {
         self.score_cache = None;
         if self.token.is_empty() {
             self.reset_token();
-            return (
-                CompositionAction::Clear {
-                    consume_event: true,
-                },
-                Decision::Keep,
-            );
+            return (ObservationAction::ResetToken, Decision::Keep);
         }
         if self.host_context.automatic_switching_disabled {
-            return (self.render_action(), Decision::Bypass);
+            return (ObservationAction::None, Decision::Bypass);
         }
+        let previous_layout = self.layout;
         let decision = self.reconcile_layout_after_token_change();
-        (self.render_action(), decision)
+        (self.switch_action(previous_layout), decision)
     }
 
-    fn step_end_token(&mut self) -> (CompositionAction, Decision) {
-        if self.token.is_empty() {
-            self.reset_token();
-            return (CompositionAction::Bypass, Decision::Keep);
-        }
-        (self.commit_action(false), Decision::Keep)
+    fn step_end_token(&mut self) -> (ObservationAction, Decision) {
+        let action = self.reset_action();
+        self.reset_token();
+        (action, Decision::Keep)
     }
 
     /// Scores arbitrary candidates against this engine's language bundle and config.
@@ -424,69 +414,36 @@ impl Engine {
             || is_acronym_like(&self.token)
     }
 
-    fn should_commit_english_separator(&mut self, event: LetterEvent) -> bool {
-        if self.layout != Layout::English || self.token.len() < self.config.min_token_len {
-            return false;
-        }
-
-        let english = self.bundle.render(event, Layout::English);
-        if !is_english_separator_key_char(english) {
-            return false;
-        }
-
-        if self.should_bypass_token() {
-            return true;
-        }
-
-        let score = self.score_current();
-        self.decide(&score) == Decision::Use(Layout::English)
-    }
-
-    fn should_commit_auto_disabled_separator(&self, event: LetterEvent) -> bool {
-        if self.token.is_empty()
-            || !self.host_context.automatic_switching_disabled
-            || self.layout != Layout::English
+    fn should_reset_on_separator(&mut self, event: LetterEvent) -> bool {
+        if self.layout != Layout::English
+            || !is_english_separator_key_char(self.bundle.render(event, Layout::English))
         {
             return false;
         }
 
-        is_english_separator_key_char(self.bundle.render(event, Layout::English))
+        !has_dictionary_evidence(self.score_current().secondary)
     }
 
-    fn composition_text(&self) -> String {
-        self.candidates.get(self.layout).to_owned()
-    }
-
-    fn render_action(&self) -> CompositionAction {
-        CompositionAction::Render {
-            text: self.composition_text(),
-            layout: self.layout,
+    fn reset_action(&self) -> ObservationAction {
+        if self.token.is_empty() {
+            ObservationAction::None
+        } else {
+            ObservationAction::ResetToken
         }
     }
 
-    fn commit_action(&mut self, consume_event: bool) -> CompositionAction {
-        let text = self.composition_text();
-        self.reset_token();
-        CompositionAction::Commit {
-            text,
-            consume_event,
+    fn switch_action(&self, previous_layout: Layout) -> ObservationAction {
+        if self.layout == previous_layout {
+            ObservationAction::None
+        } else {
+            ObservationAction::SwitchFutureLayout(self.layout)
         }
     }
 
-    fn commit_action_with(&mut self, event: LetterEvent) -> CompositionAction {
-        let mut text = self.composition_text();
-        text.push(self.bundle.render(event, self.layout));
-        self.reset_token();
-        CompositionAction::Commit {
-            text,
-            consume_event: true,
-        }
-    }
-
-    fn snapshot(&mut self, action: CompositionAction, decision: Decision) -> CompositionOutput<'_> {
+    fn snapshot(&mut self, action: ObservationAction, decision: Decision) -> ObservationOutput<'_> {
         let score = self.score_current();
 
-        CompositionOutput {
+        ObservationOutput {
             candidates: &self.candidates,
             score,
             decision,
@@ -553,6 +510,15 @@ fn is_acronym_like(token: &[LetterEvent]) -> bool {
     token.len() >= 2 && token.iter().all(|event| event.shift)
 }
 
+/// True for English-US punctuation-position characters that share physical keys
+/// with secondary-layout letters.
+///
+/// These characters are produced by physical keys that, in non-English layouts,
+/// emit real letters (e.g. Cyrillic б/ю/ж/є/х/ї/ґ). The engine therefore
+/// receives them as `LetterEvent`s rather than literals so they can extend a
+/// secondary-layout token. While the active layout is English, they reset the
+/// observed token only when the appended secondary candidate has no dictionary
+/// prefix or exact-word evidence.
 fn is_english_separator_key_char(character: char) -> bool {
     matches!(
         character,

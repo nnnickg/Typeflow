@@ -6,7 +6,7 @@ SWIFTC ?= xcrun swiftc
 CODESIGN ?= codesign
 CODESIGN_IDENTITY ?= -
 CODESIGN_FLAGS ?=
-INPUT_METHODS_DIR ?= $(HOME)/Library/Input Methods
+APPLICATIONS_DIR ?= $(HOME)/Applications
 
 ifeq ($(RUST_PROFILE),release)
 CARGO_PROFILE_FLAG := --release
@@ -31,7 +31,6 @@ RUST_STATICLIB := $(RUST_LIB_DIR)/libtypeflow_ffi.a
 BUILD_DIR := $(abspath build)
 MODULE_CACHE_DIR := $(BUILD_DIR)/clang-module-cache
 SMOKE_BIN := $(BUILD_DIR)/typeflow-staticlib-smoke
-REGISTER_BIN := $(BUILD_DIR)/typeflow-register-input-source
 APP_NAME := Typeflow
 APP_BUNDLE := $(BUILD_DIR)/$(APP_NAME).app
 APP_EXECUTABLE := $(APP_BUNDLE)/Contents/MacOS/$(APP_NAME)
@@ -42,15 +41,13 @@ ICON_SOURCE := Resources/Typeflow.png
 ICON_TIFF_DIR := $(BUILD_DIR)/$(APP_NAME)-icon-tiffs
 ICON_MULTI_TIFF := $(BUILD_DIR)/$(APP_NAME)-icons.tiff
 APP_ICON_ICNS := $(APP_BUNDLE)/Contents/Resources/Typeflow.icns
-APP_ICON_TIFF := $(APP_BUNDLE)/Contents/Resources/Typeflow.tiff
-APP_ICONS := $(APP_ICON_ICNS) $(APP_ICON_TIFF)
+APP_ICONS := $(APP_ICON_ICNS)
 KIT_SOURCES := $(wildcard Sources/TypeflowKit/*.swift)
 SMOKE_SOURCES := $(KIT_SOURCES) $(wildcard Sources/TypeflowSmoke/*.swift)
-INPUT_METHOD_SOURCES := $(KIT_SOURCES) $(wildcard Sources/TypeflowInputMethod/*.swift)
-REGISTER_SOURCES := $(wildcard Sources/TypeflowRegister/*.swift)
+AGENT_SOURCES := $(KIT_SOURCES) $(wildcard Sources/TypeflowAgent/*.swift)
 SWIFT_COMMON_FLAGS := $(SWIFT_OPT_FLAGS) -module-cache-path $(MODULE_CACHE_DIR) -I $(FFI_INCLUDE_DIR)
 RUST_LINK_FLAGS := -Xlinker -force_load -Xlinker $(RUST_STATICLIB)
-IMK_FRAMEWORK_FLAGS := -framework AppKit -framework Carbon -framework InputMethodKit
+AGENT_FRAMEWORK_FLAGS := -framework AppKit -framework ApplicationServices -framework Carbon
 
 .PHONY: all rust-staticlib smoke swift-package bundle release-universal install-user clean
 
@@ -68,16 +65,7 @@ smoke: $(SMOKE_BIN)
 
 swift-package: rust-staticlib
 	CARGO_TARGET_DIR=$(CARGO_TARGET_DIR) RUST_PROFILE=$(RUST_PROFILE) $(SWIFT) run --package-path . -c $(SWIFT_PACKAGE_CONFIG) typeflow-staticlib-smoke
-	CARGO_TARGET_DIR=$(CARGO_TARGET_DIR) RUST_PROFILE=$(RUST_PROFILE) $(SWIFT) build --package-path . -c $(SWIFT_PACKAGE_CONFIG) --product typeflow-register-input-source
 	CARGO_TARGET_DIR=$(CARGO_TARGET_DIR) RUST_PROFILE=$(RUST_PROFILE) $(SWIFT) build --package-path . -c $(SWIFT_PACKAGE_CONFIG) --product Typeflow
-
-$(REGISTER_BIN): $(REGISTER_SOURCES)
-	mkdir -p $(BUILD_DIR) $(MODULE_CACHE_DIR)
-	$(SWIFTC) $(SWIFT_OPT_FLAGS) -module-cache-path $(MODULE_CACHE_DIR) $(REGISTER_SOURCES) -framework Carbon -o $(REGISTER_BIN)
-
-$(APP_ICON_TIFF): $(ICON_SOURCE)
-	mkdir -p $(APP_BUNDLE)/Contents/Resources
-	sips -s format tiff --resampleHeightWidth 32 32 $(ICON_SOURCE) --out $(APP_ICON_TIFF) >/dev/null
 
 $(APP_ICON_ICNS): $(ICON_SOURCE)
 	mkdir -p $(APP_BUNDLE)/Contents/Resources $(ICON_TIFF_DIR)
@@ -91,15 +79,15 @@ $(APP_ICON_ICNS): $(ICON_SOURCE)
 	tiffutil -cat $(ICON_TIFF_DIR)/icon_16.tiff $(ICON_TIFF_DIR)/icon_32.tiff $(ICON_TIFF_DIR)/icon_48.tiff $(ICON_TIFF_DIR)/icon_128.tiff $(ICON_TIFF_DIR)/icon_256.tiff $(ICON_TIFF_DIR)/icon_512.tiff $(ICON_TIFF_DIR)/icon_1024.tiff -out $(ICON_MULTI_TIFF) >/dev/null 2>/dev/null
 	tiff2icns $(ICON_MULTI_TIFF) $(APP_ICON_ICNS)
 
-$(APP_EXECUTABLE): $(INPUT_METHOD_SOURCES) $(APP_INFO_PLIST) $(APP_INFO_PLIST_STRINGS) $(APP_PKGINFO) $(APP_ICONS) TypeflowFFI/include/module.modulemap TypeflowFFI/include/typeflow_shim.h rust-staticlib
+$(APP_EXECUTABLE): $(AGENT_SOURCES) $(APP_INFO_PLIST) $(APP_INFO_PLIST_STRINGS) $(APP_PKGINFO) $(APP_ICONS) TypeflowFFI/include/module.modulemap TypeflowFFI/include/typeflow_shim.h rust-staticlib
 	mkdir -p $(APP_BUNDLE)/Contents/MacOS $(APP_BUNDLE)/Contents/Resources/en.lproj $(MODULE_CACHE_DIR)
 	cp $(APP_INFO_PLIST) $(APP_BUNDLE)/Contents/Info.plist
 	cp $(APP_INFO_PLIST_STRINGS) $(APP_BUNDLE)/Contents/Resources/en.lproj/InfoPlist.strings
 	cp $(APP_PKGINFO) $(APP_BUNDLE)/Contents/PkgInfo
 	plutil -lint $(APP_BUNDLE)/Contents/Info.plist
-	$(SWIFTC) $(SWIFT_COMMON_FLAGS) $(INPUT_METHOD_SOURCES) $(RUST_LINK_FLAGS) $(IMK_FRAMEWORK_FLAGS) -o $(APP_EXECUTABLE)
+	$(SWIFTC) $(SWIFT_COMMON_FLAGS) $(AGENT_SOURCES) $(RUST_LINK_FLAGS) $(AGENT_FRAMEWORK_FLAGS) -o $(APP_EXECUTABLE)
 
-bundle: $(APP_EXECUTABLE) $(REGISTER_BIN)
+bundle: $(APP_EXECUTABLE)
 	plutil -p $(APP_BUNDLE)/Contents/Info.plist >/dev/null
 	$(CODESIGN) --force --sign "$(CODESIGN_IDENTITY)" $(CODESIGN_RUNTIME_FLAGS) $(CODESIGN_FLAGS) $(APP_BUNDLE)
 	$(CODESIGN) --verify --strict --verbose=2 $(APP_BUNDLE)
@@ -108,11 +96,11 @@ bundle: $(APP_EXECUTABLE) $(REGISTER_BIN)
 release-universal:
 	./scripts/package-universal.sh
 
-install-user: bundle $(REGISTER_BIN)
-	mkdir -p "$(INPUT_METHODS_DIR)"
-	ditto "$(APP_BUNDLE)" "$(INPUT_METHODS_DIR)/$(APP_NAME).app"
-	xattr -cr "$(INPUT_METHODS_DIR)/$(APP_NAME).app" || true
-	$(REGISTER_BIN) "$(INPUT_METHODS_DIR)/$(APP_NAME).app"
+install-user: bundle
+	mkdir -p "$(APPLICATIONS_DIR)"
+	ditto "$(APP_BUNDLE)" "$(APPLICATIONS_DIR)/$(APP_NAME).app"
+	xattr -cr "$(APPLICATIONS_DIR)/$(APP_NAME).app" || true
+	open -g "$(APPLICATIONS_DIR)/$(APP_NAME).app"
 
 clean:
 	rm -rf $(BUILD_DIR)

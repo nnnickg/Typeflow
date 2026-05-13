@@ -70,8 +70,8 @@ If `|margin| >= confidence_margin`, switch to the winning layout (otherwise
 keep the current one). Subject to refusal gates *before* this margin check:
 
 1. `token.len() < min_token_len` → keep, don't decide yet.
-2. The next letter would exceed `max_token_len` → bypass scoring until the
-   next token boundary.
+2. The next letter would exceed `max_token_len` → reset the observed token and
+   bypass scoring until the next token boundary.
 3. `disable_on_internal_caps` and the token has shift on any non-first letter
    (camelCase / PascalCase) → keep, don't decide.
 4. The whole token is shifted (acronym-like, e.g. `HTTP`) → keep, don't decide.
@@ -94,18 +94,17 @@ generate the file with full inline comments. Each field:
 ### `min_token_len` *(default: 4)*
 
 Minimum number of letters before the engine will decide *anything*. Below this,
-all letters render in the current active composition and `Decision::Keep` is
-returned. Lower = faster reaction but more false positives on short ambiguous
+the engine observes the token and returns `Decision::Keep`. Lower = faster
+reaction but more false positives on short ambiguous
 prefixes (`не` vs `yt`, `при` vs `ghb`). Higher = more cautious,
 sluggish-feeling.
 
 ### `max_token_len` *(default: 128)*
 
-Maximum number of letters tracked as one active composition token. Once a
-letter-only run exceeds this, the engine commits the buffered composition plus
-the current key once, then bypasses scoring until a hard token boundary. This
-caps hot-path work for huge identifiers, pasted blobs, or broken host boundary
-detection.
+Maximum number of letter events tracked as one observed token. Once a
+letter-event run exceeds this, the engine resets the token and bypasses scoring
+until a hard token boundary. This caps hot-path work for huge identifiers,
+pasted blobs, or broken host boundary detection.
 
 ### `confidence_margin` *(default: 1.0)*
 
@@ -173,17 +172,16 @@ capitalized words like `Hello` or `Привіт`.
 Anything that is not a physical letter in either loaded layout (digits,
 identifier separators, most symbols) is sent to the engine as
 `InputEvent::Literal(char)`. The engine treats a literal as a hard token
-boundary: if a composition is active, it commits the rendered token plus the
-literal once, clears token state, and starts the next token fresh. If no
-composition is active, it bypasses to the host.
+boundary: it clears token state and starts the next token fresh.
 
 Some punctuation-looking English keys are also real secondary-layout letters:
 `, . ; ' [ ] \` and their shifted forms. Those arrive as `LetterEvent`s so a
 Ukrainian word containing `б`, `ю`, `ж`, `є`, `х`, `ї`, or `ґ` can still be
-classified from physical key input. To avoid gluing normal prose together, when
-the active layout is English and the current token has already resolved as
-English, pressing one of those English punctuation keys commits it as a token
-boundary instead of extending the token.
+classified from physical key input. To avoid gluing normal prose together,
+while the active layout is English one of those keys resets the observed token
+only when the appended secondary candidate has no dictionary prefix or exact
+word evidence. If the secondary candidate is still plausible, the key remains
+part of the token and can trigger an automatic switch.
 
 ## Calibration: how to tune
 
@@ -200,34 +198,30 @@ tune is against a regression corpus:
    failure buckets by token length, and a bounded failure sample.
 4. Adjust one knob at a time, re-run, see whether accuracy moves.
 
-The generated corpus is intentionally stricter than the old smoke set, but it
-skips generated secondary cases whose physical key sequence is an exact English
+The generated corpus is intentionally stricter than the old smoke set. It skips
+only generated secondary cases whose physical key sequence is an exact English
 dictionary word. See `docs/calibration.md` for that ambiguity policy. Use
 `typeflow repl` for interactive inspection of any failure.
 
-## The Composition Protocol
+## The Observation Protocol
 
 `docs/invariants.md` is the source of truth for this contract. This section is
 the explanatory version.
 
-The engine returns one of four `CompositionAction` variants:
+The engine returns one of three `ObservationAction` variants:
 
-| Action | Host should... |
+| Action | Meaning |
 |---|---|
-| `Bypass` | Do not consume the key. Let the host app process it normally. |
-| `Render { text, layout }` | Consume the key and redraw Typeflow-owned active composition. Do not insert raw text into the document. |
-| `Commit { text, consume_event }` | Insert the finalized text once. If `consume_event` is false, pass the original boundary event through after the commit. |
-| `Clear { consume_event }` | Clear active composition without committing text. |
+| `None` | No host-visible state notification. |
+| `SwitchFutureLayout(layout)` | The inferred future layout changed. |
+| `ResetToken` | The observed token ended or was discarded. |
 
-For the macOS IMK host, `Render` maps to the active composition renderer. The
-default renderer is native marked text because that lets the text client own
-inline layout, scrolling, caret, font metrics, and editor decorations. Apps can
-be configured to use the direct-commit renderer when marked text is too slow or
-broken; in that mode `Render` updates Typeflow's internal composition state and
-`Commit` performs the only document mutation. There is no normal per-key
-replacement path. Manual Option conversion calls `force_switch_token()` and
-receives another `Render`; it changes the active composition, not committed
-document text.
+Normal printable keys pass through to the app. On macOS, `SwitchFutureLayout`
+captures a pending replacement snapshot that lets the host replace the currently
+tracked token once and select the configured real keyboard input source for
+future keys. Manual Option switching calls `force_switch_layout()`, consumes the
+replacement snapshot captured by that call when one exists, changes the future
+input source, and clears the observed token.
 
 If the user backspaces inside the current token, the engine re-evaluates the
 shortened token. If the shortened token no longer justifies a switch, layout

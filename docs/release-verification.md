@@ -55,15 +55,14 @@ make -C macos smoke
 Expected:
 
 ```text
-staticlib smoke: ghsdbn -> привіт
+staticlib smoke: observed ghsdbn; host text pass-through ghsdbn
 ```
 
 ## macOS SwiftPM Build
 
 This verifies the Swift library/executable target graph outside the Makefile's
 single-module `swiftc` compile path. It builds `TypeflowKit`, runs the SwiftPM
-staticlib smoke executable, and builds the register helper plus input-method
-executable:
+staticlib smoke executable, and builds the agent executable:
 
 ```sh
 make -C macos swift-package
@@ -71,15 +70,14 @@ make -C macos swift-package
 
 Expected:
 
-- `typeflow-staticlib-smoke` prints `staticlib smoke: ghsdbn -> привіт`.
-- `typeflow-register-input-source` builds as a SwiftPM executable.
+- `typeflow-staticlib-smoke` prints
+  `staticlib smoke: observed ghsdbn; host text pass-through ghsdbn`.
 - `Typeflow` builds as a SwiftPM executable linked against `libtypeflow_ffi.a`.
 
-## macOS IMK Bundle Build
+## macOS Agent Bundle Build
 
-This verifies the input-method app bundle compiles, has a valid plist, has a
-generated icon resource, compiles the TIS registration/enabling helper, and is
-ad-hoc signed:
+This verifies the background agent app bundle compiles, has a valid plist, has
+a generated icon resource, and is ad-hoc signed:
 
 ```sh
 make -C macos bundle
@@ -89,11 +87,8 @@ Expected:
 
 - `build/Typeflow.app/Contents/Info.plist` passes `plutil -lint`.
 - `build/Typeflow.app/Contents/Resources/Typeflow.icns` exists for Finder/Dock.
-- `build/Typeflow.app/Contents/Resources/Typeflow.tiff` exists for TIS/input
-  source menus.
 - `build/Typeflow.app/Contents/MacOS/Typeflow` is a Mach-O executable for the
   local build host architecture.
-- `build/typeflow-register-input-source` compiles.
 - `codesign --verify --strict` passes.
 
 ## macOS Universal Release Package
@@ -110,8 +105,6 @@ Expected:
 
 - `macos/build/release/Typeflow.app/Contents/MacOS/Typeflow` verifies both
   `arm64` and `x86_64` with `lipo -verify_arch`.
-- `macos/build/release/typeflow-register-input-source` verifies both
-  architectures.
 - Codesigning uses hardened runtime and timestamp when `CODESIGN_IDENTITY` is
   not `-`.
 - `macos/build/release/dist/Typeflow-macos-universal.zip` exists.
@@ -133,54 +126,43 @@ or provide `APPLE_ID`, `APPLE_TEAM_ID`, and `APPLE_APP_PASSWORD`. The script
 submits the zip with `xcrun notarytool`, staples the app bundle, and recreates
 the zip after stapling.
 
-To install and register for the current user:
+To install and start for the current user:
 
 ```sh
 make -C macos install-user
 pkill -x Typeflow
 ```
 
-Expected install helper output includes:
+`install-user` copies the app to `~/Applications/Typeflow.app` and opens it.
+`pkill -x Typeflow` is only to force a running copy to restart after reinstall.
 
-```text
-registered input source: /Users/<user>/Library/Input Methods/Typeflow.app
-enabled input method: io.github.nnnickg.typeflow.inputmethod.Typeflow
-updated HIToolbox enabled input sources
-selected input source: io.github.nnnickg.typeflow.inputmethod.Typeflow
-```
+## macOS Agent Runtime Smoke
 
-`pkill -x Typeflow` is only to force macOS to restart a running copy after the
-new bundle is copied. Text Input Services starts it again when the Typeflow input
-source is selected or needed.
-
-## macOS IMK Runtime Smoke
-
-In a normal app/text field with Typeflow selected:
+With the Typeflow agent running and real English/secondary keyboard sources
+installed:
 
 1. With default embedded Ukrainian config, type `ghsdbn`; expected visible text:
-   `привіт`.
-2. Type `http`, then tap standalone Option; expected active composition under
-   the embedded Ukrainian layout: `реез`.
+   `привіт`. Typeflow should replace the just-typed token once and switch the
+   real input source after the decision threshold for future keys.
+2. Type `http`, then tap standalone Option; expected visible text remains
+   `http` if no active convertible token exists. For an active wrong-layout
+   token, Option replaces that token once and changes the future keyboard source.
 3. Install any external secondary pack, set `language.secondary` to that pack
-   id, restart Typeflow, and verify normal composition/commit plus standalone
-   Option manual conversion in an app that is not disabled.
+   id, configure `[macos].secondary_input_source_id` if auto-detection picks the
+   wrong source, restart Typeflow, and verify automatic token replacement plus
+   standalone Option replacement in an app that is not disabled.
 4. Press Option with another key; it should pass through as normal app input and
-   must not trigger manual conversion.
+   must not trigger manual switching.
 5. Add an app bundle id under `[apps].disable_auto_bundle_ids`, restart
    Typeflow, and confirm automatic layout switching does not fire in that app.
 6. In the same auto-disabled app, tap standalone Option in a normal text field
-   and confirm explicit active-composition conversion still works. Continue
-   typing another word; it should commit in the selected manual layout without
-   automatic switching.
+   and confirm it can replace the current tracked token manually.
 7. Add an app bundle id under `[apps].disable_bundle_ids`, restart Typeflow,
-   and confirm neither automatic composition nor standalone Option conversion
+   and confirm neither automatic observation behavior nor standalone Option switching
    fires. Repeat in a password field and confirm it does not fire.
-8. Add an app bundle id under `[apps].direct_commit_bundle_ids`, restart
-   Typeflow, and confirm the final committed token is still correct without
-   native live composition in that app.
-9. In Terminal.app and iTerm2, type a normally-switching token such as `ghsdbn`.
+8. In Terminal.app and iTerm2, type a normally-switching token such as `ghsdbn`.
    It must stay unchanged. Standalone Option must also pass through without
-   conversion. Repeat in an embedded terminal pane when the host app exposes
+   switching. Repeat in an embedded terminal pane when the host app exposes
    terminal-like accessibility metadata.
 
 Before calling a release host-stable, run the broader app matrix in
@@ -201,9 +183,6 @@ disable_auto_bundle_ids = [
     "dev.zed.Zed",
 ]
 
-direct_commit_bundle_ids = [
-    "com.example.BrokenEditor",
-]
 ```
 
 ## Release Tests
@@ -256,7 +235,7 @@ Expected exported symbols:
 ```text
 _typeflow_engine_current_layout
 _typeflow_engine_default_config
-_typeflow_engine_force_switch_token
+_typeflow_engine_force_switch_layout
 _typeflow_engine_free
 _typeflow_engine_new_embedded
 _typeflow_engine_new_embedded_with_config
@@ -265,10 +244,13 @@ _typeflow_engine_new_from_data_dir_with_config
 _typeflow_engine_new_from_host_config
 _typeflow_engine_new_from_pack_dir
 _typeflow_engine_new_from_pack_dir_with_config
-_typeflow_engine_process
+_typeflow_engine_observe
+_typeflow_engine_pending_replacement_delete_count
+_typeflow_engine_pending_replacement_utf8_len
 _typeflow_engine_reset_layout
 _typeflow_engine_reset_token
 _typeflow_engine_set_host_context
+_typeflow_engine_take_pending_replacement_utf8
 _typeflow_engine_token_len
 _typeflow_last_error_message
 _typeflow_host_config_data_directory
@@ -282,6 +264,8 @@ _typeflow_host_config_is_bundle_disabled
 _typeflow_host_config_load
 _typeflow_host_config_load_defaults
 _typeflow_host_config_load_with_environment
+_typeflow_host_config_macos_english_input_source_id
+_typeflow_host_config_macos_secondary_input_source_id
 _typeflow_host_config_pack_directory
 _typeflow_host_config_resolve_input_policy
 _typeflow_host_config_secondary_language
@@ -290,7 +274,7 @@ _typeflow_host_config_source_path
 
 ## Standalone Dylib Caveat
 
-The IMK app bundle links the Rust static archive, so the app packaging script
+The macOS app bundle links the Rust static archive, so the app packaging script
 does not ship `libtypeflow_ffi.dylib`. Standalone dylib releases still need the
 install name rewritten because Cargo points it into the local `target`
 directory:

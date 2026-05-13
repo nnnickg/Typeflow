@@ -4,8 +4,7 @@ import TypeflowFFI
 public enum TypeflowError: Error, CustomStringConvertible {
     case engineCreationFailed
     case engineCreationFailedFromConfig(String)
-    case invalidCompositionUTF8
-    case unknownCompositionTag(UInt8)
+    case unknownObservationTag(UInt8)
     case unknownLayout(UInt8)
 
     public var description: String {
@@ -14,10 +13,8 @@ public enum TypeflowError: Error, CustomStringConvertible {
             return "typeflow_engine_new_embedded returned null"
         case let .engineCreationFailedFromConfig(source):
             return "Typeflow engine constructor returned null for \(source)"
-        case .invalidCompositionUTF8:
-            return "composition payload was not valid UTF-8"
-        case let .unknownCompositionTag(tag):
-            return "unknown composition tag: \(tag)"
+        case let .unknownObservationTag(tag):
+            return "unknown observation tag: \(tag)"
         case let .unknownLayout(layout):
             return "unknown layout: \(layout)"
         }
@@ -29,21 +26,19 @@ public enum TypeflowLayout: UInt8, Equatable {
     case secondary = 1
 }
 
-public enum TypeflowCompositionAction: Equatable {
-    case bypass
-    case render(text: String, layout: TypeflowLayout)
-    case commit(text: String, consumeEvent: Bool)
-    case clear(consumeEvent: Bool)
+public enum TypeflowObservationAction: Equatable {
+    case none
+    case switchFutureLayout(TypeflowLayout)
+    case resetToken
+}
 
-    public var consumesEvent: Bool {
-        switch self {
-        case .bypass:
-            return false
-        case .render:
-            return true
-        case let .commit(_, consumeEvent), let .clear(consumeEvent):
-            return consumeEvent
-        }
+public struct TypeflowReplacement: Equatable {
+    public let deleteCount: Int
+    public let text: String
+
+    public init(deleteCount: Int, text: String) {
+        self.deleteCount = deleteCount
+        self.text = text
     }
 }
 
@@ -89,6 +84,22 @@ public final class TypeflowEngine {
         Int(typeflow_engine_token_len(raw))
     }
 
+    public func takePendingReplacement() -> TypeflowReplacement? {
+        let deleteCount = Int(typeflow_engine_pending_replacement_delete_count(raw))
+        let length = Int(typeflow_engine_pending_replacement_utf8_len(raw))
+        guard deleteCount > 0, length > 0 else {
+            _ = typeflow_engine_take_pending_replacement_utf8(raw, nil, 0)
+            return nil
+        }
+
+        var buffer = [CChar](repeating: 0, count: length + 1)
+        let required = Int(typeflow_engine_take_pending_replacement_utf8(raw, &buffer, buffer.count))
+        guard required == length else {
+            return nil
+        }
+        return TypeflowReplacement(deleteCount: deleteCount, text: String(cString: buffer))
+    }
+
     public static func defaultConfig() -> TfEngineConfig {
         var config = TfEngineConfig()
         typeflow_engine_default_config(&config)
@@ -107,67 +118,58 @@ public final class TypeflowEngine {
         typeflow_engine_set_host_context(raw, flags)
     }
 
-    public func process(physicalKey: UInt8, modifiers: UInt8 = 0) throws -> TypeflowCompositionAction {
-        try process(event: typeflow_ffi_letter_event(physicalKey, modifiers))
+    public func observe(physicalKey: UInt8, modifiers: UInt8 = 0) throws -> TypeflowObservationAction {
+        try observe(event: typeflow_ffi_letter_event(physicalKey, modifiers))
     }
 
-    public func processLiteral(_ scalar: UnicodeScalar) throws -> TypeflowCompositionAction {
-        try process(event: typeflow_ffi_literal_event(scalar.value))
+    public func observeLiteral(_ scalar: UnicodeScalar) throws -> TypeflowObservationAction {
+        try observe(event: typeflow_ffi_literal_event(scalar.value))
     }
 
-    public func processBackspace() throws -> TypeflowCompositionAction {
-        try process(event: typeflow_ffi_backspace_event())
+    public func observeBackspace() throws -> TypeflowObservationAction {
+        try observe(event: typeflow_ffi_backspace_event())
     }
 
-    public func processHostBypass(modifiers: UInt8) throws -> TypeflowCompositionAction {
-        try process(event: typeflow_ffi_host_bypass_event(modifiers | UInt8(TF_MOD_COMMAND)))
+    public func observeHostBypass(modifiers: UInt8) throws -> TypeflowObservationAction {
+        try observe(event: typeflow_ffi_host_bypass_event(modifiers | UInt8(TF_MOD_COMMAND)))
     }
 
-    public func endToken() throws -> TypeflowCompositionAction {
-        try process(event: typeflow_ffi_end_token_event())
+    public func endToken() throws -> TypeflowObservationAction {
+        try observe(event: typeflow_ffi_end_token_event())
     }
 
-    public func forceSwitchToken() throws -> TypeflowCompositionAction {
-        try withFreshComposition {
-            typeflow_engine_force_switch_token(raw, $0)
+    public func forceSwitchLayout() throws -> TypeflowObservationAction {
+        try withFreshObservation {
+            typeflow_engine_force_switch_layout(raw, $0)
         }
     }
 
-    private func process(event: TfEvent) throws -> TypeflowCompositionAction {
-        try withFreshComposition {
-            typeflow_engine_process(raw, event, $0)
+    private func observe(event: TfEvent) throws -> TypeflowObservationAction {
+        try withFreshObservation {
+            typeflow_engine_observe(raw, event, $0)
         }
     }
 
-    private func withFreshComposition(
-        _ call: (UnsafeMutablePointer<TfComposition>) -> Void
-    ) throws -> TypeflowCompositionAction {
-        var composition = typeflow_ffi_empty_composition()
-        call(&composition)
-        return try Self.decode(composition: &composition)
+    private func withFreshObservation(
+        _ call: (UnsafeMutablePointer<TfObservation>) -> Void
+    ) throws -> TypeflowObservationAction {
+        var observation = typeflow_ffi_empty_observation()
+        call(&observation)
+        return try Self.decode(observation: observation)
     }
 
     private static func decode(
-        composition: inout TfComposition
-    ) throws -> TypeflowCompositionAction {
-        switch composition.tag {
-        case UInt8(TF_COMPOSITION_BYPASS):
-            return .bypass
-        case UInt8(TF_COMPOSITION_RENDER):
-            let layout = try decodeLayout(composition.layout)
-            return .render(
-                text: try compositionString(from: &composition),
-                layout: layout
-            )
-        case UInt8(TF_COMPOSITION_COMMIT):
-            return .commit(
-                text: try compositionString(from: &composition),
-                consumeEvent: composition.consume_event != 0
-            )
-        case UInt8(TF_COMPOSITION_CLEAR):
-            return .clear(consumeEvent: composition.consume_event != 0)
+        observation: TfObservation
+    ) throws -> TypeflowObservationAction {
+        switch observation.tag {
+        case UInt8(TF_OBSERVATION_NONE):
+            return .none
+        case UInt8(TF_OBSERVATION_SWITCH_FUTURE_LAYOUT):
+            return .switchFutureLayout(try decodeLayout(observation.layout))
+        case UInt8(TF_OBSERVATION_RESET_TOKEN):
+            return .resetToken
         default:
-            throw TypeflowError.unknownCompositionTag(composition.tag)
+            throw TypeflowError.unknownObservationTag(observation.tag)
         }
     }
 
@@ -178,17 +180,4 @@ public final class TypeflowEngine {
         return layout
     }
 
-    private static func compositionString(from composition: inout TfComposition) throws -> String {
-        let length = Int(composition.text_len)
-        let bytes = try withUnsafeBytes(of: &composition.text) { rawBuffer in
-            guard length <= rawBuffer.count else {
-                throw TypeflowError.invalidCompositionUTF8
-            }
-            return Array(rawBuffer.prefix(length))
-        }
-        guard let string = String(bytes: bytes, encoding: .utf8) else {
-            throw TypeflowError.invalidCompositionUTF8
-        }
-        return string
-    }
 }

@@ -959,7 +959,7 @@ impl LanguageBundle {
     /// Loads the language bundle embedded into the binary at compile time.
     ///
     /// The raw subtitle/frequency downloads are build-time inputs only. Runtime code should
-    /// normally use this path so the CLI/IMK bundle is self-contained.
+    /// normally use this path so the CLI/macOS agent is self-contained.
     pub fn embedded() -> Result<Self, BundleError> {
         let (en_ngrams, en_dict, en_dict_prefix) = Self::embedded_english_artifacts();
         let (secondary_ngrams, secondary_dict, secondary_dict_prefix) =
@@ -1028,7 +1028,7 @@ impl LanguageBundle {
     }
 
     /// Loads a bundle from in-memory bytes. Suitable for `include_bytes!` use from
-    /// downstream crates (CLI / FFI / IMK bundle).
+    /// downstream crates (CLI / FFI / macOS agent).
     pub fn from_bytes<EnDict, SecondaryDict>(
         en_ngrams: &[u8],
         secondary_ngrams: &[u8],

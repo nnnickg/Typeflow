@@ -13,16 +13,15 @@ pub use keyboard::{
 };
 pub use score::has_dictionary_evidence;
 pub use types::{
-    CompositionAction, CompositionOutput, Decision, EngineConfig, EngineConfigError, HostContext,
-    InputEvent, Layout, LayoutCandidates, LayoutScore, MAX_CONFIG_TOKEN_LEN, ScoreAnalysis,
+    Decision, EngineConfig, EngineConfigError, HostContext, InputEvent, Layout, LayoutCandidates,
+    LayoutScore, MAX_CONFIG_TOKEN_LEN, ObservationAction, ObservationOutput, ScoreAnalysis,
 };
 
 #[cfg(test)]
 mod tests {
     use super::{
-        CompositionAction, Decision, Engine, EngineConfig, EngineConfigError, HostContext,
-        InputEvent, KeyboardMap, Layout, LetterEvent, MAX_CONFIG_TOKEN_LEN, PhysicalKey,
-        ScoreAnalysis,
+        Decision, Engine, EngineConfig, EngineConfigError, HostContext, InputEvent, KeyboardMap,
+        Layout, LetterEvent, MAX_CONFIG_TOKEN_LEN, ObservationAction, PhysicalKey, ScoreAnalysis,
     };
     use crate::data::LanguageBundle;
     use proptest::prelude::*;
@@ -158,7 +157,7 @@ mod tests {
             PhysicalKey::B,
             PhysicalKey::N,
         ]) {
-            engine.process(InputEvent::Letter(event));
+            engine.observe(InputEvent::Letter(event));
         }
 
         let candidates = engine.token_candidates();
@@ -167,119 +166,124 @@ mod tests {
     }
 
     #[test]
-    fn composition_renders_letters_without_committing_until_boundary() {
+    fn pass_through_tracks_letters_without_host_text_output() {
         let mut engine = engine();
-        let mut committed = String::new();
-        let mut composing = String::new();
+        let mut host_text = String::new();
+        let mut saw_secondary_switch = false;
 
         for character in "ghsdbn".chars() {
             let input = input_event_for_char(&engine, character);
-            let output = engine.process(input);
-            apply_composition(
-                output.action,
-                Some(character),
-                &mut committed,
-                &mut composing,
-            );
+            let output = engine.observe(input);
+            host_text.push(character);
+            saw_secondary_switch |=
+                output.action == ObservationAction::SwitchFutureLayout(Layout::Secondary);
         }
 
-        assert_eq!(committed, "");
-        assert_eq!(composing, "привіт");
+        assert_eq!(host_text, "ghsdbn");
+        assert_eq!(engine.token_candidates().secondary, "привіт");
         assert_eq!(engine.current_layout(), Layout::Secondary);
+        assert!(saw_secondary_switch);
 
-        let output = engine.process(InputEvent::EndToken);
-        apply_composition(output.action, None, &mut committed, &mut composing);
+        let output = engine.observe(InputEvent::EndToken);
 
-        assert_eq!(committed, "привіт");
-        assert_eq!(composing, "");
+        assert_eq!(output.action, ObservationAction::ResetToken);
         assert_eq!(engine.token_len(), 0);
     }
 
     #[test]
-    fn literal_commits_active_composition_and_literal_together() {
+    fn literal_resets_active_observed_token_without_text_output() {
         let mut engine = engine();
         for character in "abc".chars() {
             let input = input_event_for_char(&engine, character);
-            engine.process(input);
+            engine.observe(input);
         }
 
-        let output = engine.process(InputEvent::Literal('1'));
-        assert_eq!(
-            output.action,
-            CompositionAction::Commit {
-                text: "abc1".to_owned(),
-                consume_event: true,
-            }
-        );
+        let output = engine.observe(InputEvent::Literal('1'));
+        assert_eq!(output.action, ObservationAction::ResetToken);
         assert_eq!(engine.token_len(), 0);
     }
 
     #[test]
-    fn english_punctuation_key_commits_decided_english_token() {
+    fn punctuation_boundary_resets_observed_token() {
         let mut engine = engine();
-        let rendered = run_text_committed(&mut engine, "hello,ghsdbn");
+        for character in "hello".chars() {
+            let input = input_event_for_char(&engine, character);
+            engine.observe(input);
+        }
 
-        assert_eq!(rendered, "hello,привіт");
-        assert_eq!(engine.current_layout(), Layout::Secondary);
+        let output = engine.observe(InputEvent::Literal(','));
+        assert_eq!(output.action, ObservationAction::ResetToken);
+        assert_eq!(engine.token_len(), 0);
     }
 
     #[test]
-    fn punctuation_position_keys_can_still_form_secondary_words() {
+    fn english_separator_key_resets_when_secondary_candidate_is_not_plausible() {
         let mut engine = engine();
-        let rendered = run_text_committed(&mut engine, ",f,f");
+        for character in "hello".chars() {
+            let input = input_event_for_char(&engine, character);
+            engine.observe(input);
+        }
 
-        assert_eq!(rendered, "баба");
-        assert_eq!(engine.current_layout(), Layout::Secondary);
+        let comma = input_event_for_char(&engine, ',');
+        assert!(matches!(comma, InputEvent::Letter(_)));
+        let output = engine.observe(comma);
+
+        assert_eq!(output.action, ObservationAction::ResetToken);
+        assert_eq!(engine.token_len(), 0);
+        assert_eq!(engine.current_layout(), Layout::English);
     }
 
     #[test]
-    fn backspace_updates_owned_composition() {
+    fn secondary_word_can_use_english_separator_key_positions() {
+        let mut engine = engine();
+        let mut saw_secondary_switch = false;
+
+        for character in ",f,f".chars() {
+            let input = input_event_for_char(&engine, character);
+            let output = engine.observe(input);
+            saw_secondary_switch |=
+                output.action == ObservationAction::SwitchFutureLayout(Layout::Secondary);
+        }
+
+        assert_eq!(engine.token_candidates().secondary, "баба");
+        assert_eq!(engine.current_layout(), Layout::Secondary);
+        assert!(saw_secondary_switch);
+    }
+
+    #[test]
+    fn backspace_updates_observed_token_without_host_mutation() {
         let mut engine = engine();
         for character in "type".chars() {
             let input = input_event_for_char(&engine, character);
-            engine.process(input);
+            engine.observe(input);
         }
 
-        let output = engine.process(InputEvent::Backspace);
-        assert_eq!(
-            output.action,
-            CompositionAction::Render {
-                text: "typ".to_owned(),
-                layout: Layout::English,
-            }
-        );
+        let output = engine.observe(InputEvent::Backspace);
+        assert_eq!(output.action, ObservationAction::None);
         assert_eq!(engine.token_candidates().english, "typ");
 
-        engine.process(InputEvent::Backspace);
-        engine.process(InputEvent::Backspace);
-        let output = engine.process(InputEvent::Backspace);
-        assert_eq!(
-            output.action,
-            CompositionAction::Clear {
-                consume_event: true,
-            }
-        );
+        engine.observe(InputEvent::Backspace);
+        engine.observe(InputEvent::Backspace);
+        let output = engine.observe(InputEvent::Backspace);
+        assert_eq!(output.action, ObservationAction::ResetToken);
         assert_eq!(engine.token_len(), 0);
     }
 
     #[test]
-    fn manual_switch_changes_composition_not_document_state() {
+    fn manual_switch_changes_future_layout_and_resets_observed_token() {
         let mut engine = engine();
         for character in "type".chars() {
             let input = input_event_for_char(&engine, character);
-            engine.process(input);
+            engine.observe(input);
         }
 
-        let output = engine.force_switch_token();
+        let output = engine.force_switch_layout();
         assert_eq!(
             output.action,
-            CompositionAction::Render {
-                text: "ензу".to_owned(),
-                layout: Layout::Secondary,
-            }
+            ObservationAction::SwitchFutureLayout(Layout::Secondary)
         );
         assert_eq!(engine.current_layout(), Layout::Secondary);
-        assert_eq!(engine.token_len(), 4);
+        assert_eq!(engine.token_len(), 0);
     }
 
     #[test]
@@ -297,14 +301,13 @@ mod tests {
         .copied()
         .enumerate()
         {
-            case_engine.process(InputEvent::Letter(LetterEvent {
+            case_engine.observe(InputEvent::Letter(LetterEvent {
                 physical_key: key,
                 shift: idx % 2 == 1,
             }));
         }
 
         assert_eq!(case_engine.current_layout(), Layout::English);
-        assert_eq!(run_text_committed(&mut case_engine, ""), "gHsDbN");
 
         let mut engine = engine();
         for key in [
@@ -313,7 +316,7 @@ mod tests {
             PhysicalKey::T,
             PhysicalKey::P,
         ] {
-            engine.process(InputEvent::Letter(LetterEvent {
+            engine.observe(InputEvent::Letter(LetterEvent {
                 physical_key: key,
                 shift: true,
             }));
@@ -325,7 +328,7 @@ mod tests {
     fn host_context_bypasses_secure_and_full_disabled_inputs() {
         let mut engine = engine();
         for event in letters(&[PhysicalKey::G, PhysicalKey::H, PhysicalKey::B]) {
-            engine.process(InputEvent::Letter(event));
+            engine.observe(InputEvent::Letter(event));
         }
         assert_eq!(engine.token_len(), 3);
 
@@ -334,10 +337,10 @@ mod tests {
             automatic_processing_disabled: false,
             automatic_switching_disabled: false,
         });
-        let output = engine.process(InputEvent::Letter(LetterEvent::new(PhysicalKey::D)));
+        let output = engine.observe(InputEvent::Letter(LetterEvent::new(PhysicalKey::D)));
 
         assert_eq!(output.decision, Decision::Bypass);
-        assert_eq!(output.action, CompositionAction::Bypass);
+        assert_eq!(output.action, ObservationAction::None);
         assert_eq!(engine.token_len(), 0);
 
         engine.set_host_context(HostContext {
@@ -345,12 +348,12 @@ mod tests {
             automatic_processing_disabled: true,
             automatic_switching_disabled: false,
         });
-        let output = engine.process(InputEvent::Letter(LetterEvent::new(PhysicalKey::D)));
-        assert_eq!(output.action, CompositionAction::Bypass);
+        let output = engine.observe(InputEvent::Letter(LetterEvent::new(PhysicalKey::D)));
+        assert_eq!(output.action, ObservationAction::None);
     }
 
     #[test]
-    fn auto_switching_disabled_still_owns_composition_in_current_layout() {
+    fn auto_switching_disabled_tracks_without_switching() {
         let mut engine = engine();
         engine.set_host_context(HostContext {
             secure_input: false,
@@ -358,20 +361,26 @@ mod tests {
             automatic_switching_disabled: true,
         });
 
-        let rendered = run_text_committed(&mut engine, "ghsdbn");
+        for character in "ghsdbn".chars() {
+            let input = input_event_for_char(&engine, character);
+            let output = engine.observe(input);
+            assert_eq!(output.action, ObservationAction::None);
+        }
 
-        assert_eq!(rendered, "ghsdbn");
         assert_eq!(engine.current_layout(), Layout::English);
+        assert_eq!(engine.token_candidates().secondary, "привіт");
 
         engine.reset_layout(Layout::Secondary);
-        let rendered = run_text_committed(&mut engine, "ghsdbn");
-
-        assert_eq!(rendered, "привіт");
+        for character in "ghsdbn".chars() {
+            let input = input_event_for_char(&engine, character);
+            let output = engine.observe(input);
+            assert_eq!(output.action, ObservationAction::None);
+        }
         assert_eq!(engine.current_layout(), Layout::Secondary);
     }
 
     #[test]
-    fn long_tokens_commit_once_then_bypass_until_boundary() {
+    fn long_tokens_reset_then_bypass_until_boundary() {
         let config = EngineConfig {
             max_token_len: 3,
             ..EngineConfig::default()
@@ -379,33 +388,22 @@ mod tests {
         let mut engine = engine_with_config(config);
 
         for event in letters(&[PhysicalKey::A, PhysicalKey::B, PhysicalKey::C]) {
-            let output = engine.process(InputEvent::Letter(event));
-            assert!(matches!(output.action, CompositionAction::Render { .. }));
+            let output = engine.observe(InputEvent::Letter(event));
+            assert_eq!(output.action, ObservationAction::None);
         }
         assert_eq!(engine.token_len(), 3);
 
-        let output = engine.process(InputEvent::Letter(LetterEvent::new(PhysicalKey::D)));
-        assert_eq!(
-            output.action,
-            CompositionAction::Commit {
-                text: "abcd".to_owned(),
-                consume_event: true,
-            }
-        );
+        let output = engine.observe(InputEvent::Letter(LetterEvent::new(PhysicalKey::D)));
+        assert_eq!(output.action, ObservationAction::ResetToken);
         assert_eq!(engine.token_len(), 0);
 
-        let output = engine.process(InputEvent::Letter(LetterEvent::new(PhysicalKey::E)));
-        assert_eq!(output.action, CompositionAction::Bypass);
+        let output = engine.observe(InputEvent::Letter(LetterEvent::new(PhysicalKey::E)));
+        assert_eq!(output.action, ObservationAction::None);
 
-        engine.process(InputEvent::EndToken);
-        let output = engine.process(InputEvent::Letter(LetterEvent::new(PhysicalKey::F)));
-        assert_eq!(
-            output.action,
-            CompositionAction::Render {
-                text: "f".to_owned(),
-                layout: Layout::English,
-            }
-        );
+        engine.observe(InputEvent::EndToken);
+        let output = engine.observe(InputEvent::Letter(LetterEvent::new(PhysicalKey::F)));
+        assert_eq!(output.action, ObservationAction::None);
+        assert_eq!(engine.token_len(), 1);
     }
 
     #[test]
@@ -450,7 +448,7 @@ mod tests {
 
             for event in events {
                 let action = {
-                    let output = engine.process(event);
+                    let output = engine.observe(event);
                     output.action.clone()
                 };
                 let token_len = engine.token_len();
@@ -461,13 +459,10 @@ mod tests {
                 prop_assert_eq!(candidates.secondary.chars().count(), token_len);
 
                 match &action {
-                    CompositionAction::Render { text, .. } => {
-                        prop_assert!(text.chars().count() <= max_token_len);
+                    ObservationAction::None | ObservationAction::ResetToken => {}
+                    ObservationAction::SwitchFutureLayout(layout) => {
+                        prop_assert!(matches!(layout, Layout::English | Layout::Secondary));
                     }
-                    CompositionAction::Commit { text, .. } => {
-                        prop_assert!(text.chars().count() <= max_token_len + 1);
-                    }
-                    CompositionAction::Bypass | CompositionAction::Clear { .. } => {}
                 }
 
                 assert_finite_score(engine.token_score());
@@ -483,60 +478,8 @@ mod tests {
             .collect()
     }
 
-    fn run_text_committed(engine: &mut Engine, text: &str) -> String {
-        let mut committed = String::new();
-        let mut composing = String::new();
-        for character in text.chars() {
-            let input = input_event_for_char(engine, character);
-            let output = engine.process(input);
-            apply_composition(
-                output.action,
-                Some(character),
-                &mut committed,
-                &mut composing,
-            );
-        }
-        let output = engine.process(InputEvent::EndToken);
-        apply_composition(output.action, None, &mut committed, &mut composing);
-        committed
-    }
-
     fn input_event_for_char(engine: &Engine, character: char) -> InputEvent {
         engine.input_event_from_char(character)
-    }
-
-    fn apply_composition(
-        action: CompositionAction,
-        fallback: Option<char>,
-        committed: &mut String,
-        composing: &mut String,
-    ) {
-        match action {
-            CompositionAction::Bypass => {
-                if let Some(character) = fallback {
-                    committed.push(character);
-                }
-            }
-            CompositionAction::Render { text, .. } => {
-                *composing = text;
-            }
-            CompositionAction::Commit {
-                text,
-                consume_event,
-            } => {
-                committed.push_str(&text);
-                composing.clear();
-                if !consume_event && let Some(character) = fallback {
-                    committed.push(character);
-                }
-            }
-            CompositionAction::Clear { consume_event } => {
-                composing.clear();
-                if !consume_event && let Some(character) = fallback {
-                    committed.push(character);
-                }
-            }
-        }
     }
 
     fn assert_finite_score(score: ScoreAnalysis) {

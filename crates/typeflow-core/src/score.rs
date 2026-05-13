@@ -119,17 +119,23 @@ fn lowercase_if_needed(text: &str) -> Cow<'_, str> {
     let mut resume_from = 0;
     for (idx, character) in text.char_indices() {
         let mut lowercase = character.to_lowercase();
-        let first = lowercase.next().unwrap_or(character);
-        let expands = lowercase.next().is_some();
-        if first == character && !expands {
+        let Some(first) = lowercase.next() else {
+            continue;
+        };
+        // `to_lowercase` is stable for a given char, so we can peek the
+        // expansion by buffering one element ahead — no need to rebuild the
+        // iterator with `.skip(1)` later.
+        let second = lowercase.next();
+        if first == character && second.is_none() {
             continue;
         }
 
         let mut normalized = String::with_capacity(text.len());
         normalized.push_str(&text[..idx]);
         normalized.push(first);
-        if expands {
-            normalized.extend(character.to_lowercase().skip(1));
+        if let Some(second) = second {
+            normalized.push(second);
+            normalized.extend(lowercase);
         }
         resume_from = idx + character.len_utf8();
         output = Some(normalized);

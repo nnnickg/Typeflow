@@ -5,10 +5,9 @@ use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use typeflow_ffi::{
-    TF_COMPOSITION_BYPASS, TF_COMPOSITION_CLEAR, TF_COMPOSITION_COMMIT, TF_COMPOSITION_RENDER,
-    TF_COMPOSITION_TEXT_BUF_LEN, TF_EVENT_LETTER, TF_HOST_POLICY_REASON_NORMAL, TF_LAYOUT_ENGLISH,
-    TfComposition, TfEngine, TfEvent, TfHostInputPolicy, TfHostSurfaceFacts, typeflow_engine_free,
-    typeflow_engine_new_embedded, typeflow_engine_process, typeflow_engine_reset_layout,
+    TF_EVENT_LETTER, TF_HOST_POLICY_REASON_NORMAL, TF_LAYOUT_ENGLISH, TF_OBSERVATION_NONE,
+    TfEngine, TfEvent, TfHostInputPolicy, TfHostSurfaceFacts, TfObservation, typeflow_engine_free,
+    typeflow_engine_new_embedded, typeflow_engine_observe, typeflow_engine_reset_layout,
     typeflow_host_config_free, typeflow_host_config_load_defaults,
     typeflow_host_config_resolve_input_policy,
 };
@@ -38,17 +37,14 @@ fn bench_ffi(c: &mut Criterion) {
     });
 
     group.throughput(Throughput::Elements(batch_key_count(MIXED_TOKENS) as u64));
-    group.bench_function(
-        "process_mixed_physical_batch_new_composition_each_key",
-        |b| {
-            let engine = typeflow_engine_new_embedded();
-            assert!(!engine.is_null());
-            b.iter(|| feed_process_batch_new_action_each_key(engine, MIXED_TOKENS));
-            unsafe {
-                typeflow_engine_free(engine);
-            }
-        },
-    );
+    group.bench_function("observe_mixed_physical_batch_new_output_each_key", |b| {
+        let engine = typeflow_engine_new_embedded();
+        assert!(!engine.is_null());
+        b.iter(|| feed_process_batch_new_action_each_key(engine, MIXED_TOKENS));
+        unsafe {
+            typeflow_engine_free(engine);
+        }
+    });
 
     group.bench_function("new_embedded_engine_cached", |b| {
         b.iter(|| {
@@ -65,7 +61,7 @@ fn bench_ffi(c: &mut Criterion) {
         let config = typeflow_host_config_load_defaults();
         assert!(!config.is_null());
         let bundle = CString::new("dev.zed.Zed").unwrap();
-        let client = CString::new("IMKTextInput").unwrap();
+        let client = CString::new("CGEventTap").unwrap();
         let identifier = CString::new("source-editor").unwrap();
         let facts = TfHostSurfaceFacts {
             secure_input: 0,
@@ -93,10 +89,10 @@ fn bench_ffi(c: &mut Criterion) {
     });
 
     group.throughput(Throughput::Elements(WRONG_LAYOUT_TOKEN.len() as u64));
-    group.bench_function("process_and_apply_wrong_layout_token", |b| {
+    group.bench_function("observe_wrong_layout_token", |b| {
         let engine = typeflow_engine_new_embedded();
         assert!(!engine.is_null());
-        b.iter(|| feed_and_apply_token(engine, WRONG_LAYOUT_TOKEN));
+        b.iter(|| feed_token(engine, WRONG_LAYOUT_TOKEN));
         unsafe {
             typeflow_engine_free(engine);
         }
@@ -122,17 +118,17 @@ fn bench_ffi(c: &mut Criterion) {
 }
 
 fn feed_process_batch(engine: *mut TfEngine, tokens: &[&[u8]]) {
-    let mut composition = blank_composition();
+    let mut observation = blank_observation();
     for token in tokens {
         unsafe {
             typeflow_engine_reset_layout(engine, TF_LAYOUT_ENGLISH);
         }
         for physical in *token {
             unsafe {
-                typeflow_engine_process(engine, letter(*physical), &mut composition);
+                typeflow_engine_observe(engine, letter(*physical), &mut observation);
             }
-            black_box(composition.tag);
-            black_box(composition.text_len);
+            black_box(observation.tag);
+            black_box(observation.layout);
         }
     }
 }
@@ -143,43 +139,40 @@ fn feed_process_batch_new_action_each_key(engine: *mut TfEngine, tokens: &[&[u8]
             typeflow_engine_reset_layout(engine, TF_LAYOUT_ENGLISH);
         }
         for physical in *token {
-            let mut composition = blank_composition();
+            let mut observation = blank_observation();
             unsafe {
-                typeflow_engine_process(engine, letter(*physical), &mut composition);
+                typeflow_engine_observe(engine, letter(*physical), &mut observation);
             }
-            black_box(composition.tag);
-            black_box(composition.text_len);
+            black_box(observation.tag);
+            black_box(observation.layout);
         }
     }
 }
 
-fn feed_and_apply_token(engine: *mut TfEngine, token: &[u8]) {
-    let mut composition = blank_composition();
-    let mut committed = String::new();
-    let mut composing = String::new();
+fn feed_token(engine: *mut TfEngine, token: &[u8]) {
+    let mut observation = blank_observation();
     unsafe {
         typeflow_engine_reset_layout(engine, TF_LAYOUT_ENGLISH);
     }
     for physical in token {
         unsafe {
-            typeflow_engine_process(engine, letter(*physical), &mut composition);
+            typeflow_engine_observe(engine, letter(*physical), &mut observation);
         }
-        apply_composition(&composition, &mut committed, &mut composing);
-        black_box(&committed);
-        black_box(&composing);
+        black_box(observation.tag);
+        black_box(observation.layout);
     }
 }
 
 fn feed_letter_run(engine: *mut TfEngine, len: usize) {
-    let mut composition = blank_composition();
+    let mut observation = blank_observation();
     unsafe {
         typeflow_engine_reset_layout(engine, TF_LAYOUT_ENGLISH);
     }
     for _ in 0..len {
         unsafe {
-            typeflow_engine_process(engine, letter(0), &mut composition);
+            typeflow_engine_observe(engine, letter(0), &mut observation);
         }
-        black_box(composition.tag);
+        black_box(observation.tag);
     }
 }
 
@@ -192,37 +185,11 @@ const fn letter(physical: u8) -> TfEvent {
     }
 }
 
-fn blank_composition() -> TfComposition {
-    TfComposition {
-        tag: TF_COMPOSITION_BYPASS,
-        consume_event: 0,
+fn blank_observation() -> TfObservation {
+    TfObservation {
+        tag: TF_OBSERVATION_NONE,
         layout: TF_LAYOUT_ENGLISH,
-        text_len: 0,
-        text: [0; TF_COMPOSITION_TEXT_BUF_LEN],
     }
-}
-
-fn apply_composition(composition: &TfComposition, committed: &mut String, composing: &mut String) {
-    match composition.tag {
-        TF_COMPOSITION_BYPASS => {}
-        TF_COMPOSITION_RENDER => {
-            composing.clear();
-            composing.push_str(composition_text(composition));
-        }
-        TF_COMPOSITION_COMMIT => {
-            committed.push_str(composition_text(composition));
-            composing.clear();
-        }
-        TF_COMPOSITION_CLEAR => {
-            composing.clear();
-        }
-        _ => unreachable!("unexpected FFI composition tag"),
-    }
-}
-
-fn composition_text(composition: &TfComposition) -> &str {
-    std::str::from_utf8(&composition.text[..composition.text_len])
-        .expect("FFI composition should be valid UTF-8")
 }
 
 fn batch_key_count(tokens: &[&[u8]]) -> usize {

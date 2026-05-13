@@ -1,31 +1,28 @@
 # Host Test Matrix
 
-Run this after `make -C macos install-user` has installed and registered the
-bundle. This is intentionally manual: Slack, browser password fields, Notes,
-and Mail are host/editor behavior, not something the Rust unit suite can
-truthfully certify.
+Run this after `make -C macos install-user` has installed and started the
+agent. This is intentionally manual because host/editor behavior is outside the
+Rust unit suite.
 
 Assumptions:
 
-- Typeflow is selected as the current input source.
-- The embedded secondary language is Ukrainian, or `language.secondary = "uk"`.
+- Typeflow is running as a background agent.
+- Real English and secondary keyboard input sources are installed. Configure
+  `[macos].english_input_source_id` and `[macos].secondary_input_source_id` if
+  auto-detection picks the wrong ones.
 - The tested app is not listed in `apps.disable_bundle_ids` or
-  `apps.disable_auto_bundle_ids`, except for the explicit policy checks.
-- ABC or another standard Latin input source remains installed as fallback.
+  `apps.disable_auto_bundle_ids`, except for explicit policy checks.
 
 Core cases for every normal text field:
 
 | Input | Expected visible text | Purpose |
 | --- | --- | --- |
-| `[fnf` | `хата` | punctuation-position secondary letters stay inside the composed token |
-| `'dhj` | `євро` | ASCII quote key can be part of a secondary token |
-| `’dhj` | `євро` | host smart quote mutation does not leave a leading quote behind |
-| `hello —[fnf` | `hello —хата` | smart dash before token is a boundary, not token corruption |
-| `ghsdbn` | `привіт` | normal Ukrainian conversion still works |
-| `http` | `http` | common English technical token stays English |
-| `user@example.com` | `user@example.com` | email-like text stays English |
-| `arn:aws:iam::000000000000:role/ExampleRole` | unchanged | infrastructure identifier stays English |
-| `CLOUDACCESSKEYIDLIKEVALUE1234` | unchanged | secret-like token stays English |
+| `ghsdbn` | secondary word, e.g. `привіт` / `привет` by configured pack | automatic token replacement |
+| `[fnf` | secondary candidate when valid, otherwise unchanged | punctuation-position keys stay engine-owned, not ad hoc text parsing |
+| `hello ghsdbn` | `hello ` plus replaced secondary word | space resets observed token before next replacement |
+| `http` | `http` | English technical token remains untouched |
+| `user@example.com` | `user@example.com` | punctuation boundaries pass through normally |
+| `arn:aws:iam::000000000000:role/ExampleRole` | unchanged | infrastructure identifier stays untouched |
 
 App/field matrix:
 
@@ -42,23 +39,17 @@ App/field matrix:
 
 Expected host behavior:
 
-- Normal fields apply the core cases above.
-- Password fields bypass Typeflow completely; `[fnf` must remain `[fnf`.
-- Apps in `apps.disable_auto_bundle_ids` bypass automatic layout switching, but
-  still let Typeflow own the active composition in the current layout.
-  Standalone Option changes that active composition to the opposite layout.
-  After standalone Option conversion, the next word should commit in the
-  selected manual layout without automatic switching.
-- Apps in `apps.disable_bundle_ids` bypass both automatic changes and
-  standalone Option conversion.
-- Apps in `apps.direct_commit_bundle_ids` should still produce the same final
-  committed text, but live native composition is intentionally skipped.
-- Terminal-like surfaces bypass both automatic changes and standalone Option
-  conversion even when the app is not listed in config. Normal editor buffers in
-  the same app should still follow the app's normal policy.
+- Normal fields should feel exactly like app-native typing: no underline, no
+  inline ownership UI, no overlay.
+- When Rust returns `SwitchFutureLayout`, Typeflow replaces the current token
+  once and changes the real macOS keyboard source for future keys.
+- Password fields bypass Typeflow observation.
+- Apps in `apps.disable_auto_bundle_ids` disable automatic layout switching but
+  still allow standalone Option in normal non-secure fields.
+- Apps in `apps.disable_bundle_ids` bypass both automatic observation behavior
+  and standalone Option switching.
+- Terminal-like surfaces bypass both automatic behavior and standalone Option
+  switching even when the app is not listed in config.
 - Embedded terminal-pane detection depends on macOS Accessibility metadata. If
   Typeflow is not Accessibility-trusted, terminal apps are still blocked by
   bundle id but embedded terminal panes may look like normal editor text.
-- Autocorrect or rich-text mutations may change punctuation around the token,
-  but the final commit must not leave stale ASCII/smart punctuation inside the
-  word.

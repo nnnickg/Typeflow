@@ -63,6 +63,19 @@ fn predict_uses_embedded_ukrainian_bundle() {
 }
 
 #[test]
+fn predict_handles_secondary_letters_on_english_punctuation_keys() {
+    let config = empty_config("predict-separator-keys");
+    let output = typeflow()
+        .args(["--config", config.to_str().expect("utf-8 temp path")])
+        .args(["predict", ",f,f"])
+        .output()
+        .expect("run typeflow predict");
+
+    assert_success(&output);
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "Ukrainian\tбаба\n");
+}
+
+#[test]
 fn predict_json_outputs_one_record_per_token() {
     let config = empty_config("predict-json");
     let output = typeflow()
@@ -73,9 +86,20 @@ fn predict_json_outputs_one_record_per_token() {
 
     assert_success(&output);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("\"keys\":\"ghsdbn\""));
-    assert!(stdout.contains("\"layout\":\"Ukrainian\""));
-    assert!(stdout.contains("\"rendered\":\"привіт\""));
+    let record: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("predict --json emits valid json");
+    assert_eq!(record["keys"], "ghsdbn");
+    assert_eq!(record["layout"], "Ukrainian");
+    assert_eq!(record["rendered"], "привіт");
+    assert!(
+        record["secondary_total"]
+            .as_f64()
+            .expect("secondary_total number")
+            > record["primary_total"]
+                .as_f64()
+                .expect("primary_total number")
+    );
+    assert!(record["margin"].as_f64().expect("margin number") < -1.0);
 }
 
 #[test]

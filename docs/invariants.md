@@ -1,18 +1,16 @@
 # Core Invariants
 
-This is the contract the Rust core expects every host to respect. The macOS
-IMK layer should be written against this file, not against CLI behavior by
-accident.
+This is the Rust core and host contract. The macOS observer agent should be
+written against this file, not against CLI convenience behavior.
 
 ## Language Pair
 
 - The engine scores exactly two sides: `Layout::English` and
   `Layout::Secondary`.
-- English is the fixed primary side.
-- `Secondary` is language-pack backed. The release binary embeds Ukrainian
-  (`uk`); any other secondary language is loaded from an installed pack.
-- `Layout::Secondary` is a role, not a specific language. Host code must not
-  bake in assumptions about the active secondary language.
+- English is fixed. `Secondary` is language-pack backed; release builds embed
+  Ukrainian (`uk`) and can load other installed packs.
+- `Layout::Secondary` is a role, not a hardcoded language. Host code must not
+  assume Ukrainian-specific text.
 
 ## Physical Keys
 
@@ -21,65 +19,59 @@ accident.
 - Current indices are `A..Z = 0..25`, `Grave = 26`, `LBracket = 27`,
   `RBracket = 28`, `Semicolon = 29`, `Quote = 30`, `Comma = 31`,
   `Period = 32`, `Backslash = 33`.
-- A keycode-level host must send physical key positions, not rendered
-  characters.
+- A keycode-level host sends physical key positions, not rendered characters,
+  for normal letters.
 - A text-driven caller may use `Engine::input_event_from_char`; that path
   reverse-maps through the loaded keyboard maps and falls back to literals.
-- Shift is part of `LetterEvent`, not a separate token. Shifted and unshifted
-  letters share the same physical key with different `shift`.
-- Ctrl, Command, and Option-modified key events are host bypass events. The
-  engine must not consume or transform shortcuts.
-- A host may bind standalone Option press/release to `force_switch_token()` for
-  manual conversion. That modifier transition is host behavior; it is not a
-  letter event and is not encoded as a `TfEvent`.
+- Ctrl, Command, and Option-modified key events are host bypass events.
+- Standalone Option may call `force_switch_layout()` as a host command. It is
+  not encoded as a `TfEvent`.
+
+## Pass-Through Contract
+
+- Typeflow is an observer, not an input compositor.
+- Normal printable keyDown events pass through to the app through a listen-only
+  event tap. Typeflow must not become the active text compositor.
+- The engine never returns text to render or commit during normal typing.
+- The host must not call host composition or overlay APIs for normal observed
+  letters.
+- Typeflow may update internal token state and inferred future layout on every
+  key. It may perform one host token replacement when a switch decision is made.
+- Manual Option switching changes future layout state and resets the observed
+  token. If a token is active, the macOS host may replace that token once.
 
 ## Token State
 
 - The token buffer contains only `LetterEvent` values.
 - `candidates.english` and `candidates.secondary` are renderings of the same
-  token under the two active keyboard maps.
-- Candidate character counts must match the token length.
-- `reset_token()` clears token, candidates, and score cache without changing
-  the active layout.
-- `reset_layout(layout)` changes active layout and clears token, candidates,
-  and score cache.
-- `EndToken` commits the active rendered composition once and clears token
-  state. If no token is active, it bypasses to the host.
-- `Literal(char)` commits the active rendered composition plus the literal
-  once, then clears token state. If no token is active, it bypasses to the host.
-- Punctuation-looking physical keys that are secondary-layout letters remain
-  `Letter` events. If the active layout is English and the current token has
-  already resolved as English, English punctuation on those keys terminates the
-  token and commits the punctuation character.
-- `Backspace` removes one `LetterEvent` from token state, reconciles the
-  inferred layout for the shortened token, and returns a render or clear
-  composition action.
-- Backspace on an empty token bypasses to the host.
-- Once a letter-only run exceeds `max_token_len`, the engine commits the
-  buffered composition plus the current key once, then bypasses scoring until
-  the next token boundary.
-- Hosts must call `EndToken` or `reset_token()` on focus loss, app switch,
-  committed whitespace, or any other boundary that makes the previous letters
-  no longer belongs to the active composition.
-- Hosts must reset token state when the focused text client changes or when an
-  out-of-band edit invalidates the active composition.
+  observed token under the two active keyboard maps.
+- Candidate character counts must match token length.
+- `reset_token()` clears token, candidates, n-grams, and score cache without
+  changing the active layout.
+- `reset_layout(layout)` changes active layout and clears token state.
+- `EndToken`, `Literal(char)`, `HostBypass`, focus loss, app switch, secure
+  input, and disabled surfaces reset the observed token.
+- English punctuation-position `LetterEvent`s reset the observed token only
+  when appending the key leaves the secondary candidate without dictionary
+  prefix or exact-word evidence.
+- `Backspace` removes one `LetterEvent` from token state and reconciles the
+  inferred layout for the shortened token.
+- Backspace on an empty token is a no-op for engine state.
+- Once a letter-event run exceeds `max_token_len`, the engine resets token
+  state and ignores scoring until the next boundary.
 
-## Composition Protocol
+## Observation Protocol
 
-- `CompositionAction::Render { text, layout }` means redraw the active
-  Typeflow-owned composition. The host must consume the key event and must not
-  let the app insert raw text for that event.
-- `CompositionAction::Commit { text, consume_event }` means insert `text` once
-  with host commit semantics. If `consume_event` is false, the host may pass the
-  original boundary event through after committing the text.
-- `CompositionAction::Clear { consume_event }` means clear active rendered
-  composition without committing text.
-- `CompositionAction::Bypass` means Typeflow is not handling the event. The host
-  should let the app process it normally.
-- Normal conversion is render-only while a token is active. The document is not
-  edited per key and no committed trailing text is replaced.
-- `force_switch_token()` changes the internal layout and returns `Render`; it
-  does not mutate committed document text.
+- `Engine::observe(InputEvent) -> ObservationOutput` is the hot path.
+- `ObservationAction::None` means no host-visible state notification.
+- `ObservationAction::SwitchFutureLayout(layout)` means the engine's inferred
+  future layout changed.
+- `ObservationAction::ResetToken` means the active observed token ended or was
+  discarded.
+- `SwitchFutureLayout` authorizes a boundary-sized host side effect: replace the
+  currently tracked token with the Rust-rendered candidate for `layout`, then
+  select the configured real keyboard input source for future keys.
+- `None` and `ResetToken` do not authorize document mutation.
 
 ## Switching Rules
 
@@ -87,42 +79,34 @@ accident.
 - Tokens with internal Shift-modified letters bypass switching when
   `disable_on_internal_caps` is enabled.
 - Fully shifted acronym-like tokens bypass switching.
-- A candidate can win via normal `confidence_margin` only when it has
-  dictionary evidence: exact match or prefix evidence.
+- A candidate can win via `confidence_margin` only when it has dictionary
+  evidence: exact match or prefix evidence.
 - A candidate without dictionary evidence must clear
   `ngram_only_confidence_margin`.
 - When a token shrinks through backspace, the engine re-scores the shortened
   token. If no layout now wins, it restores the token's start layout.
-- Once a token has switched during normal typing, the active layout remains the
-  winning layout until another decision, backspace reconciliation, token reset,
-  or explicit layout reset changes it.
-- `force_switch_token()` bypasses scoring and switches to the opposite layout
-  for the current token only.
+- `force_switch_layout()` bypasses scoring, switches to the opposite layout,
+  clears the observed token, and returns `SwitchFutureLayout`.
 
 ## Host Context
 
 - `HostContext.secure_input` and
   `HostContext.automatic_processing_disabled` are full bypass flags for normal
-  key processing.
+  key observation.
 - While either full bypass flag is true, the engine clears token state and
-  returns `Decision::Bypass` with `CompositionAction::Bypass`.
+  returns `Decision::Bypass`.
 - `HostContext.automatic_switching_disabled` disables automatic layout
-  decisions, but the host still uses Typeflow-owned composition in the current
-  layout. This is the mode used for apps in `apps.disable_auto_bundle_ids`:
-  standalone Option can switch the current layout, and subsequent keys use that
-  layout without automatic scoring.
-- The host is responsible for setting these flags before sending letter events.
-  Secure-input detection is a host signal. App disable policy and
-  terminal-surface policy are evaluated by Rust from `HostSurfaceFacts`,
-  `apps.disable_bundle_ids`, `apps.disable_auto_bundle_ids`, and
-  `apps.direct_commit_bundle_ids`; the macOS host supplies facts, not decisions.
-- Renderer choice does not change engine semantics. The default macOS renderer
-  is native marked text; direct-commit policy only changes how `Render` is
-  presented before the boundary `Commit`.
+  decisions, but the engine may still observe token candidates in the current
+  layout. This backs `apps.disable_auto_bundle_ids`.
+- Rust owns app policy from `HostSurfaceFacts`, `apps.disable_bundle_ids`, and
+  `apps.disable_auto_bundle_ids`; Swift supplies facts.
 - Secure input, terminal-like surfaces, and fully disabled apps bypass
   everything.
-- Clearing host context does not restore a previous token. The next letter
-  starts a fresh token.
+- Unavailable config or engine data is a startup failure. The macOS agent must
+  report it and terminate instead of running with a nil engine.
+- macOS must not do AX discovery synchronously inside key handling. It uses the
+  last cached policy; stale or unknown policy defaults to bypass/no replacement
+  until the asynchronous refresh completes.
 
 ## FFI
 
@@ -132,28 +116,28 @@ accident.
   `typeflow_engine_free`.
 - Passing null to null-tolerant functions is a no-op or English fallback as
   documented in the Rust FFI comments.
-- `typeflow_engine_process` requires a valid engine pointer and writable
-  `TfComposition` pointer. Invalid events decode to
-  `CompositionAction::Bypass`.
-- `TfComposition.text` is an inline UTF-8 byte buffer. The host must copy
-  exactly `text_len` bytes and decode them as UTF-8.
-- `TF_COMPOSITION_TEXT_BUF_LEN` bounds render and commit payloads. If a payload
-  exceeds that buffer, the FFI writer fails closed with a clear composition
-  action rather than exposing partial text.
+- `typeflow_engine_observe` requires a valid engine pointer and writable
+  `TfObservation` pointer. Invalid events write `ObservationAction::None`.
+- `TfObservation` contains only `tag` and `layout`; replacement text is not part
+  of the observation payload.
+- `typeflow_engine_observe` and `typeflow_engine_force_switch_layout` must
+  capture a pending replacement snapshot before any token reset that follows a
+  `SwitchFutureLayout` action.
+- Hosts that need replacement text must consume the pending snapshot with
+  `typeflow_engine_pending_replacement_delete_count`,
+  `typeflow_engine_pending_replacement_utf8_len`, and
+  `typeflow_engine_take_pending_replacement_utf8`. Reset, host-context changes,
+  invalid events, and non-switch observations clear the snapshot.
 
 ## Data And Packs
 
 - Embedded data must deserialize into `CompiledLanguageData` whose
   `language_tag` matches the expected pack id.
-- Pack manifests must stay within the pack directory. Path traversal is
-  invalid.
+- Pack manifests must stay within the pack directory. Path traversal is invalid.
 - Pack ids are stable user-facing identifiers. `en` is reserved and cannot be a
   secondary pack id.
 - Pack format compatibility is governed by `PACK_FORMAT_VERSION`.
 - `docs/artifact-format.md` defines what requires a format-version bump.
-- `LanguageBundle::embedded()` means embedded English plus embedded Ukrainian.
-- `LanguageBundle::from_secondary_pack_dir(path)` means embedded English plus
-  exactly one external secondary pack.
 
 ## Calibration Boundaries
 
@@ -167,7 +151,7 @@ Calibration may change:
 
 Calibration must not change:
 
-- `CompositionAction` semantics.
+- `ObservationAction` semantics.
 - `PhysicalKey` numeric indices.
 - token/candidate length invariants.
 - FFI ownership rules.

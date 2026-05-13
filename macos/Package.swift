@@ -17,8 +17,7 @@ let package = Package(
     products: [
         .library(name: "TypeflowKit", targets: ["TypeflowKit"]),
         .executable(name: "typeflow-staticlib-smoke", targets: ["TypeflowSmoke"]),
-        .executable(name: "typeflow-register-input-source", targets: ["TypeflowRegister"]),
-        .executable(name: "Typeflow", targets: ["TypeflowInputMethod"]),
+        .executable(name: "Typeflow", targets: ["TypeflowAgent"]),
     ],
     targets: [
         .systemLibrary(
@@ -40,22 +39,14 @@ let package = Package(
             ]
         ),
         .executableTarget(
-            name: "TypeflowRegister",
-            path: "Sources/TypeflowRegister",
-            linkerSettings: [
-                .linkedFramework("Carbon"),
-            ]
-        ),
-        .executableTarget(
-            name: "TypeflowInputMethod",
+            name: "TypeflowAgent",
             dependencies: ["TypeflowKit", "TypeflowFFI"],
-            path: "Sources/TypeflowInputMethod",
+            path: "Sources/TypeflowAgent",
             linkerSettings: [
                 .unsafeFlags(rustStaticLinkerFlags),
                 .linkedFramework("AppKit"),
                 .linkedFramework("ApplicationServices"),
                 .linkedFramework("Carbon"),
-                .linkedFramework("InputMethodKit"),
             ]
         ),
     ]

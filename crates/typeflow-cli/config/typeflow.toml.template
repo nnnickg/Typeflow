@@ -17,8 +17,8 @@
 # Default: 4
 min_token_len = 4
 
-# Maximum number of letters tracked as one active composition token. Longer
-# letter-only runs bypass scoring until a real token boundary so huge
+# Maximum number of letter events tracked as one observed token. Longer
+# letter-event runs bypass scoring until a real token boundary so huge
 # identifiers or pasted text cannot turn scoring into quadratic nonsense.
 # Valid range: 1..1024, and must be >= min_token_len.
 # Default: 128
@@ -92,40 +92,42 @@ secondary = "uk"
 [apps]
 
 # Terminal-like surfaces are disabled by built-in Rust host policy. Shell prompts
-# are not normal document editors, and terminal apps vary in how they handle IMK
-# commit events and cursor geometry. That includes Terminal.app, iTerm2, common
+# are not normal document editors, and terminal apps vary in how they handle
+# keyboard source changes and cursor state. That includes Terminal.app, iTerm2, common
 # terminal apps, and embedded terminal panes when macOS exposes terminal-like
 # accessibility metadata.
 
 # Bundle IDs where Typeflow should stay completely silent.
-# No automatic conversion. No standalone Option conversion.
-# The CLI ignores apps because it has no foreground app context. The macOS IMK
-# bundle enforces these lists before sending key events to the engine.
+# No automatic observation behavior. No standalone Option layout switch.
+# The CLI ignores apps because it has no foreground app context. The macOS
+# agent enforces these lists before sending key events to the engine.
 disable_bundle_ids = [
     # "com.apple.Safari",
 ]
 
-# Bundle IDs where automatic conversion is disabled but standalone Option
-# conversion is still allowed in normal, non-secure text fields. After
-# standalone Option conversion, subsequent keys commit in the selected manual
-# layout, but Typeflow still will not auto-score or auto-switch in these apps.
+# Bundle IDs where automatic layout switching is disabled but standalone Option
+# switching is still allowed in normal, non-secure text fields.
 disable_auto_bundle_ids = [
     # "dev.zed.Zed",
     # "com.microsoft.VSCode",
     # "com.jetbrains.intellij",
 ]
 
-# Bundle IDs where live composition should use the direct-commit renderer
-# instead of native marked text. This is a UX downgrade: typed text is committed
-# at token boundaries only. Use it only for apps where marked text is too slow
-# or broken.
-direct_commit_bundle_ids = [
-    # "com.example.BrokenEditor",
-]
-
-# Manual conversion is intentionally not configurable here. The macOS host
+# Manual switching is intentionally not configurable here. The macOS host
 # hardcodes standalone Option press/release. Option+another key passes through
 # as normal app input.
+
+[macos]
+
+# Real macOS keyboard input sources used by the background agent.
+# Typeflow is no longer an input method. It observes keys and switches these
+# system input sources, so the target app still owns text insertion.
+#
+# If omitted, the agent uses the current ASCII-capable layout for English and
+# searches installed keyboard sources by [language].secondary for the secondary
+# side. Set these explicitly if macOS picks the wrong source.
+# english_input_source_id = "com.apple.keylayout.ABC"
+# secondary_input_source_id = "com.apple.keylayout.Ukrainian"
 
 [data]
 

@@ -13,12 +13,12 @@ enum SmokeError: Error, CustomStringConvertible {
     case wrongDataDirectory(String?)
     case wrongSecondaryLanguage(String)
     case wrongAppPolicy(String)
-    case wrongComposition(TypeflowCompositionAction)
+    case wrongObservation(TypeflowObservationAction)
 
     var description: String {
         switch self {
         case let .wrongOutput(output):
-            return "expected привіт, got \(output)"
+            return "unexpected output: \(output)"
         case let .wrongLayout(layout):
             return "expected secondary layout, got \(layout)"
         case let .wrongDefaultMaxTokenLen(value):
@@ -31,52 +31,40 @@ enum SmokeError: Error, CustomStringConvertible {
             return "unexpected secondary language: \(value)"
         case let .wrongAppPolicy(value):
             return "unexpected app policy result: \(value)"
-        case let .wrongComposition(action):
-            return "unexpected composition action: \(action)"
-        }
-    }
-}
-
-func apply(
-    _ action: TypeflowCompositionAction,
-    fallback: Character? = nil,
-    committed: inout String,
-    composing: inout String
-) {
-    switch action {
-    case .bypass:
-        if let fallback {
-            committed.append(fallback)
-        }
-    case let .render(text, _):
-        composing = text
-    case let .commit(text, consumeEvent):
-        committed.append(text)
-        composing = ""
-        if !consumeEvent, let fallback {
-            committed.append(fallback)
-        }
-    case let .clear(consumeEvent):
-        composing = ""
-        if !consumeEvent, let fallback {
-            committed.append(fallback)
+        case let .wrongObservation(action):
+            return "unexpected observation action: \(action)"
         }
     }
 }
 
 func typeToken(_ engine: TypeflowEngine, keyCodes: [Int]) throws -> String {
-    var committed = ""
-    var composing = ""
+    var hostText = ""
     for keyCode in keyCodes.map(UInt16.init) {
         guard let physical = TypeflowMacKeyCode.physicalKeyIndex(for: keyCode) else {
             throw SmokeError.wrongOutput("unmapped keycode \(keyCode)")
         }
-        let action = try engine.process(physicalKey: physical)
-        apply(action, committed: &committed, composing: &composing)
+        _ = try engine.observe(physicalKey: physical)
+        hostText.append(try englishCharacter(for: keyCode))
     }
-    let action = try engine.endToken()
-    apply(action, committed: &committed, composing: &composing)
-    return committed
+    _ = try engine.endToken()
+    return hostText
+}
+
+func englishCharacter(for keyCode: UInt16) throws -> Character {
+    switch Int(keyCode) {
+    case kVK_ANSI_B: return "b"
+    case kVK_ANSI_D: return "d"
+    case kVK_ANSI_E: return "e"
+    case kVK_ANSI_G: return "g"
+    case kVK_ANSI_H: return "h"
+    case kVK_ANSI_N: return "n"
+    case kVK_ANSI_P: return "p"
+    case kVK_ANSI_S: return "s"
+    case kVK_ANSI_T: return "t"
+    case kVK_ANSI_Y: return "y"
+    default:
+        throw SmokeError.wrongOutput("unmapped smoke keycode \(keyCode)")
+    }
 }
 
 func fail(_ error: Error) -> Never {
@@ -119,6 +107,10 @@ func verifyHostConfigPrecedence() throws {
         "com.apple.Terminal",
         "com.apple.TextEdit",
     ]
+
+    [macos]
+    english_input_source_id = " com.apple.keylayout.ABC "
+    secondary_input_source_id = " com.apple.keylayout.Ukrainian "
     """.write(to: configPath, atomically: true, encoding: .utf8)
 
     let config = try TypeflowHostConfig.load(environment: [
@@ -136,6 +128,16 @@ func verifyHostConfigPrecedence() throws {
     }
     guard config.secondaryLanguage == "pl" else {
         throw SmokeError.wrongSecondaryLanguage(config.secondaryLanguage)
+    }
+    guard config.macOSEnglishInputSourceID == "com.apple.keylayout.ABC" else {
+        throw SmokeError.wrongAppPolicy(
+            "englishInputSourceID=\(config.macOSEnglishInputSourceID ?? "nil")"
+        )
+    }
+    guard config.macOSSecondaryInputSourceID == "com.apple.keylayout.Ukrainian" else {
+        throw SmokeError.wrongAppPolicy(
+            "secondaryInputSourceID=\(config.macOSSecondaryInputSourceID ?? "nil")"
+        )
     }
     guard config.disabledBundleIDCount == 2 else {
         throw SmokeError.wrongAppPolicy("disabledCount=\(config.disabledBundleIDCount)")
@@ -169,7 +171,7 @@ func verifyHostConfigPrecedence() throws {
         facts: TypeflowHostSurfaceFacts(bundleID: "com.googlecode.iterm2")
     )
     guard terminalPolicy.automaticProcessingDisabled,
-          terminalPolicy.manualConversionDisabled,
+          terminalPolicy.manualSwitchDisabled,
           terminalPolicy.terminalSurface
     else {
         throw SmokeError.wrongAppPolicy("iTerm2 policy=\(terminalPolicy.reasonDescription)")
@@ -182,7 +184,7 @@ func verifyHostConfigPrecedence() throws {
         )
     )
     guard embeddedTerminalPolicy.automaticProcessingDisabled,
-          embeddedTerminalPolicy.manualConversionDisabled,
+          embeddedTerminalPolicy.manualSwitchDisabled,
           embeddedTerminalPolicy.terminalSurface
     else {
         throw SmokeError.wrongAppPolicy(
@@ -194,7 +196,7 @@ func verifyHostConfigPrecedence() throws {
         facts: TypeflowHostSurfaceFacts(bundleID: "com.apple.TextEdit")
     )
     guard autoDisabledPolicy.automaticProcessingDisabled,
-          !autoDisabledPolicy.manualConversionDisabled,
+          !autoDisabledPolicy.manualSwitchDisabled,
           !autoDisabledPolicy.terminalSurface
     else {
         throw SmokeError.wrongAppPolicy(
@@ -231,31 +233,46 @@ func verifyAutoDisabledManualLayoutMode() throws {
     engine.setHostContext(flags: typeflow_ffi_context_automatic_switching_disabled())
 
     let keyCodes = [kVK_ANSI_G, kVK_ANSI_H, kVK_ANSI_S, kVK_ANSI_D, kVK_ANSI_B, kVK_ANSI_N]
-    var committed = try typeToken(engine, keyCodes: keyCodes)
-    guard committed == "ghsdbn" else {
-        throw SmokeError.wrongOutput(committed)
+    let hostText = try typeToken(engine, keyCodes: keyCodes)
+    guard hostText == "ghsdbn" else {
+        throw SmokeError.wrongOutput(hostText)
+    }
+    guard try engine.currentLayout == .english else {
+        throw SmokeError.wrongLayout(try engine.currentLayout)
     }
 
     engine.resetLayout(.secondary)
-    committed = try typeToken(engine, keyCodes: keyCodes)
-    guard committed == "привіт" else {
-        throw SmokeError.wrongOutput(committed)
+    _ = try typeToken(engine, keyCodes: keyCodes)
+    guard try engine.currentLayout == .secondary else {
+        throw SmokeError.wrongLayout(try engine.currentLayout)
     }
 }
 
-func verifyManualSwitchRendersComposition() throws {
+func verifyManualSwitchChangesFutureLayoutOnly() throws {
     let engine = try TypeflowEngine()
     let keyCodes = [kVK_ANSI_T, kVK_ANSI_Y, kVK_ANSI_P, kVK_ANSI_E]
     for keyCode in keyCodes.map(UInt16.init) {
         guard let physical = TypeflowMacKeyCode.physicalKeyIndex(for: keyCode) else {
             throw SmokeError.wrongOutput("unmapped keycode \(keyCode)")
         }
-        _ = try engine.process(physicalKey: physical)
+        _ = try engine.observe(physicalKey: physical)
     }
 
-    let action = try engine.forceSwitchToken()
-    guard action == .render(text: "ензу", layout: .secondary) else {
-        throw SmokeError.wrongComposition(action)
+    let action = try engine.forceSwitchLayout()
+    guard action == .switchFutureLayout(.secondary) else {
+        throw SmokeError.wrongObservation(action)
+    }
+    guard let replacement = engine.takePendingReplacement() else {
+        throw SmokeError.wrongOutput("missing manual switch replacement")
+    }
+    guard replacement.deleteCount == keyCodes.count else {
+        throw SmokeError.wrongOutput("deleteCount=\(replacement.deleteCount)")
+    }
+    guard !replacement.text.isEmpty else {
+        throw SmokeError.wrongOutput("empty manual switch replacement")
+    }
+    guard engine.tokenLength == 0 else {
+        throw SmokeError.wrongOutput("expected token reset, got \(engine.tokenLength)")
     }
 }
 
@@ -267,20 +284,20 @@ do {
     try verifyHostConfigPrecedence()
     try verifyMissingDefaultHostConfigUsesDefaults()
     try verifyAutoDisabledManualLayoutMode()
-    try verifyManualSwitchRendersComposition()
+    try verifyManualSwitchChangesFutureLayoutOnly()
 
     let engine = try TypeflowEngine()
     let keyCodes = [kVK_ANSI_G, kVK_ANSI_H, kVK_ANSI_S, kVK_ANSI_D, kVK_ANSI_B, kVK_ANSI_N]
-    let committed = try typeToken(engine, keyCodes: keyCodes)
+    let hostText = try typeToken(engine, keyCodes: keyCodes)
 
-    guard committed == "привіт" else {
-        throw SmokeError.wrongOutput(committed)
+    guard hostText == "ghsdbn" else {
+        throw SmokeError.wrongOutput(hostText)
     }
     guard try engine.currentLayout == .secondary else {
         throw SmokeError.wrongLayout(try engine.currentLayout)
     }
 
-    print("staticlib smoke: ghsdbn -> \(committed)")
+    print("staticlib smoke: observed ghsdbn; host text pass-through \(hostText)")
 } catch {
     fail(error)
 }

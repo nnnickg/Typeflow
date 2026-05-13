@@ -32,11 +32,9 @@
 
 #define TF_HOST_POLICY_AUTOMATIC_PROCESSING_DISABLED 2
 
-#define TF_HOST_POLICY_MANUAL_CONVERSION_DISABLED 4
+#define TF_HOST_POLICY_MANUAL_SWITCH_DISABLED 4
 
 #define TF_HOST_POLICY_TERMINAL_SURFACE 8
-
-#define TF_HOST_POLICY_DIRECT_COMMIT_RENDERER 16
 
 #define TF_HOST_POLICY_REASON_NORMAL 0
 
@@ -52,19 +50,15 @@
 
 #define TF_HOST_POLICY_REASON_UNAVAILABLE_HOST_CONFIG 255
 
-#define TF_COMPOSITION_BYPASS 0
+#define TF_OBSERVATION_NONE 0
 
-#define TF_COMPOSITION_RENDER 1
+#define TF_OBSERVATION_SWITCH_FUTURE_LAYOUT 1
 
-#define TF_COMPOSITION_COMMIT 2
-
-#define TF_COMPOSITION_CLEAR 3
+#define TF_OBSERVATION_RESET_TOKEN 2
 
 #define TF_LAYOUT_ENGLISH 0
 
 #define TF_LAYOUT_SECONDARY 1
-
-#define TF_COMPOSITION_TEXT_BUF_LEN 4096
 
 typedef struct TfEngine TfEngine;
 
@@ -103,18 +97,15 @@ typedef struct {
 
 typedef struct {
     uint8_t tag;
+    uint8_t layout;
+} TfObservation;
+
+typedef struct {
+    uint8_t tag;
     uint8_t physical;
     uint8_t modifiers;
     uint32_t codepoint;
 } TfEvent;
-
-typedef struct {
-    uint8_t tag;
-    uint8_t consume_event;
-    uint8_t layout;
-    size_t text_len;
-    uint8_t text[TF_COMPOSITION_TEXT_BUF_LEN];
-} TfComposition;
 
 #ifdef __cplusplus
 extern "C" {
@@ -125,7 +116,7 @@ const char *typeflow_last_error_message(void);
 /**
  * Allocates a new engine using the language bundle embedded into the library.
  *
- * This is the normal constructor for release builds and the future macOS input method.
+ * This is the normal constructor for release builds and the macOS observer agent.
  * Returns null if the embedded bundle fails to deserialize.
  */
 TfEngine *typeflow_engine_new_embedded(void);
@@ -291,6 +282,24 @@ const char *typeflow_host_config_data_directory(const TfHostConfig *config);
 const char *typeflow_host_config_engine_source(const TfHostConfig *config);
 
 /**
+ * Returns the configured macOS English input-source id, or null when unset.
+ *
+ * # Safety
+ *
+ * `config` must be null or a valid live Typeflow host-config pointer.
+ */
+const char *typeflow_host_config_macos_english_input_source_id(const TfHostConfig *config);
+
+/**
+ * Returns the configured macOS secondary input-source id, or null when unset.
+ *
+ * # Safety
+ *
+ * `config` must be null or a valid live Typeflow host-config pointer.
+ */
+const char *typeflow_host_config_macos_secondary_input_source_id(const TfHostConfig *config);
+
+/**
  * Returns 1 when `bundle_id_utf8` is fully disabled.
  *
  * # Safety
@@ -397,11 +406,9 @@ void typeflow_engine_reset_layout(TfEngine *engine, uint8_t layout);
  * `TF_CONTEXT_AUTOMATIC_PROCESSING_DISABLED` means automatic processing is
  * disabled for the foreground app.
  * `TF_CONTEXT_AUTOMATIC_SWITCHING_DISABLED` means automatic layout switches
- * are disabled, but the engine still composes and commits in the current
- * layout.
+ * are disabled, but the engine still observes the current token.
  * Secure input and full automatic-processing disable return Keep/Bypass and
- * clear the token; automatic-switching disable keeps normal composition/commit
- * behavior.
+ * clear the token; automatic-switching disable keeps normal observation.
  *
  * # Safety
  *
@@ -412,16 +419,17 @@ void typeflow_engine_set_host_context(TfEngine *engine, uint32_t flags);
 /**
  * Forces the current token to the opposite side of the active language pair.
  *
- * This changes the active Typeflow-owned composition state. It does not ask
- * the host to replace committed document text.
+ * When a token is active, this captures a pending replacement snapshot before
+ * resetting the token. The host can consume that snapshot with
+ * `typeflow_engine_take_pending_replacement_utf8`.
  *
  * # Safety
  *
  * `engine` must be a valid live pointer returned by `typeflow_engine_new_embedded` or
- * any other Typeflow constructor. `out_composition` must point to writable memory for one
- * `TfComposition`.
+ * any other Typeflow constructor. `out_observation` must point to writable memory for one
+ * `TfObservation`.
  */
-void typeflow_engine_force_switch_token(TfEngine *engine, TfComposition *out_composition);
+void typeflow_engine_force_switch_layout(TfEngine *engine, TfObservation *out_observation);
 
 /**
  * Returns the engine's current inferred layout.
@@ -436,8 +444,7 @@ uint8_t typeflow_engine_current_layout(TfEngine *engine);
  * Returns the engine's current tracked token length.
  *
  * This is the number of logical token characters currently tracked by the
- * engine, not a byte count. It is intended for hosts that maintain a small
- * mirror of committed token text to avoid expensive host text reads.
+ * engine, not a byte count.
  *
  * # Safety
  *
@@ -446,17 +453,54 @@ uint8_t typeflow_engine_current_layout(TfEngine *engine);
 size_t typeflow_engine_token_len(TfEngine *engine);
 
 /**
- * Processes a single input event and writes the resulting composition operation.
+ * Returns the character count to delete for the pending replacement captured
+ * by the last `TF_OBSERVATION_SWITCH_FUTURE_LAYOUT` action.
  *
- * `engine` and `out_composition` must be non-null and valid. `out_composition`
+ * # Safety
+ *
+ * `engine` must be null or a valid live pointer returned by any Typeflow constructor.
+ */
+size_t typeflow_engine_pending_replacement_delete_count(TfEngine *engine);
+
+/**
+ * Returns the UTF-8 byte length of the pending replacement text, excluding a
+ * trailing NUL.
+ *
+ * # Safety
+ *
+ * `engine` must be null or a valid live pointer returned by any Typeflow constructor.
+ */
+size_t typeflow_engine_pending_replacement_utf8_len(TfEngine *engine);
+
+/**
+ * Takes the pending replacement text as a NUL-terminated UTF-8 string.
+ *
+ * Returns the full required byte length, excluding the trailing NUL. If
+ * `out_utf8_capacity` is too small, the written string is truncated but still
+ * NUL-terminated when capacity is non-zero. Taking the replacement clears it.
+ *
+ * # Safety
+ *
+ * `engine` must be null or a valid live pointer returned by any Typeflow
+ * constructor. `out_utf8` must be null or point to writable memory for
+ * `out_utf8_capacity` bytes.
+ */
+size_t typeflow_engine_take_pending_replacement_utf8(TfEngine *engine,
+                                                     char *out_utf8,
+                                                     size_t out_utf8_capacity);
+
+/**
+ * Observes a single input event and writes the resulting state notification.
+ *
+ * `engine` and `out_observation` must be non-null and valid. `out_observation`
  * is fully overwritten.
  *
  * # Safety
  *
  * `engine` must be a valid live pointer returned by any Typeflow constructor.
- * `out_composition` must point to writable memory for one `TfComposition`.
+ * `out_observation` must point to writable memory for one `TfObservation`.
  */
-void typeflow_engine_process(TfEngine *engine, TfEvent event, TfComposition *out_composition);
+void typeflow_engine_observe(TfEngine *engine, TfEvent event, TfObservation *out_observation);
 
 /**
  * Writes the default runtime config into `out_config`.

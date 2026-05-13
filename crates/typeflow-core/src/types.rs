@@ -2,9 +2,8 @@ use crate::LetterEvent;
 
 /// Maximum configured token length accepted by supported hosts.
 ///
-/// FFI composition payloads use a 4096-byte buffer. Since a Unicode scalar can
-/// occupy up to four UTF-8 bytes, 1024 tracked letters is the largest value
-/// that cannot overflow that payload solely from token length.
+/// The engine is an observer, not a compositor, but token length is still
+/// bounded so scoring and host telemetry stay cheap on pathological input.
 pub const MAX_CONFIG_TOKEN_LEN: usize = 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -12,10 +11,6 @@ pub enum Layout {
     English,
     /// The configurable non-English side of the active language pair.
     Secondary,
-}
-
-impl Layout {
-    pub const SECONDARY: Self = Self::Secondary;
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -50,15 +45,13 @@ pub enum Decision {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum CompositionAction {
-    /// Typeflow is not handling this event. The host should process it normally.
-    Bypass,
-    /// Redraw the active Typeflow-owned composition.
-    Render { text: String, layout: Layout },
-    /// Commit finalized text to the host once.
-    Commit { text: String, consume_event: bool },
-    /// Clear Typeflow-owned composition without committing text.
-    Clear { consume_event: bool },
+pub enum ObservationAction {
+    /// No host-visible state change is needed.
+    None,
+    /// The engine switched its inferred future layout.
+    SwitchFutureLayout(Layout),
+    /// The active observed token ended or was discarded.
+    ResetToken,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -89,11 +82,11 @@ impl ScoreAnalysis {
 }
 
 #[derive(Clone, Debug)]
-pub struct CompositionOutput<'a> {
+pub struct ObservationOutput<'a> {
     pub candidates: &'a LayoutCandidates,
     pub score: ScoreAnalysis,
     pub decision: Decision,
-    pub action: CompositionAction,
+    pub action: ObservationAction,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -114,7 +107,7 @@ impl HostContext {
 pub struct EngineConfig {
     /// Tokens shorter than this never trigger a layout switch.
     pub min_token_len: usize,
-    /// Maximum number of letter events tracked as one active composition token.
+    /// Maximum number of letter events tracked as one active observed token.
     pub max_token_len: usize,
     /// Required score margin (log10 probability units) before switching.
     pub confidence_margin: f32,

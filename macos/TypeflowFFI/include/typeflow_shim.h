@@ -62,10 +62,10 @@ static inline TfEvent typeflow_ffi_host_bypass_event(uint8_t modifiers) {
     return event;
 }
 
-static inline TfComposition typeflow_ffi_empty_composition(void) {
-    TfComposition composition;
-    memset(&composition, 0, sizeof(composition));
-    return composition;
+static inline TfObservation typeflow_ffi_empty_observation(void) {
+    TfObservation observation;
+    memset(&observation, 0, sizeof(observation));
+    return observation;
 }
 
 #endif

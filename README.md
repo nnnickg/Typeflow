@@ -1,19 +1,19 @@
 # Typeflow
 
-Typeflow is a macOS input method that should make English plus one configurable
-secondary keyboard layout disappear while typing. Punto-style auto-detection,
-but as a real macOS `InputMethodKit` bundle (not a CGEventTap that backspaces
-and retypes).
+Typeflow is a macOS background agent that observes typing and switches between
+English plus one configurable secondary keyboard layout. It does not render
+inline composition or become the active text compositor; when Rust decides a
+token was typed in the wrong layout, the agent replaces that token once and
+switches the real macOS input source for future keys.
 
 ## Status
 
-Pre-alpha macOS input method. Use it at your own risk: it can rewrite text as
-you type. Keep a normal keyboard layout installed as a fallback. The Rust engine
-works end-to-end on real data, and `macos/` builds, signs, installs, registers,
-and runs a working InputMethodKit app. Manual host testing has verified normal
-typing, external pack loading, app exclusions, and standalone Option manual
-conversion in real macOS text fields. See [`docs/status.md`](docs/status.md) for
-the complete state-of-the-project snapshot.
+Pre-alpha macOS observer agent. Keep normal English and secondary keyboard
+layouts installed; Typeflow switches those real system sources for future keys
+and uses synthetic key events for token replacement. The Rust engine works
+end-to-end on real data, and `macos/` builds and signs the agent app. See
+[`docs/status.md`](docs/status.md) for the complete
+state-of-the-project snapshot.
 
 ## Workspace
 
@@ -23,7 +23,7 @@ crates/
 ├── typeflow-host-config/  TOML/env/app-policy resolution for CLI + macOS host
 ├── typeflow-data/   xtask: downloads OpenSubtitles + hermitdave word lists, builds n-grams + FSTs
 ├── typeflow-cli/    user-facing CLI: type / stream / repl / predict / pack / config
-└── typeflow-ffi/    C ABI bridge for the Swift/IMK bundle
+└── typeflow-ffi/    C ABI bridge for the Swift macOS agent
 docs/
 ├── architecture.md  component layout + data flow
 ├── artifact-format.md  pack/data compatibility policy
@@ -33,7 +33,7 @@ docs/
 ├── panic-unsafe-audit.md  panic/unsafe audit notes
 ├── release-verification.md  optimized build checks and packaging caveat
 └── status.md        current state, outstanding work, open questions
-macos/                Swift staticlib smoke + minimal IMK bundle build
+macos/                Swift staticlib smoke + macOS agent bundle build
 ```
 
 ## Quick start
@@ -98,7 +98,6 @@ typeflow type привіт
 # One-shot decision, pipe-friendly.
 typeflow predict ghsdbn                  # -> "Ukrainian\tпривіт"
 typeflow predict --json ghsdbn           # -> JSON line
-typeflow convert type                    # force-convert current token
 
 # Built-in hard-case smoke corpus and generated dictionary regression corpus.
 typeflow eval
@@ -123,13 +122,13 @@ make -C macos swift-package
 # Verify the checked-in C header matches the Rust FFI declarations.
 cbindgen --quiet --config cbindgen.toml --crate typeflow-ffi --output crates/typeflow-ffi/include/typeflow.h --verify
 
-# Build and ad-hoc sign the minimal IMK app bundle.
+# Build and ad-hoc sign the macOS agent app bundle.
 make -C macos bundle
 
 # Build a universal, hardened-runtime macOS release zip.
 make -C macos release-universal CODESIGN_IDENTITY="Developer ID Application: <name> (<team>)"
 
-# Install, register, and enable the input method for the current user.
+# Install and start the agent for the current user.
 make -C macos install-user
 
 # Restart a running copy after reinstall so macOS loads the new binary.
@@ -162,22 +161,33 @@ typeflow --config /tmp/x.toml type ghsdbn
 ```
 
 See [`docs/engine.md`](docs/engine.md) for what each config field actually controls.
-The macOS input method reads the same config path for engine tuning, active
-secondary language packs, and excluded app bundle IDs. `TYPEFLOW_DATA_DIR` and
-`TYPEFLOW_PACK_DIR` override TOML in both the CLI and macOS host. Manual
-conversion is not configurable in TOML: the macOS host hardcodes standalone
-Option press/release.
+The macOS agent reads the same config path for engine tuning, active secondary
+language packs, excluded app bundle IDs, and optional real macOS input-source
+IDs. `TYPEFLOW_DATA_DIR` and `TYPEFLOW_PACK_DIR` override TOML in both the CLI
+and macOS host. Manual switching is not configurable in TOML: the macOS host
+hardcodes standalone Option press/release.
 Option+another key is treated as normal app input.
 
 Example app exclusion config:
 
 ```toml
 [apps]
-exclude_bundle_ids = [
-    "com.googlecode.iterm2",
+# Fully disabled: pass-through observation AND manual Option-switch are skipped.
+disable_bundle_ids = [
+    "com.1password.1password",
+]
+
+# Auto-disabled: automatic layout switching is skipped, manual Option-switch
+# still works in normal non-secure fields.
+disable_auto_bundle_ids = [
     "dev.zed.Zed",
 ]
 ```
+
+Terminal bundles and embedded terminal panes are auto-detected and behave like
+`disable_bundle_ids` without needing to be listed (see
+[`docs/host-test-matrix.md`](docs/host-test-matrix.md)). The legacy key
+`exclude_bundle_ids` is still accepted and maps to `disable_auto_bundle_ids`.
 
 ## Workspace tests
 
@@ -187,7 +197,7 @@ cargo test --workspace
 
 CI runs Linux and macOS Rust checks, fuzz target builds, dependency security
 checks, FFI header verification, LCOV coverage generation, Swift staticlib and
-SwiftPM builds, the IMK bundle build, and release CLI smoke for every push to
+SwiftPM builds, the macOS agent bundle build, and release CLI smoke for every push to
 `main` and every pull request.
 
 ## License

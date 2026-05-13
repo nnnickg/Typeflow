@@ -12,7 +12,7 @@
   <key>CFBundleIconFile</key>
   <string>Typeflow.icns</string>
   <key>CFBundleIdentifier</key>
-  <string>io.github.nnnickg.typeflow.inputmethod.Typeflow</string>
+  <string>io.github.nnnickg.typeflow.agent</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
@@ -29,12 +29,6 @@
   </array>
   <key>CFBundleVersion</key>
   <string>1</string>
-  <key>InputMethodConnectionName</key>
-  <string>Typeflow_1_Connection</string>
-  <key>InputMethodServerControllerClass</key>
-  <string>TypeflowInputController</string>
-  <key>InputMethodServerDelegateClass</key>
-  <string>TypeflowInputController</string>
   <key>LSUIElement</key>
   <true/>
   <key>LSMinimumSystemVersion</key>
@@ -42,21 +36,10 @@
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
   <key>NSAccessibilityUsageDescription</key>
-  <string>Typeflow uses Accessibility to identify terminal-like text fields and avoid automatic text rewriting there.</string>
+  <string>Typeflow observes keyboard events and foreground text surfaces to switch the active keyboard layout without rewriting document text.</string>
+  <key>NSInputMonitoringUsageDescription</key>
+  <string>Typeflow observes keyboard events so it can switch the active keyboard layout for future keys.</string>
   <key>NSSupportsSuddenTermination</key>
   <true/>
-  <key>TISInputSourceID</key>
-  <string>io.github.nnnickg.typeflow.inputmethod.Typeflow</string>
-  <key>TISIntendedLanguage</key>
-  <string>en</string>
-  <key>TISIconIsTemplate</key>
-  <false/>
-  <key>tsInputMethodIconFileKey</key>
-  <string>Typeflow.tiff</string>
-  <key>tsInputMethodCharacterRepertoireKey</key>
-  <array>
-    <string>Latn</string>
-    <string>Cyrl</string>
-  </array>
 </dict>
 </plist>

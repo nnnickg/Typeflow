@@ -4,9 +4,7 @@ use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use typeflow_core::data::LanguageBundle;
-use typeflow_core::{
-    CompositionAction, Engine, EngineConfig, InputEvent, Layout, LetterEvent, PhysicalKey,
-};
+use typeflow_core::{Engine, EngineConfig, InputEvent, Layout, LetterEvent, PhysicalKey};
 
 const MIXED_TOKENS: &[&[PhysicalKey]] = &[
     &[
@@ -70,13 +68,13 @@ const WRONG_LAYOUT_TOKEN: &[PhysicalKey] = &[
 fn bench_engine(c: &mut Criterion) {
     let mut group = c.benchmark_group("engine");
     group.throughput(Throughput::Elements(batch_key_count(MIXED_TOKENS) as u64));
-    group.bench_function("process_composition_mixed_physical_batch", |b| {
+    group.bench_function("observe_mixed_physical_batch", |b| {
         let mut engine = engine();
         b.iter(|| feed_physical_batch(&mut engine, black_box(MIXED_TOKENS)));
     });
 
     group.throughput(Throughput::Elements(WRONG_LAYOUT_TOKEN.len() as u64));
-    group.bench_function("process_full_output_wrong_layout_token", |b| {
+    group.bench_function("observe_full_output_wrong_layout_token", |b| {
         let mut engine = engine();
         b.iter(|| feed_full_output_token(&mut engine, black_box(WRONG_LAYOUT_TOKEN)));
     });
@@ -84,7 +82,7 @@ fn bench_engine(c: &mut Criterion) {
     for len in [64usize, 256, 1024] {
         group.throughput(Throughput::Elements(len as u64));
         group.bench_with_input(
-            BenchmarkId::new("process_composition_letter_run", len),
+            BenchmarkId::new("observe_letter_run", len),
             &len,
             |b, len| {
                 let mut engine = engine();
@@ -97,85 +95,36 @@ fn bench_engine(c: &mut Criterion) {
 }
 
 fn feed_physical_batch(engine: &mut Engine, tokens: &[&[PhysicalKey]]) {
-    let mut committed = String::new();
-    let mut composing = String::new();
     for token in tokens {
         engine.reset_layout(Layout::English);
-        committed.clear();
-        composing.clear();
         for key in *token {
             let action = engine
-                .process(InputEvent::Letter(LetterEvent::new(*key)))
+                .observe(InputEvent::Letter(LetterEvent::new(*key)))
                 .action;
-            apply_composition(action, None, &mut committed, &mut composing);
-            black_box(&committed);
-            black_box(&composing);
+            black_box(action);
         }
         black_box(engine.current_layout());
     }
 }
 
 fn feed_full_output_token(engine: &mut Engine, token: &[PhysicalKey]) {
-    let mut committed = String::new();
-    let mut composing = String::new();
     engine.reset_layout(Layout::English);
     for key in token {
-        let output = engine.process(InputEvent::Letter(LetterEvent::new(*key)));
-        apply_composition(output.action.clone(), None, &mut committed, &mut composing);
+        let output = engine.observe(InputEvent::Letter(LetterEvent::new(*key)));
         black_box(output);
-        black_box(&committed);
-        black_box(&composing);
     }
     black_box(engine.current_layout());
 }
 
 fn feed_letter_run(engine: &mut Engine, len: usize) {
-    let mut committed = String::new();
-    let mut composing = String::new();
     engine.reset_layout(Layout::English);
     for _ in 0..len {
         let action = engine
-            .process(InputEvent::Letter(LetterEvent::new(PhysicalKey::A)))
+            .observe(InputEvent::Letter(LetterEvent::new(PhysicalKey::A)))
             .action;
-        apply_composition(action, None, &mut committed, &mut composing);
+        black_box(action);
     }
     black_box(engine.token_len());
-    black_box(committed);
-    black_box(composing);
-}
-
-fn apply_composition(
-    action: CompositionAction,
-    fallback: Option<char>,
-    committed: &mut String,
-    composing: &mut String,
-) {
-    match action {
-        CompositionAction::Bypass => {
-            if let Some(character) = fallback {
-                committed.push(character);
-            }
-        }
-        CompositionAction::Render { text, .. } => {
-            *composing = text;
-        }
-        CompositionAction::Commit {
-            text,
-            consume_event,
-        } => {
-            committed.push_str(&text);
-            composing.clear();
-            if !consume_event && let Some(character) = fallback {
-                committed.push(character);
-            }
-        }
-        CompositionAction::Clear { consume_event } => {
-            composing.clear();
-            if !consume_event && let Some(character) = fallback {
-                committed.push(character);
-            }
-        }
-    }
 }
 
 fn batch_key_count(tokens: &[&[PhysicalKey]]) -> usize {

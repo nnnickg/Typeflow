@@ -7,16 +7,16 @@ use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
+use std::ptr;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use typeflow_core::data::LanguageBundle;
 use typeflow_core::{
-    CompositionAction, Engine, EngineConfig, InputEvent, Layout, LetterEvent, MAX_CONFIG_TOKEN_LEN,
-    PhysicalKey,
+    Engine, EngineConfig, InputEvent, Layout, LetterEvent, ObservationAction, PhysicalKey,
 };
 use typeflow_host_config::{
-    CompositionRenderer, Config, ConfigSource, HostEnvironment, HostInputPolicy,
-    HostInputPolicyReason, HostSurfaceFactsView, ResolvedHostConfig,
+    Config, ConfigSource, HostEnvironment, HostInputPolicy, HostInputPolicyReason,
+    HostSurfaceFactsView, ResolvedHostConfig,
 };
 
 pub const TF_EVENT_LETTER: u8 = 0;
@@ -35,9 +35,8 @@ pub const TF_CONTEXT_AUTOMATIC_SWITCHING_DISABLED: u32 = 0x04;
 
 pub const TF_HOST_POLICY_SECURE_INPUT: u32 = 0x01;
 pub const TF_HOST_POLICY_AUTOMATIC_PROCESSING_DISABLED: u32 = 0x02;
-pub const TF_HOST_POLICY_MANUAL_CONVERSION_DISABLED: u32 = 0x04;
+pub const TF_HOST_POLICY_MANUAL_SWITCH_DISABLED: u32 = 0x04;
 pub const TF_HOST_POLICY_TERMINAL_SURFACE: u32 = 0x08;
-pub const TF_HOST_POLICY_DIRECT_COMMIT_RENDERER: u32 = 0x10;
 
 pub const TF_HOST_POLICY_REASON_NORMAL: u8 = 0;
 pub const TF_HOST_POLICY_REASON_SECURE_INPUT: u8 = 1;
@@ -47,15 +46,12 @@ pub const TF_HOST_POLICY_REASON_DISABLED_BUNDLE: u8 = 4;
 pub const TF_HOST_POLICY_REASON_AUTOMATIC_PROCESSING_DISABLED_BUNDLE: u8 = 5;
 pub const TF_HOST_POLICY_REASON_UNAVAILABLE_HOST_CONFIG: u8 = 255;
 
-pub const TF_COMPOSITION_BYPASS: u8 = 0;
-pub const TF_COMPOSITION_RENDER: u8 = 1;
-pub const TF_COMPOSITION_COMMIT: u8 = 2;
-pub const TF_COMPOSITION_CLEAR: u8 = 3;
+pub const TF_OBSERVATION_NONE: u8 = 0;
+pub const TF_OBSERVATION_SWITCH_FUTURE_LAYOUT: u8 = 1;
+pub const TF_OBSERVATION_RESET_TOKEN: u8 = 2;
 
 pub const TF_LAYOUT_ENGLISH: u8 = 0;
 pub const TF_LAYOUT_SECONDARY: u8 = 1;
-
-pub const TF_COMPOSITION_TEXT_BUF_LEN: usize = MAX_CONFIG_TOKEN_LEN * 4;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -82,12 +78,10 @@ pub struct TfEngineConfig {
 }
 
 #[repr(C)]
-pub struct TfComposition {
+#[derive(Clone, Copy)]
+pub struct TfObservation {
     pub tag: u8,
-    pub consume_event: u8,
     pub layout: u8,
-    pub text_len: usize,
-    pub text: [u8; TF_COMPOSITION_TEXT_BUF_LEN],
 }
 
 #[repr(C)]
@@ -114,6 +108,13 @@ pub struct TfHostInputPolicy {
 
 pub struct TfEngine {
     engine: Engine,
+    pending_replacement: Option<PendingReplacement>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PendingReplacement {
+    delete_count: usize,
+    text: String,
 }
 
 pub struct TfHostConfig {
@@ -123,6 +124,8 @@ pub struct TfHostConfig {
     pack_directory: Option<CString>,
     data_directory: Option<CString>,
     engine_source: CString,
+    macos_english_input_source_id: Option<CString>,
+    macos_secondary_input_source_id: Option<CString>,
 }
 
 thread_local! {
@@ -251,48 +254,20 @@ pub extern "C" fn typeflow_last_error_message() -> *const c_char {
     })
 }
 
-impl TfComposition {
-    fn write(&mut self, action: CompositionAction) {
-        self.tag = TF_COMPOSITION_BYPASS;
-        self.consume_event = 0;
+impl TfObservation {
+    fn write(&mut self, action: ObservationAction) {
+        self.tag = TF_OBSERVATION_NONE;
         self.layout = TF_LAYOUT_ENGLISH;
-        self.text_len = 0;
 
         match action {
-            CompositionAction::Bypass => {}
-            CompositionAction::Render { text, layout } => {
-                self.tag = TF_COMPOSITION_RENDER;
-                self.consume_event = 1;
+            ObservationAction::None => {}
+            ObservationAction::SwitchFutureLayout(layout) => {
+                self.tag = TF_OBSERVATION_SWITCH_FUTURE_LAYOUT;
                 self.layout = layout_to_u8(layout);
-                self.write_text(&text);
             }
-            CompositionAction::Commit {
-                text,
-                consume_event,
-            } => {
-                self.tag = TF_COMPOSITION_COMMIT;
-                self.consume_event = u8::from(consume_event);
-                self.write_text(&text);
+            ObservationAction::ResetToken => {
+                self.tag = TF_OBSERVATION_RESET_TOKEN;
             }
-            CompositionAction::Clear { consume_event } => {
-                self.tag = TF_COMPOSITION_CLEAR;
-                self.consume_event = u8::from(consume_event);
-            }
-        }
-    }
-
-    fn write_text(&mut self, value: &str) {
-        let bytes = value.as_bytes();
-        if bytes.len() > TF_COMPOSITION_TEXT_BUF_LEN {
-            self.tag = TF_COMPOSITION_CLEAR;
-            self.consume_event = 1;
-            self.text_len = 0;
-            return;
-        }
-        self.text_len = bytes.len();
-        self.text[..bytes.len()].copy_from_slice(bytes);
-        if bytes.len() < TF_COMPOSITION_TEXT_BUF_LEN {
-            self.text[bytes.len()] = 0;
         }
     }
 }
@@ -301,6 +276,37 @@ fn layout_to_u8(layout: Layout) -> u8 {
     match layout {
         Layout::English => TF_LAYOUT_ENGLISH,
         Layout::Secondary => TF_LAYOUT_SECONDARY,
+    }
+}
+
+fn opposite_layout(layout: Layout) -> Layout {
+    match layout {
+        Layout::English => Layout::Secondary,
+        Layout::Secondary => Layout::English,
+    }
+}
+
+impl TfEngine {
+    fn capture_replacement(&self, layout: Layout) -> Option<PendingReplacement> {
+        let delete_count = self.engine.token_len();
+        if delete_count == 0 {
+            return None;
+        }
+
+        let text = self.engine.token_candidates().get(layout).to_owned();
+        if text.is_empty() {
+            return None;
+        }
+
+        Some(PendingReplacement { delete_count, text })
+    }
+
+    fn set_pending_replacement(&mut self, layout: Layout) {
+        self.pending_replacement = self.capture_replacement(layout);
+    }
+
+    fn clear_pending_replacement(&mut self) {
+        self.pending_replacement = None;
     }
 }
 
@@ -367,6 +373,7 @@ fn new_engine(bundle: Arc<LanguageBundle>, config: TfEngineConfig) -> *mut TfEng
     };
     Box::into_raw(Box::new(TfEngine {
         engine: Engine::with_shared_bundle(config, bundle),
+        pending_replacement: None,
     }))
 }
 
@@ -386,6 +393,18 @@ fn host_config_to_ffi(config: ResolvedHostConfig) -> Option<TfHostConfig> {
     let data_directory = optional_path_cstring(config.data_directory.as_deref())?;
     let secondary_language = CString::new(config.secondary_language.as_str()).ok()?;
     let engine_source = CString::new(config.engine_source_description()).ok()?;
+    let macos_english_input_source_id = optional_string_cstring(
+        config
+            .macos_input_sources
+            .english_input_source_id
+            .as_deref(),
+    )?;
+    let macos_secondary_input_source_id = optional_string_cstring(
+        config
+            .macos_input_sources
+            .secondary_input_source_id
+            .as_deref(),
+    )?;
 
     Some(TfHostConfig {
         config,
@@ -394,6 +413,8 @@ fn host_config_to_ffi(config: ResolvedHostConfig) -> Option<TfHostConfig> {
         pack_directory,
         data_directory,
         engine_source,
+        macos_english_input_source_id,
+        macos_secondary_input_source_id,
     })
 }
 
@@ -406,6 +427,13 @@ fn optional_path_cstring(path: Option<&Path>) -> Option<Option<CString>> {
 
 fn path_cstring(path: &Path) -> Option<CString> {
     CString::new(path.to_string_lossy().as_bytes()).ok()
+}
+
+fn optional_string_cstring(value: Option<&str>) -> Option<Option<CString>> {
+    match value {
+        Some(value) => CString::new(value).ok().map(Some),
+        None => Some(None),
+    }
 }
 
 fn host_context_from_flags(flags: u32) -> typeflow_core::HostContext {
@@ -451,14 +479,11 @@ fn host_input_policy_to_ffi(policy: HostInputPolicy) -> TfHostInputPolicy {
     if policy.disable_automatic_processing {
         flags |= TF_HOST_POLICY_AUTOMATIC_PROCESSING_DISABLED;
     }
-    if policy.disable_manual_conversion {
-        flags |= TF_HOST_POLICY_MANUAL_CONVERSION_DISABLED;
+    if policy.disable_manual_switch {
+        flags |= TF_HOST_POLICY_MANUAL_SWITCH_DISABLED;
     }
     if policy.terminal_surface {
         flags |= TF_HOST_POLICY_TERMINAL_SURFACE;
-    }
-    if policy.composition_renderer == CompositionRenderer::DirectCommit {
-        flags |= TF_HOST_POLICY_DIRECT_COMMIT_RENDERER;
     }
 
     TfHostInputPolicy {
@@ -469,8 +494,7 @@ fn host_input_policy_to_ffi(policy: HostInputPolicy) -> TfHostInputPolicy {
 
 fn unavailable_host_config_policy() -> TfHostInputPolicy {
     TfHostInputPolicy {
-        flags: TF_HOST_POLICY_AUTOMATIC_PROCESSING_DISABLED
-            | TF_HOST_POLICY_MANUAL_CONVERSION_DISABLED,
+        flags: TF_HOST_POLICY_AUTOMATIC_PROCESSING_DISABLED | TF_HOST_POLICY_MANUAL_SWITCH_DISABLED,
         reason: TF_HOST_POLICY_REASON_UNAVAILABLE_HOST_CONFIG,
     }
 }
@@ -498,7 +522,7 @@ fn layout_from_u8(value: u8) -> Option<Layout> {
 
 /// Allocates a new engine using the language bundle embedded into the library.
 ///
-/// This is the normal constructor for release builds and the future macOS input method.
+/// This is the normal constructor for release builds and the macOS observer agent.
 /// Returns null if the embedded bundle fails to deserialize.
 #[unsafe(no_mangle)]
 pub extern "C" fn typeflow_engine_new_embedded() -> *mut TfEngine {
@@ -875,6 +899,40 @@ pub unsafe extern "C" fn typeflow_host_config_engine_source(
     })
 }
 
+/// Returns the configured macOS English input-source id, or null when unset.
+///
+/// # Safety
+///
+/// `config` must be null or a valid live Typeflow host-config pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn typeflow_host_config_macos_english_input_source_id(
+    config: *const TfHostConfig,
+) -> *const c_char {
+    ffi_guard(std::ptr::null(), || {
+        unsafe { config.as_ref() }
+            .and_then(|config| config.macos_english_input_source_id.as_ref())
+            .map(|value| value.as_ptr())
+            .unwrap_or(std::ptr::null())
+    })
+}
+
+/// Returns the configured macOS secondary input-source id, or null when unset.
+///
+/// # Safety
+///
+/// `config` must be null or a valid live Typeflow host-config pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn typeflow_host_config_macos_secondary_input_source_id(
+    config: *const TfHostConfig,
+) -> *const c_char {
+    ffi_guard(std::ptr::null(), || {
+        unsafe { config.as_ref() }
+            .and_then(|config| config.macos_secondary_input_source_id.as_ref())
+            .map(|value| value.as_ptr())
+            .unwrap_or(std::ptr::null())
+    })
+}
+
 /// Returns 1 when `bundle_id_utf8` is fully disabled.
 ///
 /// # Safety
@@ -1023,6 +1081,7 @@ pub unsafe extern "C" fn typeflow_engine_free(engine: *mut TfEngine) {
 pub unsafe extern "C" fn typeflow_engine_reset_token(engine: *mut TfEngine) {
     ffi_guard_void(|| {
         if let Some(engine) = unsafe { engine.as_mut() } {
+            engine.clear_pending_replacement();
             engine.engine.reset_token();
         }
     });
@@ -1047,6 +1106,7 @@ pub unsafe extern "C" fn typeflow_engine_reset_layout(engine: *mut TfEngine, lay
         let Some(layout) = layout_from_u8(layout) else {
             return;
         };
+        engine.clear_pending_replacement();
         engine.engine.reset_layout(layout);
     });
 }
@@ -1057,11 +1117,9 @@ pub unsafe extern "C" fn typeflow_engine_reset_layout(engine: *mut TfEngine, lay
 /// `TF_CONTEXT_AUTOMATIC_PROCESSING_DISABLED` means automatic processing is
 /// disabled for the foreground app.
 /// `TF_CONTEXT_AUTOMATIC_SWITCHING_DISABLED` means automatic layout switches
-/// are disabled, but the engine still composes and commits in the current
-/// layout.
+/// are disabled, but the engine still observes the current token.
 /// Secure input and full automatic-processing disable return Keep/Bypass and
-/// clear the token; automatic-switching disable keeps normal composition/commit
-/// behavior.
+/// clear the token; automatic-switching disable keeps normal observation.
 ///
 /// # Safety
 ///
@@ -1070,6 +1128,7 @@ pub unsafe extern "C" fn typeflow_engine_reset_layout(engine: *mut TfEngine, lay
 pub unsafe extern "C" fn typeflow_engine_set_host_context(engine: *mut TfEngine, flags: u32) {
     ffi_guard_void(|| {
         if let Some(engine) = unsafe { engine.as_mut() } {
+            engine.clear_pending_replacement();
             engine
                 .engine
                 .set_host_context(host_context_from_flags(flags));
@@ -1079,29 +1138,32 @@ pub unsafe extern "C" fn typeflow_engine_set_host_context(engine: *mut TfEngine,
 
 /// Forces the current token to the opposite side of the active language pair.
 ///
-/// This changes the active Typeflow-owned composition state. It does not ask
-/// the host to replace committed document text.
+/// When a token is active, this captures a pending replacement snapshot before
+/// resetting the token. The host can consume that snapshot with
+/// `typeflow_engine_take_pending_replacement_utf8`.
 ///
 /// # Safety
 ///
 /// `engine` must be a valid live pointer returned by `typeflow_engine_new_embedded` or
-/// any other Typeflow constructor. `out_composition` must point to writable memory for one
-/// `TfComposition`.
+/// any other Typeflow constructor. `out_observation` must point to writable memory for one
+/// `TfObservation`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn typeflow_engine_force_switch_token(
+pub unsafe extern "C" fn typeflow_engine_force_switch_layout(
     engine: *mut TfEngine,
-    out_composition: *mut TfComposition,
+    out_observation: *mut TfObservation,
 ) {
     ffi_guard_void(|| {
         let Some(engine) = (unsafe { engine.as_mut() }) else {
             return;
         };
-        let Some(out) = (unsafe { out_composition.as_mut() }) else {
+        let Some(out) = (unsafe { out_observation.as_mut() }) else {
             return;
         };
-        out.write(CompositionAction::Bypass);
+        out.write(ObservationAction::None);
 
-        let output = engine.engine.force_switch_token();
+        let target = opposite_layout(engine.engine.current_layout());
+        engine.set_pending_replacement(target);
+        let output = engine.engine.force_switch_layout();
         out.write(output.action);
     });
 }
@@ -1122,8 +1184,7 @@ pub unsafe extern "C" fn typeflow_engine_current_layout(engine: *mut TfEngine) -
 /// Returns the engine's current tracked token length.
 ///
 /// This is the number of logical token characters currently tracked by the
-/// engine, not a byte count. It is intended for hosts that maintain a small
-/// mirror of committed token text to avoid expensive host text reads.
+/// engine, not a byte count.
 ///
 /// # Safety
 ///
@@ -1136,35 +1197,134 @@ pub unsafe extern "C" fn typeflow_engine_token_len(engine: *mut TfEngine) -> usi
     })
 }
 
-/// Processes a single input event and writes the resulting composition operation.
+/// Returns the character count to delete for the pending replacement captured
+/// by the last `TF_OBSERVATION_SWITCH_FUTURE_LAYOUT` action.
 ///
-/// `engine` and `out_composition` must be non-null and valid. `out_composition`
+/// # Safety
+///
+/// `engine` must be null or a valid live pointer returned by any Typeflow constructor.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn typeflow_engine_pending_replacement_delete_count(
+    engine: *mut TfEngine,
+) -> usize {
+    ffi_guard(0, || {
+        unsafe { engine.as_ref() }
+            .and_then(|engine| engine.pending_replacement.as_ref())
+            .map(|replacement| replacement.delete_count)
+            .unwrap_or(0)
+    })
+}
+
+/// Returns the UTF-8 byte length of the pending replacement text, excluding a
+/// trailing NUL.
+///
+/// # Safety
+///
+/// `engine` must be null or a valid live pointer returned by any Typeflow constructor.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn typeflow_engine_pending_replacement_utf8_len(
+    engine: *mut TfEngine,
+) -> usize {
+    ffi_guard(0, || {
+        unsafe { engine.as_ref() }
+            .and_then(|engine| engine.pending_replacement.as_ref())
+            .map(|replacement| replacement.text.len())
+            .unwrap_or(0)
+    })
+}
+
+/// Takes the pending replacement text as a NUL-terminated UTF-8 string.
+///
+/// Returns the full required byte length, excluding the trailing NUL. If
+/// `out_utf8_capacity` is too small, the written string is truncated but still
+/// NUL-terminated when capacity is non-zero. Taking the replacement clears it.
+///
+/// # Safety
+///
+/// `engine` must be null or a valid live pointer returned by any Typeflow
+/// constructor. `out_utf8` must be null or point to writable memory for
+/// `out_utf8_capacity` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn typeflow_engine_take_pending_replacement_utf8(
+    engine: *mut TfEngine,
+    out_utf8: *mut c_char,
+    out_utf8_capacity: usize,
+) -> usize {
+    ffi_guard(0, || {
+        let Some(engine) = (unsafe { engine.as_mut() }) else {
+            if !out_utf8.is_null() && out_utf8_capacity > 0 {
+                unsafe {
+                    *out_utf8 = 0;
+                }
+            }
+            return 0;
+        };
+
+        let Some(replacement) = engine.pending_replacement.take() else {
+            if !out_utf8.is_null() && out_utf8_capacity > 0 {
+                unsafe {
+                    *out_utf8 = 0;
+                }
+            }
+            return 0;
+        };
+
+        let bytes = replacement.text.as_bytes();
+        if !out_utf8.is_null() && out_utf8_capacity > 0 {
+            let copy_len = bytes.len().min(out_utf8_capacity.saturating_sub(1));
+            unsafe {
+                ptr::copy_nonoverlapping(bytes.as_ptr(), out_utf8.cast::<u8>(), copy_len);
+                *out_utf8.add(copy_len) = 0;
+            }
+        }
+        bytes.len()
+    })
+}
+
+/// Observes a single input event and writes the resulting state notification.
+///
+/// `engine` and `out_observation` must be non-null and valid. `out_observation`
 /// is fully overwritten.
 ///
 /// # Safety
 ///
 /// `engine` must be a valid live pointer returned by any Typeflow constructor.
-/// `out_composition` must point to writable memory for one `TfComposition`.
+/// `out_observation` must point to writable memory for one `TfObservation`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn typeflow_engine_process(
+pub unsafe extern "C" fn typeflow_engine_observe(
     engine: *mut TfEngine,
     event: TfEvent,
-    out_composition: *mut TfComposition,
+    out_observation: *mut TfObservation,
 ) {
     ffi_guard_void(|| {
         let Some(engine) = (unsafe { engine.as_mut() }) else {
             return;
         };
-        let Some(out) = (unsafe { out_composition.as_mut() }) else {
+        let Some(out) = (unsafe { out_observation.as_mut() }) else {
             return;
         };
-        out.write(CompositionAction::Bypass);
+        out.write(ObservationAction::None);
         match decode_event(event) {
             Some(input) => {
-                let output = engine.engine.process(input);
-                out.write(output.action);
+                let action = {
+                    let output = engine.engine.observe(input);
+                    let action = output.action.clone();
+                    out.write(action.clone());
+                    action
+                };
+                match action {
+                    ObservationAction::SwitchFutureLayout(layout) => {
+                        engine.set_pending_replacement(layout);
+                    }
+                    ObservationAction::None | ObservationAction::ResetToken => {
+                        engine.clear_pending_replacement();
+                    }
+                }
             }
-            None => out.write(CompositionAction::Bypass),
+            None => {
+                engine.clear_pending_replacement();
+                out.write(ObservationAction::None);
+            }
         }
     });
 }
@@ -1191,28 +1351,31 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        TF_COMPOSITION_BYPASS, TF_COMPOSITION_CLEAR, TF_COMPOSITION_COMMIT, TF_COMPOSITION_RENDER,
-        TF_COMPOSITION_TEXT_BUF_LEN, TF_CONTEXT_AUTOMATIC_PROCESSING_DISABLED,
-        TF_CONTEXT_AUTOMATIC_SWITCHING_DISABLED, TF_CONTEXT_SECURE_INPUT, TF_EVENT_BACKSPACE,
-        TF_EVENT_END_TOKEN, TF_EVENT_LETTER, TF_EVENT_LITERAL,
-        TF_HOST_POLICY_AUTOMATIC_PROCESSING_DISABLED, TF_HOST_POLICY_DIRECT_COMMIT_RENDERER,
-        TF_HOST_POLICY_MANUAL_CONVERSION_DISABLED,
+        TF_CONTEXT_AUTOMATIC_PROCESSING_DISABLED, TF_CONTEXT_AUTOMATIC_SWITCHING_DISABLED,
+        TF_CONTEXT_SECURE_INPUT, TF_EVENT_BACKSPACE, TF_EVENT_END_TOKEN, TF_EVENT_LETTER,
+        TF_EVENT_LITERAL, TF_HOST_POLICY_AUTOMATIC_PROCESSING_DISABLED,
+        TF_HOST_POLICY_MANUAL_SWITCH_DISABLED,
         TF_HOST_POLICY_REASON_AUTOMATIC_PROCESSING_DISABLED_BUNDLE,
         TF_HOST_POLICY_REASON_TERMINAL_BUNDLE, TF_HOST_POLICY_REASON_TERMINAL_SURFACE,
         TF_HOST_POLICY_SECURE_INPUT, TF_HOST_POLICY_TERMINAL_SURFACE, TF_LAYOUT_ENGLISH,
         TF_LAYOUT_SECONDARY, TF_MOD_COMMAND, TF_MOD_CONTROL, TF_MOD_OPTION, TF_MOD_SHIFT,
-        TfComposition, TfEngineConfig, TfEvent, TfHostInputPolicy, TfHostSurfaceFacts,
+        TF_OBSERVATION_NONE, TF_OBSERVATION_RESET_TOKEN, TF_OBSERVATION_SWITCH_FUTURE_LAYOUT,
+        TfEngineConfig, TfEvent, TfHostInputPolicy, TfHostSurfaceFacts, TfObservation,
         decode_event, default_ffi_config, engine_config_from_ffi, typeflow_engine_default_config,
-        typeflow_engine_force_switch_token, typeflow_engine_free,
+        typeflow_engine_force_switch_layout, typeflow_engine_free,
         typeflow_engine_new_embedded_with_config, typeflow_engine_new_from_host_config,
-        typeflow_engine_process, typeflow_host_config_auto_disabled_bundle_count,
-        typeflow_host_config_data_directory, typeflow_host_config_disabled_bundle_count,
-        typeflow_host_config_engine_config, typeflow_host_config_engine_source,
-        typeflow_host_config_free, typeflow_host_config_is_automatic_processing_disabled,
+        typeflow_engine_observe, typeflow_engine_pending_replacement_delete_count,
+        typeflow_engine_pending_replacement_utf8_len,
+        typeflow_engine_take_pending_replacement_utf8,
+        typeflow_host_config_auto_disabled_bundle_count, typeflow_host_config_data_directory,
+        typeflow_host_config_disabled_bundle_count, typeflow_host_config_engine_config,
+        typeflow_host_config_engine_source, typeflow_host_config_free,
+        typeflow_host_config_is_automatic_processing_disabled,
         typeflow_host_config_is_bundle_disabled, typeflow_host_config_load_with_environment,
-        typeflow_host_config_pack_directory, typeflow_host_config_resolve_input_policy,
-        typeflow_host_config_secondary_language, typeflow_host_config_source_path,
-        typeflow_last_error_message,
+        typeflow_host_config_macos_english_input_source_id,
+        typeflow_host_config_macos_secondary_input_source_id, typeflow_host_config_pack_directory,
+        typeflow_host_config_resolve_input_policy, typeflow_host_config_secondary_language,
+        typeflow_host_config_source_path, typeflow_last_error_message,
     };
     use typeflow_core::InputEvent;
 
@@ -1302,17 +1465,14 @@ mod tests {
     }
 
     #[test]
-    fn process_with_null_engine_leaves_composition_unchanged() {
-        let mut composition = TfComposition {
-            tag: TF_COMPOSITION_COMMIT,
-            consume_event: 1,
+    fn observe_with_null_engine_leaves_observation_unchanged() {
+        let mut observation = TfObservation {
+            tag: TF_OBSERVATION_RESET_TOKEN,
             layout: TF_LAYOUT_SECONDARY,
-            text_len: 9,
-            text: [1; super::TF_COMPOSITION_TEXT_BUF_LEN],
         };
 
         unsafe {
-            typeflow_engine_process(
+            typeflow_engine_observe(
                 std::ptr::null_mut(),
                 TfEvent {
                     tag: TF_EVENT_LETTER,
@@ -1320,14 +1480,12 @@ mod tests {
                     modifiers: 0,
                     codepoint: 0,
                 },
-                &mut composition,
+                &mut observation,
             );
         }
 
-        assert_eq!(composition.tag, TF_COMPOSITION_COMMIT);
-        assert_eq!(composition.consume_event, 1);
-        assert_eq!(composition.layout, TF_LAYOUT_SECONDARY);
-        assert_eq!(composition.text_len, 9);
+        assert_eq!(observation.tag, TF_OBSERVATION_RESET_TOKEN);
+        assert_eq!(observation.layout, TF_LAYOUT_SECONDARY);
     }
 
     #[test]
@@ -1353,32 +1511,28 @@ mod tests {
     }
 
     #[test]
-    fn bypass_composition_clears_previous_payload_metadata() {
-        let mut composition = TfComposition {
-            tag: TF_COMPOSITION_COMMIT,
-            consume_event: 1,
+    fn none_observation_clears_previous_payload_metadata() {
+        let mut observation = TfObservation {
+            tag: TF_OBSERVATION_SWITCH_FUTURE_LAYOUT,
             layout: TF_LAYOUT_SECONDARY,
-            text_len: 9,
-            text: [1; super::TF_COMPOSITION_TEXT_BUF_LEN],
         };
 
-        composition.write(typeflow_core::CompositionAction::Bypass);
+        observation.write(typeflow_core::ObservationAction::None);
 
-        assert_eq!(composition.tag, TF_COMPOSITION_BYPASS);
-        assert_eq!(composition.consume_event, 0);
-        assert_eq!(composition.layout, TF_LAYOUT_ENGLISH);
-        assert_eq!(composition.text_len, 0);
+        assert_eq!(observation.tag, TF_OBSERVATION_NONE);
+        assert_eq!(observation.layout, TF_LAYOUT_ENGLISH);
     }
 
     #[test]
-    fn process_returns_render_then_commit_composition() {
+    fn observe_returns_state_notifications_only() {
         let engine = typeflow_engine_new_embedded_with_config(default_ffi_config());
         assert!(!engine.is_null());
 
-        let mut composition = empty_composition();
-        for physical in [6, 7, 18, 3, 1, 13] {
+        let mut observation = empty_observation();
+        let mut saw_secondary_switch = false;
+        for (index, physical) in [6, 7, 18, 3, 1, 13].into_iter().enumerate() {
             unsafe {
-                typeflow_engine_process(
+                typeflow_engine_observe(
                     engine,
                     TfEvent {
                         tag: TF_EVENT_LETTER,
@@ -1386,21 +1540,27 @@ mod tests {
                         modifiers: 0,
                         codepoint: 0,
                     },
-                    &mut composition,
+                    &mut observation,
                 );
             }
-            assert_eq!(composition.tag, TF_COMPOSITION_RENDER);
-            assert_eq!(composition.consume_event, 1);
+            saw_secondary_switch |= observation.tag == TF_OBSERVATION_SWITCH_FUTURE_LAYOUT
+                && observation.layout == TF_LAYOUT_SECONDARY;
+            if saw_secondary_switch {
+                assert_eq!(
+                    unsafe { typeflow_engine_pending_replacement_delete_count(engine) },
+                    index + 1
+                );
+                assert!(pending_replacement_text(engine).is_some());
+                break;
+            }
         }
 
-        assert_eq!(composition_text(&composition), "привіт");
+        assert!(saw_secondary_switch);
 
         unsafe {
-            typeflow_engine_process(engine, end_token(), &mut composition);
+            typeflow_engine_observe(engine, end_token(), &mut observation);
         }
-        assert_eq!(composition.tag, TF_COMPOSITION_COMMIT);
-        assert_eq!(composition.consume_event, 0);
-        assert_eq!(composition_text(&composition), "привіт");
+        assert_eq!(observation.tag, TF_OBSERVATION_RESET_TOKEN);
 
         unsafe {
             typeflow_engine_free(engine);
@@ -1408,14 +1568,14 @@ mod tests {
     }
 
     #[test]
-    fn force_switch_rerenders_active_composition() {
+    fn force_switch_changes_future_layout_and_resets_token() {
         let engine = typeflow_engine_new_embedded_with_config(default_ffi_config());
         assert!(!engine.is_null());
 
-        let mut composition = empty_composition();
+        let mut observation = empty_observation();
         for physical in [19, 24, 15, 4] {
             unsafe {
-                typeflow_engine_process(
+                typeflow_engine_observe(
                     engine,
                     TfEvent {
                         tag: TF_EVENT_LETTER,
@@ -1423,17 +1583,25 @@ mod tests {
                         modifiers: 0,
                         codepoint: 0,
                     },
-                    &mut composition,
+                    &mut observation,
                 );
             }
         }
 
         unsafe {
-            typeflow_engine_force_switch_token(engine, &mut composition);
+            typeflow_engine_force_switch_layout(engine, &mut observation);
         }
-        assert_eq!(composition.tag, TF_COMPOSITION_RENDER);
-        assert_eq!(composition.layout, TF_LAYOUT_SECONDARY);
-        assert_eq!(composition_text(&composition), "ензу");
+        assert_eq!(observation.tag, TF_OBSERVATION_SWITCH_FUTURE_LAYOUT);
+        assert_eq!(observation.layout, TF_LAYOUT_SECONDARY);
+        assert_eq!(
+            unsafe { typeflow_engine_pending_replacement_delete_count(engine) },
+            4
+        );
+        assert_eq!(pending_replacement_text(engine).as_deref(), Some("ензу"));
+        assert_eq!(
+            unsafe { typeflow_engine_pending_replacement_delete_count(engine) },
+            0
+        );
 
         unsafe {
             typeflow_engine_free(engine);
@@ -1462,7 +1630,10 @@ directory = "/config/data"
 [apps]
 disable_bundle_ids = ["dev.zed.Zed", "com.tinyspeck.slackmacgap"]
 disable_auto_bundle_ids = ["com.tinyspeck.slackmacgap", "com.apple.TextEdit"]
-direct_commit_bundle_ids = ["com.apple.TextEdit"]
+
+[macos]
+english_input_source_id = " com.apple.keylayout.ABC "
+secondary_input_source_id = " com.apple.keylayout.Ukrainian "
 "#,
         )
         .unwrap();
@@ -1506,6 +1677,14 @@ direct_commit_bundle_ids = ["com.apple.TextEdit"]
         assert_eq!(
             unsafe { c_string(typeflow_host_config_engine_source(config)) },
             "data_dir"
+        );
+        assert_eq!(
+            unsafe { c_string(typeflow_host_config_macos_english_input_source_id(config)) },
+            "com.apple.keylayout.ABC"
+        );
+        assert_eq!(
+            unsafe { c_string(typeflow_host_config_macos_secondary_input_source_id(config)) },
+            "com.apple.keylayout.Ukrainian"
         );
         assert_eq!(
             unsafe { typeflow_host_config_disabled_bundle_count(config) },
@@ -1560,7 +1739,6 @@ direct_commit_bundle_ids = ["com.apple.TextEdit"]
             policy.reason,
             TF_HOST_POLICY_REASON_AUTOMATIC_PROCESSING_DISABLED_BUNDLE
         );
-        assert_ne!(policy.flags & TF_HOST_POLICY_DIRECT_COMMIT_RENDERER, 0);
 
         // Engine construction fails here because /env/data is intentionally not
         // a language data directory. The constructor decision still lives in Rust.
@@ -1629,7 +1807,7 @@ direct_commit_bundle_ids = ["com.apple.TextEdit"]
             policy.flags & TF_HOST_POLICY_AUTOMATIC_PROCESSING_DISABLED,
             0
         );
-        assert_ne!(policy.flags & TF_HOST_POLICY_MANUAL_CONVERSION_DISABLED, 0);
+        assert_ne!(policy.flags & TF_HOST_POLICY_MANUAL_SWITCH_DISABLED, 0);
         assert_ne!(policy.flags & TF_HOST_POLICY_TERMINAL_SURFACE, 0);
 
         let zed = CString::new("dev.zed.Zed").unwrap();
@@ -1645,7 +1823,7 @@ direct_commit_bundle_ids = ["com.apple.TextEdit"]
             policy.flags & TF_HOST_POLICY_AUTOMATIC_PROCESSING_DISABLED,
             0
         );
-        assert_ne!(policy.flags & TF_HOST_POLICY_MANUAL_CONVERSION_DISABLED, 0);
+        assert_ne!(policy.flags & TF_HOST_POLICY_MANUAL_SWITCH_DISABLED, 0);
         assert_ne!(policy.flags & TF_HOST_POLICY_TERMINAL_SURFACE, 0);
 
         unsafe {
@@ -1679,7 +1857,7 @@ direct_commit_bundle_ids = ["com.apple.TextEdit"]
             policy.flags & TF_HOST_POLICY_AUTOMATIC_PROCESSING_DISABLED,
             0
         );
-        assert_ne!(policy.flags & TF_HOST_POLICY_MANUAL_CONVERSION_DISABLED, 0);
+        assert_ne!(policy.flags & TF_HOST_POLICY_MANUAL_SWITCH_DISABLED, 0);
 
         unsafe {
             typeflow_host_config_free(config);
@@ -1748,41 +1926,34 @@ disable_bundle_ids = [
                 TF_HOST_POLICY_AUTOMATIC_PROCESSING_DISABLED as usize,
             ),
             (
-                "TF_HOST_POLICY_MANUAL_CONVERSION_DISABLED",
-                TF_HOST_POLICY_MANUAL_CONVERSION_DISABLED as usize,
+                "TF_HOST_POLICY_MANUAL_SWITCH_DISABLED",
+                TF_HOST_POLICY_MANUAL_SWITCH_DISABLED as usize,
             ),
             (
                 "TF_HOST_POLICY_TERMINAL_SURFACE",
                 TF_HOST_POLICY_TERMINAL_SURFACE as usize,
             ),
+            ("TF_OBSERVATION_NONE", TF_OBSERVATION_NONE as usize),
             (
-                "TF_HOST_POLICY_DIRECT_COMMIT_RENDERER",
-                TF_HOST_POLICY_DIRECT_COMMIT_RENDERER as usize,
+                "TF_OBSERVATION_SWITCH_FUTURE_LAYOUT",
+                TF_OBSERVATION_SWITCH_FUTURE_LAYOUT as usize,
             ),
-            ("TF_COMPOSITION_BYPASS", TF_COMPOSITION_BYPASS as usize),
-            ("TF_COMPOSITION_RENDER", TF_COMPOSITION_RENDER as usize),
-            ("TF_COMPOSITION_COMMIT", TF_COMPOSITION_COMMIT as usize),
-            ("TF_COMPOSITION_CLEAR", TF_COMPOSITION_CLEAR as usize),
+            (
+                "TF_OBSERVATION_RESET_TOKEN",
+                TF_OBSERVATION_RESET_TOKEN as usize,
+            ),
             ("TF_LAYOUT_ENGLISH", TF_LAYOUT_ENGLISH as usize),
             ("TF_LAYOUT_SECONDARY", TF_LAYOUT_SECONDARY as usize),
-            ("TF_COMPOSITION_TEXT_BUF_LEN", TF_COMPOSITION_TEXT_BUF_LEN),
         ] {
             assert_eq!(header_define(header, name), value, "{name}");
         }
     }
 
-    fn empty_composition() -> TfComposition {
-        TfComposition {
-            tag: TF_COMPOSITION_BYPASS,
-            consume_event: 0,
+    fn empty_observation() -> TfObservation {
+        TfObservation {
+            tag: TF_OBSERVATION_NONE,
             layout: TF_LAYOUT_ENGLISH,
-            text_len: 0,
-            text: [0; super::TF_COMPOSITION_TEXT_BUF_LEN],
         }
-    }
-
-    fn composition_text(composition: &TfComposition) -> &str {
-        std::str::from_utf8(&composition.text[..composition.text_len]).unwrap()
     }
 
     fn end_token() -> TfEvent {
@@ -1792,6 +1963,24 @@ disable_bundle_ids = [
             modifiers: 0,
             codepoint: 0,
         }
+    }
+
+    fn pending_replacement_text(engine: *mut super::TfEngine) -> Option<String> {
+        let len = unsafe { typeflow_engine_pending_replacement_utf8_len(engine) };
+        if len == 0 {
+            return None;
+        }
+
+        let mut buffer = vec![0i8; len + 1];
+        let written = unsafe {
+            typeflow_engine_take_pending_replacement_utf8(engine, buffer.as_mut_ptr(), buffer.len())
+        };
+        assert_eq!(written, len);
+        Some(
+            unsafe { CStr::from_ptr(buffer.as_ptr()) }
+                .to_string_lossy()
+                .into_owned(),
+        )
     }
 
     unsafe fn c_string(pointer: *const std::os::raw::c_char) -> String {

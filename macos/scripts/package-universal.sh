@@ -14,7 +14,6 @@ archs="${TYPEFLOW_MACOS_ARCHS:-arm64 x86_64}"
 
 app_bundle="$build_dir/$app_name.app"
 app_executable="$app_bundle/Contents/MacOS/$app_name"
-register_bin="$build_dir/typeflow-register-input-source"
 module_cache_dir="$build_dir/clang-module-cache"
 dist_dir="$build_dir/dist"
 zip_path="$dist_dir/$app_name-macos-universal.zip"
@@ -26,8 +25,7 @@ pkginfo="$macos_dir/Resources/PkgInfo"
 icon_source="$macos_dir/Resources/Typeflow.png"
 
 kit_sources=("$macos_dir"/Sources/TypeflowKit/*.swift)
-input_method_sources=("${kit_sources[@]}" "$macos_dir"/Sources/TypeflowInputMethod/*.swift)
-register_sources=("$macos_dir"/Sources/TypeflowRegister/*.swift)
+agent_sources=("${kit_sources[@]}" "$macos_dir"/Sources/TypeflowAgent/*.swift)
 
 rust_target_for_arch() {
     case "$1" in
@@ -72,23 +70,7 @@ build_swift_executable() {
         -I "$ffi_include_dir" \
         "$@" \
         -Xlinker -force_load -Xlinker "$rust_staticlib" \
-        -framework AppKit -framework Carbon -framework InputMethodKit \
-        -o "$output"
-}
-
-build_register_executable() {
-    local arch="$1"
-    local output="$2"
-    local swift_target
-    swift_target="$(swift_target_for_arch "$arch")"
-
-    mkdir -p "$(dirname "$output")" "$module_cache_dir/$arch"
-    xcrun swiftc \
-        -target "$swift_target" \
-        -O -whole-module-optimization \
-        -module-cache-path "$module_cache_dir/$arch" \
-        "${register_sources[@]}" \
-        -framework Carbon \
+        -framework AppKit -framework ApplicationServices -framework Carbon \
         -o "$output"
 }
 
@@ -107,8 +89,6 @@ build_icons() {
     local icon_multi_tiff="$build_dir/$app_name-icons.tiff"
 
     mkdir -p "$resources_dir" "$icon_tiff_dir"
-    sips -s format tiff --resampleHeightWidth 32 32 "$icon_source" \
-        --out "$resources_dir/Typeflow.tiff" >/dev/null
     sips -s format tiff --resampleHeightWidth 16 16 "$icon_source" \
         --out "$icon_tiff_dir/icon_16.tiff" >/dev/null
     sips -s format tiff --resampleHeightWidth 32 32 "$icon_source" \
@@ -173,7 +153,6 @@ copy_bundle_resources
 build_icons
 
 app_arch_outputs=()
-register_arch_outputs=()
 for arch in $archs; do
     rust_target="$(rust_target_for_arch "$arch")"
     require_rust_target "$rust_target"
@@ -181,20 +160,15 @@ for arch in $archs; do
 
     arch_dir="$build_dir/$arch"
     arch_app_exec="$arch_dir/$app_name"
-    arch_register_bin="$arch_dir/typeflow-register-input-source"
-    build_swift_executable "$arch" "$rust_target" "$arch_app_exec" "${input_method_sources[@]}"
-    build_register_executable "$arch" "$arch_register_bin"
+    build_swift_executable "$arch" "$rust_target" "$arch_app_exec" "${agent_sources[@]}"
     app_arch_outputs+=("$arch_app_exec")
-    register_arch_outputs+=("$arch_register_bin")
 done
 
 xcrun lipo -create "${app_arch_outputs[@]}" -output "$app_executable"
-xcrun lipo -create "${register_arch_outputs[@]}" -output "$register_bin"
-chmod 755 "$app_executable" "$register_bin"
+chmod 755 "$app_executable"
 
 for arch in $archs; do
     xcrun lipo "$app_executable" -verify_arch "$arch"
-    xcrun lipo "$register_bin" -verify_arch "$arch"
 done
 
 codesign_bundle

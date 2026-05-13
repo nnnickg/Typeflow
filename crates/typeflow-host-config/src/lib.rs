@@ -50,6 +50,7 @@ pub struct Config {
     pub language: LanguageSection,
     pub packs: PacksSection,
     pub apps: AppsSection,
+    pub macos: MacOSSection,
     pub data: DataSection,
 }
 
@@ -129,7 +130,13 @@ pub struct AppsSection {
     pub disable_bundle_ids: Vec<String>,
     #[serde(alias = "exclude_bundle_ids")]
     pub disable_auto_bundle_ids: Vec<String>,
-    pub direct_commit_bundle_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct MacOSSection {
+    pub english_input_source_id: Option<String>,
+    pub secondary_input_source_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -151,6 +158,7 @@ pub struct ResolvedHostConfig {
     pub pack_directory: Option<PathBuf>,
     pub data_directory: Option<PathBuf>,
     pub app_policy: AppDisablePolicy,
+    pub macos_input_sources: MacOSInputSourceConfig,
     pub source_path: Option<PathBuf>,
 }
 
@@ -166,7 +174,12 @@ pub struct HostEnvironment {
 pub struct AppDisablePolicy {
     disable_bundle_ids: HashSet<String>,
     disable_auto_bundle_ids: HashSet<String>,
-    direct_commit_bundle_ids: HashSet<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct MacOSInputSourceConfig {
+    pub english_input_source_id: Option<String>,
+    pub secondary_input_source_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -208,17 +221,10 @@ pub enum HostInputPolicyReason {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CompositionRenderer {
-    MarkedText,
-    DirectCommit,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HostInputPolicy {
     pub disable_automatic_processing: bool,
-    pub disable_manual_conversion: bool,
+    pub disable_manual_switch: bool,
     pub terminal_surface: bool,
-    pub composition_renderer: CompositionRenderer,
     pub reason: HostInputPolicyReason,
 }
 
@@ -226,9 +232,8 @@ impl Default for HostInputPolicy {
     fn default() -> Self {
         Self {
             disable_automatic_processing: false,
-            disable_manual_conversion: false,
+            disable_manual_switch: false,
             terminal_surface: false,
-            composition_renderer: CompositionRenderer::MarkedText,
             reason: HostInputPolicyReason::Normal,
         }
     }
@@ -305,8 +310,8 @@ impl ResolvedHostConfig {
             app_policy: AppDisablePolicy::from_bundle_ids(
                 source.config.apps.disable_bundle_ids.clone(),
                 source.config.apps.disable_auto_bundle_ids.clone(),
-                source.config.apps.direct_commit_bundle_ids.clone(),
             ),
+            macos_input_sources: MacOSInputSourceConfig::from_config(&source.config),
             source_path: source.path,
         })
     }
@@ -357,9 +362,8 @@ impl ResolvedHostConfig {
         if facts.secure_input {
             return HostInputPolicy {
                 disable_automatic_processing: true,
-                disable_manual_conversion: true,
+                disable_manual_switch: true,
                 terminal_surface: false,
-                composition_renderer: CompositionRenderer::MarkedText,
                 reason: HostInputPolicyReason::SecureInput,
             };
         }
@@ -376,25 +380,17 @@ impl ResolvedHostConfig {
             if self.app_policy.disables_bundle(bundle_id) {
                 return HostInputPolicy {
                     disable_automatic_processing: true,
-                    disable_manual_conversion: true,
+                    disable_manual_switch: true,
                     terminal_surface: false,
-                    composition_renderer: CompositionRenderer::MarkedText,
                     reason: HostInputPolicyReason::DisabledBundle,
                 };
             }
             if self.app_policy.disables_automatic_processing(bundle_id) {
                 return HostInputPolicy {
                     disable_automatic_processing: true,
-                    disable_manual_conversion: false,
+                    disable_manual_switch: false,
                     terminal_surface: false,
-                    composition_renderer: self.app_policy.composition_renderer(bundle_id),
                     reason: HostInputPolicyReason::AutomaticProcessingDisabledBundle,
-                };
-            }
-            if self.app_policy.uses_direct_commit_renderer(bundle_id) {
-                return HostInputPolicy {
-                    composition_renderer: CompositionRenderer::DirectCommit,
-                    ..HostInputPolicy::default()
                 };
             }
         }
@@ -420,25 +416,20 @@ impl AppDisablePolicy {
         Ok(Self::from_bundle_ids(
             config.apps.disable_bundle_ids,
             config.apps.disable_auto_bundle_ids,
-            config.apps.direct_commit_bundle_ids,
         ))
     }
 
     pub fn from_bundle_ids(
         disable_bundle_ids: impl IntoIterator<Item = String>,
         disable_auto_bundle_ids: impl IntoIterator<Item = String>,
-        direct_commit_bundle_ids: impl IntoIterator<Item = String>,
     ) -> Self {
         let disable_bundle_ids = normalized_bundle_ids(disable_bundle_ids);
         let mut disable_auto_bundle_ids = normalized_bundle_ids(disable_auto_bundle_ids);
         disable_auto_bundle_ids.retain(|bundle_id| !disable_bundle_ids.contains(bundle_id));
-        let mut direct_commit_bundle_ids = normalized_bundle_ids(direct_commit_bundle_ids);
-        direct_commit_bundle_ids.retain(|bundle_id| !disable_bundle_ids.contains(bundle_id));
 
         Self {
             disable_bundle_ids,
             disable_auto_bundle_ids,
-            direct_commit_bundle_ids,
         }
     }
 
@@ -451,18 +442,6 @@ impl AppDisablePolicy {
             || self.disable_auto_bundle_ids.contains(bundle_id)
     }
 
-    pub fn uses_direct_commit_renderer(&self, bundle_id: &str) -> bool {
-        !self.disables_bundle(bundle_id) && self.direct_commit_bundle_ids.contains(bundle_id)
-    }
-
-    pub fn composition_renderer(&self, bundle_id: &str) -> CompositionRenderer {
-        if self.uses_direct_commit_renderer(bundle_id) {
-            CompositionRenderer::DirectCommit
-        } else {
-            CompositionRenderer::MarkedText
-        }
-    }
-
     pub fn disable_bundle_count(&self) -> usize {
         self.disable_bundle_ids.len()
     }
@@ -472,9 +451,20 @@ impl AppDisablePolicy {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.disable_bundle_ids.is_empty()
-            && self.disable_auto_bundle_ids.is_empty()
-            && self.direct_commit_bundle_ids.is_empty()
+        self.disable_bundle_ids.is_empty() && self.disable_auto_bundle_ids.is_empty()
+    }
+}
+
+impl MacOSInputSourceConfig {
+    fn from_config(config: &Config) -> Self {
+        Self {
+            english_input_source_id: normalized_optional_string(
+                config.macos.english_input_source_id.as_deref(),
+            ),
+            secondary_input_source_id: normalized_optional_string(
+                config.macos.secondary_input_source_id.as_deref(),
+            ),
+        }
     }
 }
 
@@ -514,9 +504,8 @@ impl HostSurfaceFactsView<'_> {
 fn terminal_policy(reason: HostInputPolicyReason) -> HostInputPolicy {
     HostInputPolicy {
         disable_automatic_processing: true,
-        disable_manual_conversion: true,
+        disable_manual_switch: true,
         terminal_surface: true,
-        composition_renderer: CompositionRenderer::MarkedText,
         reason,
     }
 }
@@ -546,6 +535,11 @@ fn normalized_bundle_ids(bundle_ids: impl IntoIterator<Item = String>) -> HashSe
             (!trimmed.is_empty()).then(|| trimmed.to_owned())
         })
         .collect()
+}
+
+fn normalized_optional_string(value: Option<&str>) -> Option<String> {
+    let trimmed = value?.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
 pub fn read_path(path: &Path) -> Result<Config, String> {
@@ -631,10 +625,10 @@ pub fn normalized_secondary_id(config: &Config) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppDisablePolicy, CompositionRenderer, Config, ConfigSource, HostEnvironment,
-        HostInputPolicyReason, HostSurfaceFacts, ResolvedHostConfig,
-        configured_data_dir_with_environment, configured_pack_dir_with_environment,
-        default_pack_dir_with_environment, home_default_with_environment, normalized_secondary_id,
+        AppDisablePolicy, Config, ConfigSource, HostEnvironment, HostInputPolicyReason,
+        HostSurfaceFacts, ResolvedHostConfig, configured_data_dir_with_environment,
+        configured_pack_dir_with_environment, default_pack_dir_with_environment,
+        home_default_with_environment, normalized_secondary_id,
     };
 
     #[test]
@@ -656,10 +650,6 @@ disable_auto_bundle_ids = [
     "dev.zed.Zed",
 ]
 
-direct_commit_bundle_ids = [
-    "com.microsoft.VSCode",
-    "dev.zed.Zed",
-]
 "#,
         )
         .unwrap();
@@ -670,14 +660,8 @@ direct_commit_bundle_ids = [
         assert!(policy.disables_bundle("com.apple.Terminal"));
         assert!(policy.disables_automatic_processing("dev.zed.Zed"));
         assert!(policy.disables_automatic_processing("com.tinyspeck.slackmacgap"));
-        assert!(policy.uses_direct_commit_renderer("com.microsoft.VSCode"));
-        assert!(!policy.uses_direct_commit_renderer("dev.zed.Zed"));
         assert!(!policy.disables_bundle("com.tinyspeck.slackmacgap"));
         assert!(!policy.disables_automatic_processing("com.apple.TextEdit"));
-        assert_eq!(
-            policy.composition_renderer("com.microsoft.VSCode"),
-            CompositionRenderer::DirectCommit
-        );
     }
 
     #[test]
@@ -718,7 +702,7 @@ exclude_bundle_ids = ["dev.zed.Zed"]
 
         assert_eq!(policy.reason, HostInputPolicyReason::TerminalBundle);
         assert!(policy.disable_automatic_processing);
-        assert!(policy.disable_manual_conversion);
+        assert!(policy.disable_manual_switch);
         assert!(policy.terminal_surface);
     }
 
@@ -740,7 +724,7 @@ exclude_bundle_ids = ["dev.zed.Zed"]
 
         assert_eq!(policy.reason, HostInputPolicyReason::TerminalSurface);
         assert!(policy.disable_automatic_processing);
-        assert!(policy.disable_manual_conversion);
+        assert!(policy.disable_manual_switch);
         assert!(policy.terminal_surface);
     }
 
@@ -766,11 +750,15 @@ exclude_bundle_ids = ["dev.zed.Zed"]
     }
 
     #[test]
-    fn auto_disabled_bundle_still_allows_manual_conversion() {
+    fn auto_disabled_bundle_still_allows_manual_switch() {
         let config = toml::from_str::<Config>(
             r#"
 [apps]
 disable_auto_bundle_ids = ["dev.zed.Zed"]
+
+[macos]
+english_input_source_id = " com.apple.keylayout.ABC "
+secondary_input_source_id = " com.apple.keylayout.Ukrainian "
 "#,
         )
         .unwrap();
@@ -789,36 +777,8 @@ disable_auto_bundle_ids = ["dev.zed.Zed"]
             HostInputPolicyReason::AutomaticProcessingDisabledBundle
         );
         assert!(policy.disable_automatic_processing);
-        assert!(!policy.disable_manual_conversion);
+        assert!(!policy.disable_manual_switch);
         assert!(!policy.terminal_surface);
-    }
-
-    #[test]
-    fn direct_commit_bundle_changes_renderer_only() {
-        let config = toml::from_str::<Config>(
-            r#"
-[apps]
-direct_commit_bundle_ids = ["com.microsoft.VSCode"]
-"#,
-        )
-        .unwrap();
-        let resolved = ResolvedHostConfig::from_source(
-            ConfigSource { config, path: None },
-            &HostEnvironment::default(),
-        )
-        .unwrap();
-        let policy = resolved.resolve_input_policy(&HostSurfaceFacts {
-            bundle_id: Some("com.microsoft.VSCode".to_owned()),
-            ..HostSurfaceFacts::default()
-        });
-
-        assert_eq!(policy.reason, HostInputPolicyReason::Normal);
-        assert_eq!(
-            policy.composition_renderer,
-            CompositionRenderer::DirectCommit
-        );
-        assert!(!policy.disable_automatic_processing);
-        assert!(!policy.disable_manual_conversion);
     }
 
     #[test]
@@ -839,7 +799,7 @@ direct_commit_bundle_ids = ["com.microsoft.VSCode"]
 
         assert_eq!(policy.reason, HostInputPolicyReason::SecureInput);
         assert!(policy.disable_automatic_processing);
-        assert!(policy.disable_manual_conversion);
+        assert!(policy.disable_manual_switch);
         assert!(!policy.terminal_surface);
     }
 
@@ -888,6 +848,10 @@ secondary = " uk "
 
 [apps]
 disable_auto_bundle_ids = ["dev.zed.Zed"]
+
+[macos]
+english_input_source_id = " com.apple.keylayout.ABC "
+secondary_input_source_id = " com.apple.keylayout.Ukrainian "
 "#,
         )
         .unwrap();
@@ -906,6 +870,14 @@ disable_auto_bundle_ids = ["dev.zed.Zed"]
             resolved
                 .app_policy
                 .disables_automatic_processing("dev.zed.Zed")
+        );
+        assert_eq!(
+            resolved.macos_input_sources.english_input_source_id,
+            Some("com.apple.keylayout.ABC".to_owned())
+        );
+        assert_eq!(
+            resolved.macos_input_sources.secondary_input_source_id,
+            Some("com.apple.keylayout.Ukrainian".to_owned())
         );
         assert_eq!(resolved.engine_source_description(), "embedded");
     }

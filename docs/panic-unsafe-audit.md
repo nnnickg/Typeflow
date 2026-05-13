@@ -54,7 +54,8 @@ host language. The implementation pattern is:
   `typeflow_last_error_message`, and return the ABI's null/default value;
 - `typeflow_engine_free` and `typeflow_host_config_free` are the only
   `Box::from_raw` sites;
-- `TfComposition` stores rendered/committed text in an inline fixed buffer.
+- `TfObservation` stores only a state tag and layout byte. No text buffer crosses
+  the hot-path FFI boundary.
 
 Known contract:
 
@@ -76,12 +77,10 @@ Reviewed direct indexing sites:
 
 - `KeyboardMap::render` indexes fixed arrays through `PhysicalKey::index`.
   `PhysicalKey` is a closed enum with `COUNT = 34`.
-- `TfComposition::write` slices composition text only after checking
-  `bytes.len() <= TF_COMPOSITION_TEXT_BUF_LEN`.
+- `TfObservation::write` only writes fixed-size scalar fields.
 - Shared engine-config validation rejects zero lengths, `min_token_len` greater
   than `max_token_len`, non-finite/negative score floats, and `max_token_len`
-  values that could produce an FFI composition payload larger than
-  `TF_COMPOSITION_TEXT_BUF_LEN`.
+  values above `MAX_CONFIG_TOKEN_LEN`.
 - eval confusion-matrix indexing uses `layout_index`, which only returns `0`
   or `1`.
 - CLI argument indexing is guarded by arity checks before access.
@@ -91,5 +90,5 @@ Reviewed direct indexing sites:
 ## Packaging Note
 
 The raw release dylib install name is a packaging concern, not a panic/unsafe
-issue. The current IMK bundle links the Rust static archive; standalone dylib
+issue. The current macOS app links the Rust static archive; standalone dylib
 consumers should follow `docs/release-verification.md`.

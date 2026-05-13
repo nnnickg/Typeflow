@@ -111,16 +111,12 @@ public struct TypeflowHostInputPolicy {
         flags & UInt32(TF_HOST_POLICY_AUTOMATIC_PROCESSING_DISABLED) != 0
     }
 
-    public var manualConversionDisabled: Bool {
-        flags & UInt32(TF_HOST_POLICY_MANUAL_CONVERSION_DISABLED) != 0
+    public var manualSwitchDisabled: Bool {
+        flags & UInt32(TF_HOST_POLICY_MANUAL_SWITCH_DISABLED) != 0
     }
 
     public var terminalSurface: Bool {
         flags & UInt32(TF_HOST_POLICY_TERMINAL_SURFACE) != 0
-    }
-
-    public var directCommitRenderer: Bool {
-        flags & UInt32(TF_HOST_POLICY_DIRECT_COMMIT_RENDERER) != 0
     }
 
     public var reasonDescription: String {
@@ -223,6 +219,14 @@ public final class TypeflowHostConfig {
         string(from: typeflow_host_config_engine_source(raw)) ?? "embedded"
     }
 
+    public var macOSEnglishInputSourceID: String? {
+        string(from: typeflow_host_config_macos_english_input_source_id(raw))
+    }
+
+    public var macOSSecondaryInputSourceID: String? {
+        string(from: typeflow_host_config_macos_secondary_input_source_id(raw))
+    }
+
     public var disabledBundleIDCount: Int {
         Int(typeflow_host_config_disabled_bundle_count(raw))
     }
@@ -246,7 +250,7 @@ public final class TypeflowHostConfig {
     public func resolveInputPolicy(facts: TypeflowHostSurfaceFacts) -> TypeflowHostInputPolicy {
         var policy = TfHostInputPolicy(
             flags: UInt32(TF_HOST_POLICY_AUTOMATIC_PROCESSING_DISABLED)
-                | UInt32(TF_HOST_POLICY_MANUAL_CONVERSION_DISABLED),
+                | UInt32(TF_HOST_POLICY_MANUAL_SWITCH_DISABLED),
             reason: UInt8(TF_HOST_POLICY_REASON_UNAVAILABLE_HOST_CONFIG)
         )
         facts.withFFI { ffiFacts in

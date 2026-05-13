@@ -1,22 +1,23 @@
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
+use std::ffi::CStr;
+
 use typeflow_ffi::{
-    TF_COMPOSITION_BYPASS, TF_COMPOSITION_CLEAR, TF_COMPOSITION_COMMIT, TF_COMPOSITION_RENDER,
-    TF_COMPOSITION_TEXT_BUF_LEN, TF_CONTEXT_AUTOMATIC_SWITCHING_DISABLED, TF_EVENT_BACKSPACE,
-    TF_EVENT_END_TOKEN, TF_EVENT_LETTER, TF_EVENT_LITERAL, TF_LAYOUT_ENGLISH, TF_LAYOUT_SECONDARY,
-    TfComposition, TfEngine, TfEngineConfig, TfEvent, typeflow_engine_current_layout,
-    typeflow_engine_default_config, typeflow_engine_force_switch_token, typeflow_engine_free,
-    typeflow_engine_new_embedded, typeflow_engine_new_embedded_with_config,
-    typeflow_engine_process, typeflow_engine_reset_layout, typeflow_engine_set_host_context,
+    TF_CONTEXT_AUTOMATIC_SWITCHING_DISABLED, TF_EVENT_BACKSPACE, TF_EVENT_END_TOKEN,
+    TF_EVENT_LETTER, TF_EVENT_LITERAL, TF_LAYOUT_ENGLISH, TF_LAYOUT_SECONDARY, TF_OBSERVATION_NONE,
+    TF_OBSERVATION_RESET_TOKEN, TF_OBSERVATION_SWITCH_FUTURE_LAYOUT, TfEngine, TfEngineConfig,
+    TfEvent, TfObservation, typeflow_engine_current_layout, typeflow_engine_default_config,
+    typeflow_engine_force_switch_layout, typeflow_engine_free, typeflow_engine_new_embedded,
+    typeflow_engine_new_embedded_with_config, typeflow_engine_observe,
+    typeflow_engine_pending_replacement_delete_count, typeflow_engine_pending_replacement_utf8_len,
+    typeflow_engine_reset_layout, typeflow_engine_set_host_context,
+    typeflow_engine_take_pending_replacement_utf8,
 };
 
-fn blank_composition() -> TfComposition {
-    TfComposition {
-        tag: TF_COMPOSITION_BYPASS,
-        consume_event: 0,
+fn blank_observation() -> TfObservation {
+    TfObservation {
+        tag: TF_OBSERVATION_NONE,
         layout: TF_LAYOUT_ENGLISH,
-        text_len: 0,
-        text: [0; TF_COMPOSITION_TEXT_BUF_LEN],
     }
 }
 
@@ -56,85 +57,54 @@ fn end_token() -> TfEvent {
     }
 }
 
-fn process(engine: *mut TfEngine, event: TfEvent) -> TfComposition {
-    let mut composition = blank_composition();
+fn observe(engine: *mut TfEngine, event: TfEvent) -> TfObservation {
+    let mut observation = blank_observation();
     unsafe {
-        typeflow_engine_process(engine, event, &mut composition);
+        typeflow_engine_observe(engine, event, &mut observation);
     }
-    composition
+    observation
 }
 
-fn composition_text(composition: &TfComposition) -> &str {
-    std::str::from_utf8(&composition.text[..composition.text_len])
-        .expect("FFI composition text should be valid UTF-8")
-}
-
-fn apply_composition(
-    composition: &TfComposition,
-    fallback: Option<char>,
-    committed: &mut String,
-    composing: &mut String,
-) {
-    match composition.tag {
-        TF_COMPOSITION_BYPASS => {
-            if let Some(character) = fallback {
-                committed.push(character);
-            }
-        }
-        TF_COMPOSITION_RENDER => {
-            composing.clear();
-            composing.push_str(composition_text(composition));
-        }
-        TF_COMPOSITION_COMMIT => {
-            committed.push_str(composition_text(composition));
-            composing.clear();
-            if composition.consume_event == 0
-                && let Some(character) = fallback
-            {
-                committed.push(character);
-            }
-        }
-        TF_COMPOSITION_CLEAR => {
-            composing.clear();
-            if composition.consume_event == 0
-                && let Some(character) = fallback
-            {
-                committed.push(character);
-            }
-        }
-        other => panic!("unexpected FFI composition tag {other}"),
+fn take_pending_replacement_text(engine: *mut TfEngine) -> Option<String> {
+    let len = unsafe { typeflow_engine_pending_replacement_utf8_len(engine) };
+    if len == 0 {
+        return None;
     }
+
+    let mut buffer = vec![0i8; len + 1];
+    let written = unsafe {
+        typeflow_engine_take_pending_replacement_utf8(engine, buffer.as_mut_ptr(), buffer.len())
+    };
+    assert_eq!(written, len);
+    Some(
+        unsafe { CStr::from_ptr(buffer.as_ptr()) }
+            .to_string_lossy()
+            .into_owned(),
+    )
 }
 
 #[test]
-fn public_abi_renders_then_commits_wrong_layout_token() {
+fn public_abi_observes_then_resets_wrong_layout_token() {
     let engine = typeflow_engine_new_embedded();
     assert!(!engine.is_null());
 
-    let mut committed = String::new();
-    let mut composing = String::new();
-    let mut composition = process(engine, letter(6));
-    assert_eq!(composition.tag, TF_COMPOSITION_RENDER);
-    apply_composition(&composition, None, &mut committed, &mut composing);
+    let mut observation = observe(engine, letter(6));
+    assert_eq!(observation.tag, TF_OBSERVATION_NONE);
+    let mut saw_secondary_switch = false;
     for physical in [7, 18, 3, 1, 13] {
-        composition = process(engine, letter(physical));
-        assert_eq!(composition.tag, TF_COMPOSITION_RENDER);
-        apply_composition(&composition, None, &mut committed, &mut composing);
+        observation = observe(engine, letter(physical));
+        saw_secondary_switch |= observation.tag == TF_OBSERVATION_SWITCH_FUTURE_LAYOUT
+            && observation.layout == TF_LAYOUT_SECONDARY;
     }
 
-    assert_eq!(committed, "");
-    assert_eq!(composing, "привіт");
+    assert!(saw_secondary_switch);
     assert_eq!(
         unsafe { typeflow_engine_current_layout(engine) },
         TF_LAYOUT_SECONDARY
     );
 
-    composition = process(engine, end_token());
-    assert_eq!(composition.tag, TF_COMPOSITION_COMMIT);
-    assert_eq!(composition.consume_event, 0);
-    apply_composition(&composition, None, &mut committed, &mut composing);
-    assert_eq!(committed, "привіт");
-    assert_eq!(composing, "");
+    observation = observe(engine, end_token());
+    assert_eq!(observation.tag, TF_OBSERVATION_RESET_TOKEN);
 
     unsafe {
         typeflow_engine_free(engine);
@@ -146,38 +116,25 @@ fn public_abi_literals_and_backspace_stay_in_sync() {
     let engine = typeflow_engine_new_embedded();
     assert!(!engine.is_null());
 
-    let mut committed = String::new();
-    let mut composing = String::new();
     for physical in [0, 1, 2] {
-        let composition = process(engine, letter(physical));
-        apply_composition(&composition, None, &mut committed, &mut composing);
+        let observation = observe(engine, letter(physical));
+        assert_eq!(observation.tag, TF_OBSERVATION_NONE);
     }
 
-    let composition = process(engine, literal('1'));
-    assert_eq!(composition.tag, TF_COMPOSITION_COMMIT);
-    assert_eq!(composition_text(&composition), "abc1");
-    apply_composition(&composition, Some('1'), &mut committed, &mut composing);
+    let observation = observe(engine, literal('1'));
+    assert_eq!(observation.tag, TF_OBSERVATION_RESET_TOKEN);
 
     for physical in [3, 4, 5] {
-        let composition = process(engine, letter(physical));
-        apply_composition(&composition, None, &mut committed, &mut composing);
+        let observation = observe(engine, letter(physical));
+        assert_eq!(observation.tag, TF_OBSERVATION_NONE);
     }
-    assert_eq!(committed, "abc1");
-    assert_eq!(composing, "def");
 
-    let composition = process(engine, backspace());
-    assert_eq!(composition.tag, TF_COMPOSITION_RENDER);
-    assert_eq!(composition_text(&composition), "de");
-    apply_composition(&composition, None, &mut committed, &mut composing);
+    let observation = observe(engine, backspace());
+    assert_eq!(observation.tag, TF_OBSERVATION_NONE);
 
-    process(engine, backspace());
-    let composition = process(engine, backspace());
-    assert_eq!(composition.tag, TF_COMPOSITION_CLEAR);
-    assert_eq!(composition.consume_event, 1);
-    apply_composition(&composition, None, &mut committed, &mut composing);
-
-    assert_eq!(committed, "abc1");
-    assert_eq!(composing, "");
+    observe(engine, backspace());
+    let observation = observe(engine, backspace());
+    assert_eq!(observation.tag, TF_OBSERVATION_RESET_TOKEN);
     assert_eq!(
         unsafe { typeflow_engine_current_layout(engine) },
         TF_LAYOUT_ENGLISH
@@ -189,7 +146,7 @@ fn public_abi_literals_and_backspace_stay_in_sync() {
 }
 
 #[test]
-fn public_abi_auto_switching_disabled_renders_current_layout() {
+fn public_abi_auto_switching_disabled_observes_without_switching() {
     let engine = typeflow_engine_new_embedded();
     assert!(!engine.is_null());
 
@@ -197,15 +154,12 @@ fn public_abi_auto_switching_disabled_renders_current_layout() {
         typeflow_engine_set_host_context(engine, TF_CONTEXT_AUTOMATIC_SWITCHING_DISABLED);
     }
 
-    let mut committed = String::new();
-    let mut composing = String::new();
     for physical in [6, 7, 18, 3, 1, 13] {
-        let composition = process(engine, letter(physical));
-        apply_composition(&composition, None, &mut committed, &mut composing);
+        let observation = observe(engine, letter(physical));
+        assert_eq!(observation.tag, TF_OBSERVATION_NONE);
     }
-    let composition = process(engine, end_token());
-    apply_composition(&composition, None, &mut committed, &mut composing);
-    assert_eq!(committed, "ghsdbn");
+    let observation = observe(engine, end_token());
+    assert_eq!(observation.tag, TF_OBSERVATION_RESET_TOKEN);
     assert_eq!(
         unsafe { typeflow_engine_current_layout(engine) },
         TF_LAYOUT_ENGLISH
@@ -214,15 +168,12 @@ fn public_abi_auto_switching_disabled_renders_current_layout() {
     unsafe {
         typeflow_engine_reset_layout(engine, TF_LAYOUT_SECONDARY);
     }
-    committed.clear();
-    composing.clear();
     for physical in [6, 7, 18, 3, 1, 13] {
-        let composition = process(engine, letter(physical));
-        apply_composition(&composition, None, &mut committed, &mut composing);
+        let observation = observe(engine, letter(physical));
+        assert_eq!(observation.tag, TF_OBSERVATION_NONE);
     }
-    let composition = process(engine, end_token());
-    apply_composition(&composition, None, &mut committed, &mut composing);
-    assert_eq!(committed, "привіт");
+    let observation = observe(engine, end_token());
+    assert_eq!(observation.tag, TF_OBSERVATION_RESET_TOKEN);
     assert_eq!(
         unsafe { typeflow_engine_current_layout(engine) },
         TF_LAYOUT_SECONDARY
@@ -234,21 +185,32 @@ fn public_abi_auto_switching_disabled_renders_current_layout() {
 }
 
 #[test]
-fn public_abi_force_switch_rerenders_active_composition() {
+fn public_abi_force_switch_changes_future_layout_only() {
     let engine = typeflow_engine_new_embedded();
     assert!(!engine.is_null());
 
     for physical in [19, 24, 15, 4] {
-        process(engine, letter(physical));
+        observe(engine, letter(physical));
     }
 
-    let mut composition = blank_composition();
+    let mut observation = blank_observation();
     unsafe {
-        typeflow_engine_force_switch_token(engine, &mut composition);
+        typeflow_engine_force_switch_layout(engine, &mut observation);
     }
-    assert_eq!(composition.tag, TF_COMPOSITION_RENDER);
-    assert_eq!(composition.layout, TF_LAYOUT_SECONDARY);
-    assert_eq!(composition_text(&composition), "ензу");
+    assert_eq!(observation.tag, TF_OBSERVATION_SWITCH_FUTURE_LAYOUT);
+    assert_eq!(observation.layout, TF_LAYOUT_SECONDARY);
+    assert_eq!(
+        unsafe { typeflow_engine_pending_replacement_delete_count(engine) },
+        4
+    );
+    assert_eq!(
+        take_pending_replacement_text(engine).as_deref(),
+        Some("ензу")
+    );
+    assert_eq!(
+        unsafe { typeflow_engine_pending_replacement_delete_count(engine) },
+        0
+    );
 
     unsafe {
         typeflow_engine_free(engine);

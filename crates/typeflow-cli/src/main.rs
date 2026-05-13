@@ -22,7 +22,7 @@ use typeflow_core::data::{
     PACK_MANIFEST_FILE, PACK_NGRAMS_FILE,
 };
 use typeflow_core::{
-    CompositionAction, Decision, Engine, EngineConfig, InputEvent, LayoutCandidates, LayoutScore,
+    Decision, Engine, EngineConfig, InputEvent, LayoutCandidates, LayoutScore, ObservationAction,
     ScoreAnalysis, has_dictionary_evidence,
 };
 use typeflow_host_config::{self as host_config, HostEnvironment, ResolvedHostConfig};
@@ -61,7 +61,6 @@ fn main() -> ExitCode {
         Some("stream") => cmd_stream(&parsed.rest, parsed.config_path.as_deref()),
         Some("repl") => cmd_repl(parsed.config_path.as_deref()),
         Some("predict") => cmd_predict(&parsed.rest, parsed.config_path.as_deref()),
-        Some("convert") => cmd_convert(&parsed.rest, parsed.config_path.as_deref()),
         Some("eval") => cmd_eval(&parsed.rest, parsed.config_path.as_deref()),
         Some("model") => cmd_model(&parsed.rest, parsed.config_path.as_deref()),
         Some("pack") => cmd_pack(&parsed.rest, parsed.config_path.as_deref()),
@@ -122,11 +121,6 @@ fn cli() -> Command {
                         .num_args(1..)
                         .required(true),
                 ),
-        )
-        .subcommand(
-            Command::new("convert")
-                .about("Force-convert one token to the opposite layout")
-                .arg(Arg::new("keys").value_name("KEYS").required(true)),
         )
         .subcommand(
             Command::new("eval")
@@ -196,7 +190,6 @@ fn cli_args_from_matches(matches: &ArgMatches) -> Option<CliArgs> {
             rest.extend(string_values(sub_matches, "keys"));
             rest
         }
-        "convert" => required_string(sub_matches, "keys").into_iter().collect(),
         "eval" => eval_args_from_matches(sub_matches),
         "pack" => pack_args_from_matches(sub_matches),
         "config" => config_args_from_matches(sub_matches),
@@ -311,7 +304,7 @@ fn cmd_type(args: &[String], explicit_config: Option<&Path>) -> Result<(), Strin
 
     for (idx, token) in args.iter().enumerate() {
         if idx > 0 {
-            engine.process(InputEvent::EndToken);
+            engine.observe(InputEvent::EndToken);
             println!("--- end of token ---");
         }
         process_token_verbose(&mut engine, token)?;
@@ -329,7 +322,7 @@ fn cmd_type(args: &[String], explicit_config: Option<&Path>) -> Result<(), Strin
 fn process_token_verbose(engine: &mut Engine, token: &str) -> Result<(), String> {
     for character in token.chars() {
         let input = input_event_for_char(engine, character);
-        let output = engine.process(input);
+        let output = engine.observe(input);
         let english_candidate = output.candidates.english.clone();
         let secondary_candidate = output.candidates.secondary.clone();
         let decision = output.decision;
@@ -378,16 +371,17 @@ fn cmd_stream(args: &[String], explicit_config: Option<&Path>) -> Result<(), Str
         }
 
         engine.reset_layout(Layout::English);
-        let rendered = match run_token_committed(&mut engine, token) {
-            Ok(rendered) => rendered,
+        let prediction = match run_token_predicted(&mut engine, token) {
+            Ok(prediction) => prediction,
             Err(error) => {
                 writeln!(stdout, "{token}\tERROR\t{error}\t0\t0\t0").map_err(io_str)?;
                 continue;
             }
         };
 
-        let score = engine.token_score();
-        let layout = engine.current_layout();
+        let rendered = prediction.rendered;
+        let score = prediction.score;
+        let layout = prediction.layout;
         let margin = score.english.total - score.secondary.total;
         writeln!(
             stdout,
@@ -404,17 +398,26 @@ fn cmd_stream(args: &[String], explicit_config: Option<&Path>) -> Result<(), Str
     Ok(())
 }
 
-fn run_token_committed(engine: &mut Engine, token: &str) -> Result<String, String> {
-    let mut committed = String::new();
-    let mut composing = String::new();
+struct Prediction {
+    rendered: String,
+    layout: Layout,
+    score: ScoreAnalysis,
+}
+
+fn run_token_predicted(engine: &mut Engine, token: &str) -> Result<Prediction, String> {
     for character in token.chars() {
         let input = input_event_for_char(engine, character);
-        let action = engine.process(input).action;
-        apply_composition(action, Some(character), &mut committed, &mut composing);
+        engine.observe(input);
     }
-    let action = engine.process(InputEvent::EndToken).action;
-    apply_composition(action, None, &mut committed, &mut composing);
-    Ok(committed)
+    let layout = engine.current_layout();
+    let rendered = engine.token_candidates().get(layout).to_owned();
+    let score = engine.token_score();
+    engine.observe(InputEvent::EndToken);
+    Ok(Prediction {
+        rendered,
+        layout,
+        score,
+    })
 }
 
 fn input_event_for_char(engine: &Engine, character: char) -> InputEvent {
@@ -447,10 +450,10 @@ fn cmd_predict(args: &[String], explicit_config: Option<&Path>) -> Result<(), St
         if idx > 0 {
             engine.reset_layout(Layout::English);
         }
-        let rendered = run_token_committed(&mut engine, token)?;
-
-        let score = engine.token_score();
-        let layout = engine.current_layout();
+        let prediction = run_token_predicted(&mut engine, token)?;
+        let rendered = prediction.rendered;
+        let score = prediction.score;
+        let layout = prediction.layout;
         let margin = score.english.total - score.secondary.total;
 
         if json {
@@ -471,33 +474,6 @@ fn cmd_predict(args: &[String], explicit_config: Option<&Path>) -> Result<(), St
         }
     }
 
-    Ok(())
-}
-
-fn cmd_convert(args: &[String], explicit_config: Option<&Path>) -> Result<(), String> {
-    if args.len() != 1 {
-        return Err("usage: typeflow convert <KEYS>".into());
-    }
-
-    let source = load_config(explicit_config)?;
-    let mut engine = build_engine(&source.config)?;
-    let mut committed = String::new();
-    let mut composing = String::new();
-    for character in args[0].chars() {
-        let input = input_event_for_char(&engine, character);
-        let action = engine.process(input).action;
-        apply_composition(action, Some(character), &mut committed, &mut composing);
-    }
-    let output = engine.force_switch_token();
-    apply_composition(output.action, None, &mut committed, &mut composing);
-    let action = engine.process(InputEvent::EndToken).action;
-    apply_composition(action, None, &mut committed, &mut composing);
-
-    println!(
-        "{}\t{}",
-        layout_label(&engine, engine.current_layout()),
-        committed
-    );
     Ok(())
 }
 
@@ -536,8 +512,9 @@ fn cmd_eval(args: &[String], explicit_config: Option<&Path>) -> Result<(), Strin
 
     for case in &cases {
         engine.reset_layout(Layout::English);
-        let rendered = run_token_committed(&mut engine, &case.keys)?;
-        let actual = engine.current_layout();
+        let prediction = run_token_predicted(&mut engine, &case.keys)?;
+        let rendered = prediction.rendered;
+        let actual = prediction.layout;
         let expected_idx = layout_index(case.expected);
         let actual_idx = layout_index(actual);
         confusion[expected_idx][actual_idx] += 1;
@@ -751,17 +728,27 @@ fn generated_eval_cases(engine: &Engine, limit_per_layout: usize) -> Result<Vec<
         Layout::English,
         limit_per_layout,
     )?);
-    let (secondary_cases, skipped_ambiguous) =
-        generated_secondary_dictionary_cases(engine, limit_per_layout)?;
-    if skipped_ambiguous > 0 {
+    let GeneratedSecondaryCases {
+        cases: secondary_cases,
+        skipped_ambiguous_exact_english,
+    } = generated_secondary_dictionary_cases(engine, limit_per_layout)?;
+    if skipped_ambiguous_exact_english > 0 {
         println!(
             "generated: skipped_ambiguous_secondary_exact_{}={}",
             token_label(engine, Layout::English),
-            skipped_ambiguous
+            skipped_ambiguous_exact_english
         );
     }
     cases.extend(secondary_cases);
     Ok(cases)
+}
+
+struct GeneratedSecondaryCases {
+    cases: Vec<EvalCase>,
+    /// Words whose physical-key string is itself an exact English dictionary
+    /// entry. These collisions have no single correct automatic answer; see
+    /// `docs/calibration.md`.
+    skipped_ambiguous_exact_english: usize,
 }
 
 fn generated_dictionary_cases(
@@ -797,20 +784,20 @@ fn generated_dictionary_cases(
 fn generated_secondary_dictionary_cases(
     engine: &Engine,
     limit: usize,
-) -> Result<(Vec<EvalCase>, usize), String> {
+) -> Result<GeneratedSecondaryCases, String> {
     let pack = engine.bundle().pack(Layout::Secondary);
     let mut words = dictionary_words_by_frequency(pack)?;
     words.retain(|word| word.chars().count() >= engine.config().min_token_len);
     words.truncate(limit);
 
-    let mut skipped_ambiguous = 0usize;
+    let mut skipped_ambiguous_exact_english = 0usize;
     let mut cases = Vec::with_capacity(words.len());
     for (idx, word) in words.into_iter().enumerate() {
         let Some(keys) = physical_keys_for_word(engine, &word) else {
             continue;
         };
         if is_exact_dictionary_word(engine, Layout::English, &keys) {
-            skipped_ambiguous += 1;
+            skipped_ambiguous_exact_english += 1;
             continue;
         }
         cases.push(EvalCase {
@@ -825,7 +812,10 @@ fn generated_secondary_dictionary_cases(
         });
     }
 
-    Ok((cases, skipped_ambiguous))
+    Ok(GeneratedSecondaryCases {
+        cases,
+        skipped_ambiguous_exact_english,
+    })
 }
 
 fn is_exact_dictionary_word(engine: &Engine, layout: Layout, word: &str) -> bool {
@@ -1160,7 +1150,7 @@ fn cmd_repl(explicit_config: Option<&Path>) -> Result<(), String> {
         .unwrap_or_else(|| "<defaults>".to_owned());
     let mut history: Vec<String> = Vec::new();
     let mut committed: String = String::new();
-    let mut composing: String = String::new();
+    let composing: String = String::new();
 
     let mut stdout = io::stdout();
     terminal::enable_raw_mode().map_err(io_str)?;
@@ -1188,42 +1178,25 @@ fn cmd_repl(explicit_config: Option<&Path>) -> Result<(), String> {
             (KeyCode::Esc, _) => break,
             (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
             (KeyCode::Backspace, _) => {
-                let action = engine.process(InputEvent::Backspace).action;
-                apply_composition(action.clone(), None, &mut committed, &mut composing);
-                if matches!(action, CompositionAction::Bypass) {
-                    committed.pop();
-                }
+                let action = engine.observe(InputEvent::Backspace).action;
+                committed.pop();
                 history.push(format!("Backspace -> {}", action_label(&engine, &action)));
             }
             (KeyCode::Char(' '), _) => {
-                let action = engine.process(InputEvent::Literal(' ')).action;
-                apply_composition(action.clone(), Some(' '), &mut committed, &mut composing);
+                let action = engine.observe(InputEvent::Literal(' ')).action;
+                committed.push(' ');
                 history.push(format!("Space -> {}", action_label(&engine, &action)));
             }
             (KeyCode::Enter, _) => {
-                let action = engine.process(InputEvent::EndToken).action;
-                apply_composition(action.clone(), Some('\n'), &mut committed, &mut composing);
-                if !matches!(
-                    action,
-                    CompositionAction::Commit {
-                        consume_event: false,
-                        ..
-                    }
-                ) {
-                    committed.push('\n');
-                }
+                let action = engine.observe(InputEvent::EndToken).action;
+                committed.push('\n');
                 history.push(format!("Enter -> {}", action_label(&engine, &action)));
             }
             (KeyCode::Char(character), _) => {
-                let output = engine.process(input_event_for_char(&engine, character));
+                let output = engine.observe(input_event_for_char(&engine, character));
                 let decision = output.decision;
                 let action = output.action;
-                apply_composition(
-                    action.clone(),
-                    Some(character),
-                    &mut committed,
-                    &mut composing,
-                );
+                committed.push(character);
                 history.push(format!(
                     "'{character}' -> decision={} action={}",
                     decision_label(&engine, decision),
@@ -1235,40 +1208,6 @@ fn cmd_repl(explicit_config: Option<&Path>) -> Result<(), String> {
     }
 
     Ok(())
-}
-
-fn apply_composition(
-    action: CompositionAction,
-    fallback: Option<char>,
-    committed: &mut String,
-    composing: &mut String,
-) {
-    match action {
-        CompositionAction::Bypass => {
-            if let Some(character) = fallback {
-                committed.push(character);
-            }
-        }
-        CompositionAction::Render { text, .. } => {
-            *composing = text;
-        }
-        CompositionAction::Commit {
-            text,
-            consume_event,
-        } => {
-            committed.push_str(&text);
-            composing.clear();
-            if !consume_event && let Some(character) = fallback {
-                committed.push(character);
-            }
-        }
-        CompositionAction::Clear { consume_event } => {
-            composing.clear();
-            if !consume_event && let Some(character) = fallback {
-                committed.push(character);
-            }
-        }
-    }
 }
 
 fn cmd_config(args: &[String], explicit_config: Option<&Path>) -> Result<(), String> {
@@ -1512,22 +1451,13 @@ fn decision_label(engine: &Engine, decision: Decision) -> String {
     }
 }
 
-fn action_label(engine: &Engine, action: &CompositionAction) -> String {
+fn action_label(engine: &Engine, action: &ObservationAction) -> String {
     match action {
-        CompositionAction::Bypass => "Bypass".to_owned(),
-        CompositionAction::Render { text, layout } => {
-            format!(
-                "Render {{ text: {text:?}, layout: {} }}",
-                layout_label(engine, *layout)
-            )
+        ObservationAction::None => "None".to_owned(),
+        ObservationAction::SwitchFutureLayout(layout) => {
+            format!("SwitchFutureLayout({})", layout_label(engine, *layout))
         }
-        CompositionAction::Commit {
-            text,
-            consume_event,
-        } => format!("Commit {{ text: {text:?}, consume_event: {consume_event} }}"),
-        CompositionAction::Clear { consume_event } => {
-            format!("Clear {{ consume_event: {consume_event} }}")
-        }
+        ObservationAction::ResetToken => "ResetToken".to_owned(),
     }
 }
 
