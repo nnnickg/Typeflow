@@ -137,6 +137,9 @@ private final class TypeflowAgent: NSObject {
     private var currentReplacementFocus: ReplacementFocus?
     private var inputSourceStateReady = false
     private var inputSourceObserverRegistered = false
+    private var inputSourceSelectionGeneration: UInt64 = 0
+    private var pendingInputSourceSelectionWorkItem: DispatchWorkItem?
+    private var replacementGeneration: UInt64 = 0
 
     init(hostConfig: TypeflowHostConfig, engine: TypeflowEngine) {
         self.hostConfig = hostConfig
@@ -240,7 +243,7 @@ private final class TypeflowAgent: NSObject {
             logPerformance(name: "processKey", started: processStarted, thresholdMs: slowProcessThresholdMs)
         }
 
-        textReplacer.cancelPending(reason: "keyDown")
+        cancelPendingReplacement(reason: "keyDown")
         cancelPendingManualSwitch()
 
         let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
@@ -317,7 +320,7 @@ private final class TypeflowAgent: NSObject {
             )
         }
 
-        textReplacer.cancelPending(reason: "flagsChanged")
+        cancelPendingReplacement(reason: "flagsChanged")
 
         let keyCode = Int(event.getIntegerValueField(.keyboardEventKeycode))
         let isOptionKey = keyCode == kVK_Option || keyCode == kVK_RightOption
@@ -419,28 +422,73 @@ private final class TypeflowAgent: NSObject {
             measured("engine.resetToken.\(source)", thresholdMs: slowCallThresholdMs) {
                 engine.resetToken()
             }
-            let selected = measured("inputSource.selectForFuture.\(source)", thresholdMs: slowCallThresholdMs) {
-                sourceSwitcher.selectForFuture(layout, reason: source)
-            }
-            guard selected else {
-                syncedInputSourceLayout = nil
-                _ = syncLayoutWithCurrentInputSource()
-                textReplacer.cancelPending(reason: "inputSourceSelectionFailed")
+            scheduleInputSourceSelection(
+                layout,
+                source: source,
+                replacementPlan: replacementPlan,
+                replacementGeneration: replacementGeneration
+            )
+        }
+    }
+
+    private func scheduleInputSourceSelection(
+        _ layout: TypeflowLayout,
+        source: String,
+        replacementPlan: ReplacementPlan?,
+        replacementGeneration capturedReplacementGeneration: UInt64
+    ) {
+        pendingInputSourceSelectionWorkItem?.cancel()
+        inputSourceSelectionGeneration &+= 1
+        let selectionGeneration = inputSourceSelectionGeneration
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self,
+                  selectionGeneration == self.inputSourceSelectionGeneration
+            else {
                 return
             }
-            syncedInputSourceLayout = layout
-            inputSourceStateReady = true
-            if let replacementPlan {
-                textReplacer.replaceLastToken(
-                    reason: source,
-                    deleteCount: replacementPlan.deleteCount,
-                    with: replacementPlan.text,
-                    delaySeconds: replacementPlan.delaySeconds,
-                    isStillValid: { [weak self] in
-                        self?.replacementFocusIsStillValid(replacementPlan.focus) ?? false
-                    }
-                )
-            }
+
+            self.pendingInputSourceSelectionWorkItem = nil
+            self.completeInputSourceSelection(
+                layout,
+                source: source,
+                replacementPlan: replacementPlan,
+                replacementGeneration: capturedReplacementGeneration
+            )
+        }
+        pendingInputSourceSelectionWorkItem = workItem
+        DispatchQueue.main.async(execute: workItem)
+    }
+
+    private func completeInputSourceSelection(
+        _ layout: TypeflowLayout,
+        source: String,
+        replacementPlan: ReplacementPlan?,
+        replacementGeneration capturedReplacementGeneration: UInt64
+    ) {
+        let selected = measured("inputSource.selectForFuture.\(source)", thresholdMs: slowCallThresholdMs) {
+            sourceSwitcher.selectForFuture(layout, reason: source)
+        }
+        guard selected else {
+            syncedInputSourceLayout = nil
+            _ = syncLayoutWithCurrentInputSource()
+            cancelPendingReplacement(reason: "inputSourceSelectionFailed")
+            return
+        }
+        syncedInputSourceLayout = layout
+        inputSourceStateReady = true
+        guard capturedReplacementGeneration == replacementGeneration else {
+            return
+        }
+        if let replacementPlan {
+            textReplacer.replaceLastToken(
+                reason: source,
+                deleteCount: replacementPlan.deleteCount,
+                with: replacementPlan.text,
+                delaySeconds: replacementPlan.delaySeconds,
+                isStillValid: { [weak self] in
+                    self?.replacementFocusIsStillValid(replacementPlan.focus) ?? false
+                }
+            )
         }
     }
 
@@ -1034,7 +1082,8 @@ private final class TypeflowAgent: NSObject {
         hostPolicyLogKey = ""
         cachedHostContextSnapshot = .unknown
         currentReplacementFocus = nil
-        textReplacer.cancelPending(reason: "hostStateReset")
+        cancelPendingReplacement(reason: "hostStateReset")
+        cancelPendingInputSourceSelection(reason: "hostStateReset")
         accessibilitySlowRefreshCount = 0
         teardownAccessibilityObserver()
     }
@@ -1042,12 +1091,28 @@ private final class TypeflowAgent: NSObject {
     private func invalidateHostContext(reason: String) {
         cachedHostContextSnapshot = .unknown
         currentReplacementFocus = nil
-        textReplacer.cancelPending(reason: reason)
+        cancelPendingReplacement(reason: reason)
+        cancelPendingInputSourceSelection(reason: reason)
         measured("ffi.setHostContext.invalidate", thresholdMs: slowCallThresholdMs) {
             engine.setHostContext(flags: typeflow_ffi_context_automatic_processing_disabled())
         }
         engine.resetToken()
         logger.debug("hostPolicy invalidated reason=\(reason, privacy: .public)")
+    }
+
+    private func cancelPendingReplacement(reason: String) {
+        replacementGeneration &+= 1
+        textReplacer.cancelPending(reason: reason)
+    }
+
+    private func cancelPendingInputSourceSelection(reason: String) {
+        guard pendingInputSourceSelectionWorkItem != nil else {
+            return
+        }
+        inputSourceSelectionGeneration &+= 1
+        pendingInputSourceSelectionWorkItem?.cancel()
+        pendingInputSourceSelectionWorkItem = nil
+        logger.debug("pending input source selection cancelled reason=\(reason, privacy: .public)")
     }
 
     private func shouldBypassHost(_ flags: CGEventFlags) -> Bool {
