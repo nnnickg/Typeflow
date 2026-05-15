@@ -48,6 +48,7 @@ let package = Package(
                 .linkedFramework("ApplicationServices"),
                 .linkedFramework("Carbon"),
                 .linkedFramework("ServiceManagement"),
+                .linkedFramework("IOKit"),
             ]
         ),
     ]

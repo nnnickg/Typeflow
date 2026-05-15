@@ -70,7 +70,7 @@ build_swift_executable() {
         -I "$ffi_include_dir" \
         "$@" \
         -Xlinker -force_load -Xlinker "$rust_staticlib" \
-        -framework AppKit -framework ApplicationServices -framework Carbon -framework ServiceManagement \
+        -framework AppKit -framework ApplicationServices -framework Carbon -framework ServiceManagement -framework IOKit \
         -o "$output"
 }
 

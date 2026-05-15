@@ -93,7 +93,8 @@ The macOS target is an LSUIElement background agent plus Swift wrappers:
   keys, replaces switched tokens with synthetic backspace/Unicode events, and
   selects real macOS keyboard input sources for future keys. Installed app
   bundles register the main app with `SMAppService` so Typeflow launches at
-  login.
+  login. Startup explicitly requests Accessibility and Input Monitoring before
+  creating the event tap.
 - `TypeflowSmoke/main.swift` verifies the static archive and pass-through
   observer behavior.
 

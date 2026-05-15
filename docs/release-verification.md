@@ -136,6 +136,9 @@ pkill -x Typeflow
 `install-user` copies the app to `~/Applications/Typeflow.app` and opens it.
 On launch, installed app bundles register the main app as a login item via
 `SMAppService`.
+First launch requests both Accessibility and Input Monitoring. If Input
+Monitoring is denied, the event tap is not created and the app exits with an
+explicit permission error.
 `pkill -x Typeflow` is only to force a running copy to restart after reinstall.
 
 ## macOS Agent Runtime Smoke

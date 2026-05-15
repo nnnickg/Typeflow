@@ -131,6 +131,10 @@ make -C macos release-universal CODESIGN_IDENTITY="Developer ID Application: <na
 # Install, start, and register the agent as a login item for the current user.
 make -C macos install-user
 
+# On first launch, approve both prompts:
+# - Accessibility
+# - Input Monitoring
+
 # Restart a running copy after reinstall so macOS loads the new binary.
 pkill -x Typeflow
 

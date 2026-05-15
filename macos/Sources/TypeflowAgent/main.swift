@@ -2,6 +2,7 @@ import AppKit
 import ApplicationServices
 import Carbon
 import Foundation
+import IOKit
 import os
 import ServiceManagement
 #if SWIFT_PACKAGE
@@ -53,6 +54,7 @@ private func logPerformance(name: String, started: TimeInterval, thresholdMs: Do
 private enum TypeflowStartupError: Error, CustomStringConvertible {
     case eventTapCreationFailed
     case eventTapRunLoopSourceFailed
+    case inputMonitoringPermissionDenied
 
     var description: String {
         switch self {
@@ -60,6 +62,8 @@ private enum TypeflowStartupError: Error, CustomStringConvertible {
             return "failed to create CGEvent tap; Accessibility/Input Monitoring permission is required"
         case .eventTapRunLoopSourceFailed:
             return "failed to create event tap run-loop source"
+        case .inputMonitoringPermissionDenied:
+            return "Input Monitoring permission is required. Enable Typeflow in System Settings > Privacy & Security > Input Monitoring, then relaunch Typeflow."
         }
     }
 }
@@ -157,6 +161,9 @@ private final class TypeflowAgent: NSObject {
     func start() throws {
         configureLaunchAtLogin()
         promptForAccessibilityTrustIfNeeded()
+        guard requestInputMonitoringAccessIfNeeded() else {
+            throw TypeflowStartupError.inputMonitoringPermissionDenied
+        }
         currentFrontmostApplication = NSWorkspace.shared.frontmostApplication
         syncLayoutWithCurrentInputSource()
         registerInputSourceChangedObserver()
@@ -1104,6 +1111,23 @@ private final class TypeflowAgent: NSObject {
         ] as NSDictionary
         let trusted = AXIsProcessTrustedWithOptions(options)
         logger.notice("accessibility trust prompt requested trusted=\(trusted, privacy: .public)")
+    }
+
+    private func requestInputMonitoringAccessIfNeeded() -> Bool {
+        switch IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) {
+        case kIOHIDAccessTypeGranted:
+            return true
+        case kIOHIDAccessTypeDenied:
+            logger.notice("input monitoring access denied")
+            return false
+        case kIOHIDAccessTypeUnknown:
+            let granted = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
+            logger.notice("input monitoring access requested granted=\(granted, privacy: .public)")
+            return granted
+        default:
+            logger.error("input monitoring access status unknown")
+            return false
+        }
     }
 
     private struct AccessibilitySnapshot {
