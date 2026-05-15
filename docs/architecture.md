@@ -91,7 +91,9 @@ The macOS target is an LSUIElement background agent plus Swift wrappers:
   key indices.
 - `TypeflowAgent/main.swift` installs a listen-only `CGEventTap`, observes
   keys, replaces switched tokens with synthetic backspace/Unicode events, and
-  selects real macOS keyboard input sources for future keys.
+  selects real macOS keyboard input sources for future keys. Installed app
+  bundles register the main app with `SMAppService` so Typeflow launches at
+  login.
 - `TypeflowSmoke/main.swift` verifies the static archive and pass-through
   observer behavior.
 

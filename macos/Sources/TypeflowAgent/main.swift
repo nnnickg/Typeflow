@@ -3,6 +3,7 @@ import ApplicationServices
 import Carbon
 import Foundation
 import os
+import ServiceManagement
 #if SWIFT_PACKAGE
 import TypeflowKit
 #endif
@@ -154,6 +155,7 @@ private final class TypeflowAgent: NSObject {
     }
 
     func start() throws {
+        configureLaunchAtLogin()
         promptForAccessibilityTrustIfNeeded()
         currentFrontmostApplication = NSWorkspace.shared.frontmostApplication
         syncLayoutWithCurrentInputSource()
@@ -197,6 +199,39 @@ private final class TypeflowAgent: NSObject {
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
         logger.notice("started event-tap observer")
+    }
+
+    private func configureLaunchAtLogin() {
+        let bundleURL = Bundle.main.bundleURL.standardizedFileURL
+        guard bundleURL.pathExtension == "app",
+              isInstalledApplicationBundle(bundleURL)
+        else {
+            logger.debug("login item registration skipped bundle=\(bundleURL.path, privacy: .public)")
+            return
+        }
+
+        let service = SMAppService.mainApp
+        switch service.status {
+        case .enabled:
+            logger.debug("login item already enabled")
+        case .requiresApproval:
+            logger.notice("login item requires user approval in System Settings")
+        case .notRegistered, .notFound:
+            do {
+                try service.register()
+                logger.notice("login item registered bundle=\(bundleURL.path, privacy: .public)")
+            } catch {
+                logger.error("login item registration failed: \(String(describing: error), privacy: .public)")
+            }
+        @unknown default:
+            logger.error("login item status unknown")
+        }
+    }
+
+    private func isInstalledApplicationBundle(_ bundleURL: URL) -> Bool {
+        let path = bundleURL.path
+        return path.hasPrefix("/Applications/")
+            || path.hasPrefix("\(NSHomeDirectory())/Applications/")
     }
 
     func handleEvent(type: CGEventType, event: CGEvent) {

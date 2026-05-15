@@ -134,6 +134,8 @@ pkill -x Typeflow
 ```
 
 `install-user` copies the app to `~/Applications/Typeflow.app` and opens it.
+On launch, installed app bundles register the main app as a login item via
+`SMAppService`.
 `pkill -x Typeflow` is only to force a running copy to restart after reinstall.
 
 ## macOS Agent Runtime Smoke

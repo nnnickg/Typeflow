@@ -47,7 +47,7 @@ SMOKE_SOURCES := $(KIT_SOURCES) $(wildcard Sources/TypeflowSmoke/*.swift)
 AGENT_SOURCES := $(KIT_SOURCES) $(wildcard Sources/TypeflowAgent/*.swift)
 SWIFT_COMMON_FLAGS := $(SWIFT_OPT_FLAGS) -module-cache-path $(MODULE_CACHE_DIR) -I $(FFI_INCLUDE_DIR)
 RUST_LINK_FLAGS := -Xlinker -force_load -Xlinker $(RUST_STATICLIB)
-AGENT_FRAMEWORK_FLAGS := -framework AppKit -framework ApplicationServices -framework Carbon
+AGENT_FRAMEWORK_FLAGS := -framework AppKit -framework ApplicationServices -framework Carbon -framework ServiceManagement
 
 .PHONY: all rust-staticlib smoke swift-package bundle release-universal install-user clean
 

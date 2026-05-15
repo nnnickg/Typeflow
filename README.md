@@ -128,7 +128,7 @@ make -C macos bundle
 # Build a universal, hardened-runtime macOS release zip.
 make -C macos release-universal CODESIGN_IDENTITY="Developer ID Application: <name> (<team>)"
 
-# Install and start the agent for the current user.
+# Install, start, and register the agent as a login item for the current user.
 make -C macos install-user
 
 # Restart a running copy after reinstall so macOS loads the new binary.
