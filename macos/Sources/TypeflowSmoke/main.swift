@@ -271,6 +271,9 @@ func verifyManualSwitchChangesFutureLayoutOnly() throws {
     guard !replacement.text.isEmpty else {
         throw SmokeError.wrongOutput("empty manual switch replacement")
     }
+    guard replacement.inverseText == "type" else {
+        throw SmokeError.wrongOutput("inverseText=\(replacement.inverseText ?? "nil")")
+    }
     guard engine.tokenLength == 0 else {
         throw SmokeError.wrongOutput("expected token reset, got \(engine.tokenLength)")
     }

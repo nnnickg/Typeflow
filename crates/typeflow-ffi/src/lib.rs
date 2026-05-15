@@ -115,6 +115,7 @@ pub struct TfEngine {
 struct PendingReplacement {
     delete_count: usize,
     text: String,
+    inverse_text: String,
 }
 
 pub struct TfHostConfig {
@@ -293,12 +294,18 @@ impl TfEngine {
             return None;
         }
 
-        let text = self.engine.token_candidates().get(layout).to_owned();
+        let candidates = self.engine.token_candidates();
+        let text = candidates.get(layout).to_owned();
         if text.is_empty() {
             return None;
         }
+        let inverse_text = candidates.get(opposite_layout(layout)).to_owned();
 
-        Some(PendingReplacement { delete_count, text })
+        Some(PendingReplacement {
+            delete_count,
+            text,
+            inverse_text,
+        })
     }
 
     fn set_pending_replacement(&mut self, layout: Layout) {
@@ -1233,6 +1240,70 @@ pub unsafe extern "C" fn typeflow_engine_pending_replacement_utf8_len(
     })
 }
 
+/// Returns the UTF-8 byte length of the inverse pending replacement text,
+/// excluding a trailing NUL.
+///
+/// This is the text currently represented by the active token before the
+/// pending replacement is applied. Hosts can keep it to toggle a manual
+/// replacement back without reading text from the foreground app.
+///
+/// # Safety
+///
+/// `engine` must be null or a valid live pointer returned by any Typeflow constructor.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn typeflow_engine_pending_replacement_inverse_utf8_len(
+    engine: *mut TfEngine,
+) -> usize {
+    ffi_guard(0, || {
+        unsafe { engine.as_ref() }
+            .and_then(|engine| engine.pending_replacement.as_ref())
+            .map(|replacement| replacement.inverse_text.len())
+            .unwrap_or(0)
+    })
+}
+
+fn copy_utf8_to_c_buffer(bytes: &[u8], out_utf8: *mut c_char, out_utf8_capacity: usize) {
+    if !out_utf8.is_null() && out_utf8_capacity > 0 {
+        let copy_len = bytes.len().min(out_utf8_capacity.saturating_sub(1));
+        unsafe {
+            ptr::copy_nonoverlapping(bytes.as_ptr(), out_utf8.cast::<u8>(), copy_len);
+            *out_utf8.add(copy_len) = 0;
+        }
+    }
+}
+
+/// Copies the inverse pending replacement text as a NUL-terminated UTF-8 string.
+///
+/// Returns the full required byte length, excluding the trailing NUL. If
+/// `out_utf8_capacity` is too small, the written string is truncated but still
+/// NUL-terminated when capacity is non-zero. Copying does not clear the pending
+/// replacement.
+///
+/// # Safety
+///
+/// `engine` must be null or a valid live pointer returned by any Typeflow
+/// constructor. `out_utf8` must be null or point to writable memory for
+/// `out_utf8_capacity` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn typeflow_engine_copy_pending_replacement_inverse_utf8(
+    engine: *mut TfEngine,
+    out_utf8: *mut c_char,
+    out_utf8_capacity: usize,
+) -> usize {
+    ffi_guard(0, || {
+        let Some(replacement) =
+            (unsafe { engine.as_ref() }).and_then(|engine| engine.pending_replacement.as_ref())
+        else {
+            copy_utf8_to_c_buffer(&[], out_utf8, out_utf8_capacity);
+            return 0;
+        };
+
+        let bytes = replacement.inverse_text.as_bytes();
+        copy_utf8_to_c_buffer(bytes, out_utf8, out_utf8_capacity);
+        bytes.len()
+    })
+}
+
 /// Takes the pending replacement text as a NUL-terminated UTF-8 string.
 ///
 /// Returns the full required byte length, excluding the trailing NUL. If
@@ -1252,31 +1323,17 @@ pub unsafe extern "C" fn typeflow_engine_take_pending_replacement_utf8(
 ) -> usize {
     ffi_guard(0, || {
         let Some(engine) = (unsafe { engine.as_mut() }) else {
-            if !out_utf8.is_null() && out_utf8_capacity > 0 {
-                unsafe {
-                    *out_utf8 = 0;
-                }
-            }
+            copy_utf8_to_c_buffer(&[], out_utf8, out_utf8_capacity);
             return 0;
         };
 
         let Some(replacement) = engine.pending_replacement.take() else {
-            if !out_utf8.is_null() && out_utf8_capacity > 0 {
-                unsafe {
-                    *out_utf8 = 0;
-                }
-            }
+            copy_utf8_to_c_buffer(&[], out_utf8, out_utf8_capacity);
             return 0;
         };
 
         let bytes = replacement.text.as_bytes();
-        if !out_utf8.is_null() && out_utf8_capacity > 0 {
-            let copy_len = bytes.len().min(out_utf8_capacity.saturating_sub(1));
-            unsafe {
-                ptr::copy_nonoverlapping(bytes.as_ptr(), out_utf8.cast::<u8>(), copy_len);
-                *out_utf8.add(copy_len) = 0;
-            }
-        }
+        copy_utf8_to_c_buffer(bytes, out_utf8, out_utf8_capacity);
         bytes.len()
     })
 }
@@ -1361,10 +1418,12 @@ mod tests {
         TF_LAYOUT_SECONDARY, TF_MOD_COMMAND, TF_MOD_CONTROL, TF_MOD_OPTION, TF_MOD_SHIFT,
         TF_OBSERVATION_NONE, TF_OBSERVATION_RESET_TOKEN, TF_OBSERVATION_SWITCH_FUTURE_LAYOUT,
         TfEngineConfig, TfEvent, TfHostInputPolicy, TfHostSurfaceFacts, TfObservation,
-        decode_event, default_ffi_config, engine_config_from_ffi, typeflow_engine_default_config,
+        decode_event, default_ffi_config, engine_config_from_ffi,
+        typeflow_engine_copy_pending_replacement_inverse_utf8, typeflow_engine_default_config,
         typeflow_engine_force_switch_layout, typeflow_engine_free,
         typeflow_engine_new_embedded_with_config, typeflow_engine_new_from_host_config,
         typeflow_engine_observe, typeflow_engine_pending_replacement_delete_count,
+        typeflow_engine_pending_replacement_inverse_utf8_len,
         typeflow_engine_pending_replacement_utf8_len,
         typeflow_engine_take_pending_replacement_utf8,
         typeflow_host_config_auto_disabled_bundle_count, typeflow_host_config_data_directory,
@@ -1596,6 +1655,10 @@ mod tests {
         assert_eq!(
             unsafe { typeflow_engine_pending_replacement_delete_count(engine) },
             4
+        );
+        assert_eq!(
+            pending_replacement_inverse_text(engine).as_deref(),
+            Some("type")
         );
         assert_eq!(pending_replacement_text(engine).as_deref(), Some("ензу"));
         assert_eq!(
@@ -1974,6 +2037,28 @@ disable_bundle_ids = [
         let mut buffer = vec![0i8; len + 1];
         let written = unsafe {
             typeflow_engine_take_pending_replacement_utf8(engine, buffer.as_mut_ptr(), buffer.len())
+        };
+        assert_eq!(written, len);
+        Some(
+            unsafe { CStr::from_ptr(buffer.as_ptr()) }
+                .to_string_lossy()
+                .into_owned(),
+        )
+    }
+
+    fn pending_replacement_inverse_text(engine: *mut super::TfEngine) -> Option<String> {
+        let len = unsafe { typeflow_engine_pending_replacement_inverse_utf8_len(engine) };
+        if len == 0 {
+            return None;
+        }
+
+        let mut buffer = vec![0i8; len + 1];
+        let written = unsafe {
+            typeflow_engine_copy_pending_replacement_inverse_utf8(
+                engine,
+                buffer.as_mut_ptr(),
+                buffer.len(),
+            )
         };
         assert_eq!(written, len);
         Some(

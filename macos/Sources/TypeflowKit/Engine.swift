@@ -35,10 +35,12 @@ public enum TypeflowObservationAction: Equatable {
 public struct TypeflowReplacement: Equatable {
     public let deleteCount: Int
     public let text: String
+    public let inverseText: String?
 
-    public init(deleteCount: Int, text: String) {
+    public init(deleteCount: Int, text: String, inverseText: String? = nil) {
         self.deleteCount = deleteCount
         self.text = text
+        self.inverseText = inverseText
     }
 }
 
@@ -87,6 +89,7 @@ public final class TypeflowEngine {
     public func takePendingReplacement() -> TypeflowReplacement? {
         let deleteCount = Int(typeflow_engine_pending_replacement_delete_count(raw))
         let length = Int(typeflow_engine_pending_replacement_utf8_len(raw))
+        let inverseText = copyPendingReplacementInverseText()
         guard deleteCount > 0, length > 0 else {
             _ = typeflow_engine_take_pending_replacement_utf8(raw, nil, 0)
             return nil
@@ -97,7 +100,27 @@ public final class TypeflowEngine {
         guard required == length else {
             return nil
         }
-        return TypeflowReplacement(deleteCount: deleteCount, text: String(cString: buffer))
+        return TypeflowReplacement(
+            deleteCount: deleteCount,
+            text: String(cString: buffer),
+            inverseText: inverseText
+        )
+    }
+
+    private func copyPendingReplacementInverseText() -> String? {
+        let length = Int(typeflow_engine_pending_replacement_inverse_utf8_len(raw))
+        guard length > 0 else {
+            return nil
+        }
+
+        var buffer = [CChar](repeating: 0, count: length + 1)
+        let required = Int(
+            typeflow_engine_copy_pending_replacement_inverse_utf8(raw, &buffer, buffer.count)
+        )
+        guard required == length else {
+            return nil
+        }
+        return String(cString: buffer)
     }
 
     public static func defaultConfig() -> TfEngineConfig {

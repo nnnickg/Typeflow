@@ -140,6 +140,7 @@ private final class TypeflowAgent: NSObject {
     private var inputSourceSelectionGeneration: UInt64 = 0
     private var pendingInputSourceSelectionWorkItem: DispatchWorkItem?
     private var replacementGeneration: UInt64 = 0
+    private var manualReplacementToggle: ManualReplacementToggle?
 
     init(hostConfig: TypeflowHostConfig, engine: TypeflowEngine) {
         self.hostConfig = hostConfig
@@ -320,7 +321,7 @@ private final class TypeflowAgent: NSObject {
             )
         }
 
-        cancelPendingReplacement(reason: "flagsChanged")
+        cancelPendingReplacement(reason: "flagsChanged", clearsManualToggle: false)
 
         let keyCode = Int(event.getIntegerValueField(.keyboardEventKeycode))
         let isOptionKey = keyCode == kVK_Option || keyCode == kVK_RightOption
@@ -387,8 +388,43 @@ private final class TypeflowAgent: NSObject {
     private struct ReplacementPlan {
         let deleteCount: Int
         let text: String
+        let inverseText: String?
         let delaySeconds: TimeInterval
         let focus: ReplacementFocus
+    }
+
+    private struct ManualReplacementToggle {
+        let focus: ReplacementFocus
+        let englishText: String
+        let secondaryText: String
+        let currentLayout: TypeflowLayout
+
+        func replacementPlan(
+            to targetLayout: TypeflowLayout,
+            delaySeconds: TimeInterval
+        ) -> ReplacementPlan? {
+            let currentText = text(for: currentLayout)
+            let targetText = text(for: targetLayout)
+            guard !currentText.isEmpty, !targetText.isEmpty else {
+                return nil
+            }
+            return ReplacementPlan(
+                deleteCount: currentText.count,
+                text: targetText,
+                inverseText: currentText,
+                delaySeconds: delaySeconds,
+                focus: focus
+            )
+        }
+
+        private func text(for layout: TypeflowLayout) -> String {
+            switch layout {
+            case .english:
+                return englishText
+            case .secondary:
+                return secondaryText
+            }
+        }
     }
 
     private func applyObservation(
@@ -410,12 +446,18 @@ private final class TypeflowAgent: NSObject {
         case .none, .resetToken:
             return
         case let .switchFutureLayout(layout):
-            let replacementPlan = measured(
+            var replacementPlan = measured(
                 "\(source).replacementPlan",
                 thresholdMs: slowCallThresholdMs
             ) {
                 self.replacementPlan(
                     from: engine.takePendingReplacement(),
+                    delaySeconds: replacementDelaySeconds
+                )
+            }
+            if source == "manual", replacementPlan == nil {
+                replacementPlan = manualToggleReplacementPlan(
+                    to: layout,
                     delaySeconds: replacementDelaySeconds
                 )
             }
@@ -480,6 +522,14 @@ private final class TypeflowAgent: NSObject {
             return
         }
         if let replacementPlan {
+            if source == "manual" {
+                updateManualReplacementToggle(
+                    from: replacementPlan,
+                    targetLayout: layout
+                )
+            } else {
+                manualReplacementToggle = nil
+            }
             textReplacer.replaceLastToken(
                 reason: source,
                 deleteCount: replacementPlan.deleteCount,
@@ -505,8 +555,55 @@ private final class TypeflowAgent: NSObject {
         return ReplacementPlan(
             deleteCount: replacement.deleteCount,
             text: replacement.text,
+            inverseText: replacement.inverseText,
             delaySeconds: delaySeconds,
             focus: focus
+        )
+    }
+
+    private func manualToggleReplacementPlan(
+        to targetLayout: TypeflowLayout,
+        delaySeconds: TimeInterval
+    ) -> ReplacementPlan? {
+        guard let manualReplacementToggle else {
+            return nil
+        }
+        guard replacementFocusIsStillValid(manualReplacementToggle.focus) else {
+            self.manualReplacementToggle = nil
+            return nil
+        }
+        return manualReplacementToggle.replacementPlan(
+            to: targetLayout,
+            delaySeconds: delaySeconds
+        )
+    }
+
+    private func updateManualReplacementToggle(
+        from replacementPlan: ReplacementPlan,
+        targetLayout: TypeflowLayout
+    ) {
+        guard let inverseText = replacementPlan.inverseText,
+              !inverseText.isEmpty
+        else {
+            manualReplacementToggle = nil
+            return
+        }
+
+        let englishText: String
+        let secondaryText: String
+        switch targetLayout {
+        case .english:
+            englishText = replacementPlan.text
+            secondaryText = inverseText
+        case .secondary:
+            englishText = inverseText
+            secondaryText = replacementPlan.text
+        }
+        manualReplacementToggle = ManualReplacementToggle(
+            focus: replacementPlan.focus,
+            englishText: englishText,
+            secondaryText: secondaryText,
+            currentLayout: targetLayout
         )
     }
 
@@ -1100,8 +1197,11 @@ private final class TypeflowAgent: NSObject {
         logger.debug("hostPolicy invalidated reason=\(reason, privacy: .public)")
     }
 
-    private func cancelPendingReplacement(reason: String) {
+    private func cancelPendingReplacement(reason: String, clearsManualToggle: Bool = true) {
         replacementGeneration &+= 1
+        if clearsManualToggle {
+            manualReplacementToggle = nil
+        }
         textReplacer.cancelPending(reason: reason)
     }
 

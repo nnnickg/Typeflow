@@ -473,6 +473,38 @@ size_t typeflow_engine_pending_replacement_delete_count(TfEngine *engine);
 size_t typeflow_engine_pending_replacement_utf8_len(TfEngine *engine);
 
 /**
+ * Returns the UTF-8 byte length of the inverse pending replacement text,
+ * excluding a trailing NUL.
+ *
+ * This is the text currently represented by the active token before the
+ * pending replacement is applied. Hosts can keep it to toggle a manual
+ * replacement back without reading text from the foreground app.
+ *
+ * # Safety
+ *
+ * `engine` must be null or a valid live pointer returned by any Typeflow constructor.
+ */
+size_t typeflow_engine_pending_replacement_inverse_utf8_len(TfEngine *engine);
+
+/**
+ * Copies the inverse pending replacement text as a NUL-terminated UTF-8 string.
+ *
+ * Returns the full required byte length, excluding the trailing NUL. If
+ * `out_utf8_capacity` is too small, the written string is truncated but still
+ * NUL-terminated when capacity is non-zero. Copying does not clear the pending
+ * replacement.
+ *
+ * # Safety
+ *
+ * `engine` must be null or a valid live pointer returned by any Typeflow
+ * constructor. `out_utf8` must be null or point to writable memory for
+ * `out_utf8_capacity` bytes.
+ */
+size_t typeflow_engine_copy_pending_replacement_inverse_utf8(TfEngine *engine,
+                                                             char *out_utf8,
+                                                             size_t out_utf8_capacity);
+
+/**
  * Takes the pending replacement text as a NUL-terminated UTF-8 string.
  *
  * Returns the full required byte length, excluding the trailing NUL. If
