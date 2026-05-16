@@ -103,12 +103,12 @@ secondary = "uk"
 # agent enforces these lists before sending key events to the engine.
 disable_bundle_ids = [
     # "com.apple.Safari",
+    # "dev.zed.Zed",
 ]
 
 # Bundle IDs where automatic layout switching is disabled but standalone Option
 # switching is still allowed in normal, non-secure text fields.
 disable_auto_bundle_ids = [
-    # "dev.zed.Zed",
     # "com.microsoft.VSCode",
     # "com.jetbrains.intellij",
 ]

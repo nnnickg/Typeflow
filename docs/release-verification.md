@@ -187,10 +187,11 @@ Known bundle IDs useful for local testing:
 disable_bundle_ids = [
     "com.googlecode.iterm2",
     "com.apple.Terminal",
+    "dev.zed.Zed",
 ]
 
 disable_auto_bundle_ids = [
-    "dev.zed.Zed",
+    "com.microsoft.VSCode",
 ]
 
 ```

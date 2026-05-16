@@ -180,12 +180,13 @@ Example app exclusion config:
 # Fully disabled: pass-through observation AND manual Option-switch are skipped.
 disable_bundle_ids = [
     "com.1password.1password",
+    "dev.zed.Zed",
 ]
 
 # Auto-disabled: automatic layout switching is skipped, manual Option-switch
 # still works in normal non-secure fields.
 disable_auto_bundle_ids = [
-    "dev.zed.Zed",
+    "com.microsoft.VSCode",
 ]
 ```
 

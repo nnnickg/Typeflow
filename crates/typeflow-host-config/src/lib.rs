@@ -644,14 +644,14 @@ min_token_len = 4
 
 [apps]
 disable_bundle_ids = [
-    "dev.zed.Zed",
+    "com.example.Editor",
     " com.apple.Terminal ",
     "",
 ]
 
 disable_auto_bundle_ids = [
     "com.tinyspeck.slackmacgap",
-    "dev.zed.Zed",
+    "com.example.Editor",
 ]
 
 "#,
@@ -660,9 +660,9 @@ disable_auto_bundle_ids = [
 
         assert_eq!(policy.disable_bundle_count(), 2);
         assert_eq!(policy.disable_auto_bundle_count(), 1);
-        assert!(policy.disables_bundle("dev.zed.Zed"));
+        assert!(policy.disables_bundle("com.example.Editor"));
         assert!(policy.disables_bundle("com.apple.Terminal"));
-        assert!(policy.disables_automatic_processing("dev.zed.Zed"));
+        assert!(policy.disables_automatic_processing("com.example.Editor"));
         assert!(policy.disables_automatic_processing("com.tinyspeck.slackmacgap"));
         assert!(!policy.disables_bundle("com.tinyspeck.slackmacgap"));
         assert!(!policy.disables_automatic_processing("com.apple.TextEdit"));
@@ -673,13 +673,13 @@ disable_auto_bundle_ids = [
         let policy = AppDisablePolicy::from_toml(
             r#"
 [apps]
-exclude_bundle_ids = ["dev.zed.Zed"]
+exclude_bundle_ids = ["com.example.Editor"]
 "#,
         )
         .unwrap();
 
-        assert!(!policy.disables_bundle("dev.zed.Zed"));
-        assert!(policy.disables_automatic_processing("dev.zed.Zed"));
+        assert!(!policy.disables_bundle("com.example.Editor"));
+        assert!(policy.disables_automatic_processing("com.example.Editor"));
     }
 
     #[test]
@@ -721,7 +721,7 @@ exclude_bundle_ids = ["dev.zed.Zed"]
         )
         .unwrap();
         let policy = resolved.resolve_input_policy(&HostSurfaceFacts {
-            bundle_id: Some("dev.zed.Zed".to_owned()),
+            bundle_id: Some("com.example.Editor".to_owned()),
             focused_element_identifier: Some("workspace-terminal-panel".to_owned()),
             ..HostSurfaceFacts::default()
         });
@@ -743,7 +743,7 @@ exclude_bundle_ids = ["dev.zed.Zed"]
         )
         .unwrap();
         let policy = resolved.resolve_input_policy(&HostSurfaceFacts {
-            bundle_id: Some("dev.zed.Zed".to_owned()),
+            bundle_id: Some("com.example.Editor".to_owned()),
             focused_element_role: Some("AXTextArea".to_owned()),
             focused_element_context: Some("AXGroup workspace-terminal-panel".to_owned()),
             ..HostSurfaceFacts::default()
@@ -782,7 +782,7 @@ exclude_bundle_ids = ["dev.zed.Zed"]
         let config = toml::from_str::<Config>(
             r#"
 [apps]
-disable_auto_bundle_ids = ["dev.zed.Zed"]
+disable_auto_bundle_ids = ["com.microsoft.VSCode"]
 
 [macos]
 english_input_source_id = " com.apple.keylayout.ABC "
@@ -796,7 +796,7 @@ secondary_input_source_id = " com.apple.keylayout.Ukrainian "
         )
         .unwrap();
         let policy = resolved.resolve_input_policy(&HostSurfaceFacts {
-            bundle_id: Some("dev.zed.Zed".to_owned()),
+            bundle_id: Some("com.microsoft.VSCode".to_owned()),
             ..HostSurfaceFacts::default()
         });
 
@@ -875,7 +875,7 @@ directory = "/from/config/data"
 secondary = " uk "
 
 [apps]
-disable_auto_bundle_ids = ["dev.zed.Zed"]
+disable_auto_bundle_ids = ["com.microsoft.VSCode"]
 
 [macos]
 english_input_source_id = " com.apple.keylayout.ABC "
@@ -897,7 +897,7 @@ secondary_input_source_id = " com.apple.keylayout.Ukrainian "
         assert!(
             resolved
                 .app_policy
-                .disables_automatic_processing("dev.zed.Zed")
+                .disables_automatic_processing("com.microsoft.VSCode")
         );
         assert_eq!(
             resolved.macos_input_sources.english_input_source_id,

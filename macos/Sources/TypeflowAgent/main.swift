@@ -28,12 +28,6 @@ private let accessibilitySlowRefreshLimit = 3
 private let accessibilityBackoffSeconds: TimeInterval = 60.0
 private let accessibilityContextMaxDepth = 6
 private let syntheticEventMarker: Int64 = 0x5459464c4f57
-private let zedBundleID = "dev.zed.Zed"
-
-private enum ReplacementMode: String {
-    case selectThenInsert
-    case backspaceThenInsert
-}
 
 @inline(__always)
 private func measured<T>(
@@ -572,7 +566,6 @@ private final class TypeflowAgent: NSObject {
                 reason: source,
                 deleteCount: replacementPlan.deleteCount,
                 with: replacementPlan.text,
-                mode: replacementMode(for: replacementPlan.focus),
                 isStillValid: { [weak self] in
                     self?.replacementFocusIsStillValid(replacementPlan.focus) ?? false
                 }
@@ -640,19 +633,6 @@ private final class TypeflowAgent: NSObject {
             return false
         }
         return !cachedHostContext().automaticProcessingDisabled
-    }
-
-    private func replacementMode(for focus: ReplacementFocus) -> ReplacementMode {
-        guard let bundleID = focus.bundleID,
-              bundleID.caseInsensitiveCompare(zedBundleID) == .orderedSame
-        else {
-            return .selectThenInsert
-        }
-
-        // Zed exposes editor and terminal panes as opaque GPUI surfaces to AX.
-        // Shift-selection can reach the embedded terminal as terminal input,
-        // so use the older backspace transport there.
-        return .backspaceThenInsert
     }
 
     private func observeHostBypass(engine: TypeflowEngine, modifiers: UInt8) {
@@ -1621,7 +1601,6 @@ private final class TextReplacer {
         reason: String,
         deleteCount: Int,
         with text: String,
-        mode: ReplacementMode,
         isStillValid: @escaping () -> Bool
     ) {
         guard deleteCount > 0, !text.isEmpty else {
@@ -1644,16 +1623,9 @@ private final class TextReplacer {
             }
 
             let workStarted = ProcessInfo.processInfo.systemUptime
-            switch mode {
-            case .selectThenInsert:
-                // Select first so a dropped Unicode event cannot silently delete user text.
-                measured("replacement.selectPrevious.\(reason)", thresholdMs: slowCallThresholdMs) {
-                    Self.selectPreviousCharacters(deleteCount, source: source)
-                }
-            case .backspaceThenInsert:
-                measured("replacement.deletePrevious.\(reason)", thresholdMs: slowCallThresholdMs) {
-                    Self.deletePreviousCharacters(deleteCount, source: source)
-                }
+            // Select first so a dropped Unicode event cannot silently delete user text.
+            measured("replacement.selectPrevious.\(reason)", thresholdMs: slowCallThresholdMs) {
+                Self.selectPreviousCharacters(deleteCount, source: source)
             }
             measured("replacement.postUnicode.\(reason)", thresholdMs: slowCallThresholdMs) {
                 Self.postUnicode(text, source: source)
@@ -1669,7 +1641,7 @@ private final class TextReplacer {
                 thresholdMs: slowCallThresholdMs
             )
             logger.notice(
-                "replaced token reason=\(reason, privacy: .public) mode=\(mode.rawValue, privacy: .public) deleteCount=\(deleteCount, privacy: .public) insertedUtf16=\(text.utf16.count, privacy: .public)"
+                "replaced token reason=\(reason, privacy: .public) deleteCount=\(deleteCount, privacy: .public) insertedUtf16=\(text.utf16.count, privacy: .public)"
             )
             if self.generation == scheduledGeneration {
                 self.pendingWorkItem = nil
@@ -1695,13 +1667,6 @@ private final class TextReplacer {
         event.flags = flags
         event.setIntegerValueField(.eventSourceUserData, value: syntheticEventMarker)
         event.post(tap: .cghidEventTap)
-    }
-
-    private static func deletePreviousCharacters(_ count: Int, source: CGEventSource?) {
-        for _ in 0..<count {
-            postKey(virtualKey: CGKeyCode(kVK_Delete), keyDown: true, source: source)
-            postKey(virtualKey: CGKeyCode(kVK_Delete), keyDown: false, source: source)
-        }
     }
 
     private static func selectPreviousCharacters(_ count: Int, source: CGEventSource?) {

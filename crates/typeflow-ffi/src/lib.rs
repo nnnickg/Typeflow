@@ -1693,7 +1693,7 @@ directory = "/config/packs"
 directory = "/config/data"
 
 [apps]
-disable_bundle_ids = ["dev.zed.Zed", "com.tinyspeck.slackmacgap"]
+disable_bundle_ids = ["com.example.Editor", "com.tinyspeck.slackmacgap"]
 disable_auto_bundle_ids = ["com.tinyspeck.slackmacgap", "com.apple.TextEdit"]
 
 [macos]
@@ -1760,14 +1760,16 @@ secondary_input_source_id = " com.apple.keylayout.Ukrainian "
             1
         );
 
-        let zed = CString::new("dev.zed.Zed").unwrap();
+        let editor = CString::new("com.example.Editor").unwrap();
         let slack = CString::new("com.tinyspeck.slackmacgap").unwrap();
         assert_eq!(
-            unsafe { typeflow_host_config_is_bundle_disabled(config, zed.as_ptr()) },
+            unsafe { typeflow_host_config_is_bundle_disabled(config, editor.as_ptr()) },
             1
         );
         assert_eq!(
-            unsafe { typeflow_host_config_is_automatic_processing_disabled(config, zed.as_ptr()) },
+            unsafe {
+                typeflow_host_config_is_automatic_processing_disabled(config, editor.as_ptr())
+            },
             1
         );
         assert_eq!(
@@ -1875,10 +1877,10 @@ secondary_input_source_id = " com.apple.keylayout.Ukrainian "
         assert_ne!(policy.flags & TF_HOST_POLICY_MANUAL_SWITCH_DISABLED, 0);
         assert_ne!(policy.flags & TF_HOST_POLICY_TERMINAL_SURFACE, 0);
 
-        let zed = CString::new("dev.zed.Zed").unwrap();
+        let editor = CString::new("com.example.Editor").unwrap();
         let terminal_identifier = CString::new("workspace-terminal-panel").unwrap();
         let mut facts = empty_host_surface_facts();
-        facts.bundle_id_utf8 = zed.as_ptr();
+        facts.bundle_id_utf8 = editor.as_ptr();
         facts.focused_element_identifier_utf8 = terminal_identifier.as_ptr();
         unsafe {
             typeflow_host_config_resolve_input_policy(config, facts, &mut policy);
@@ -1893,7 +1895,7 @@ secondary_input_source_id = " com.apple.keylayout.Ukrainian "
 
         let terminal_context = CString::new("AXGroup workspace-terminal-panel").unwrap();
         let mut facts = empty_host_surface_facts();
-        facts.bundle_id_utf8 = zed.as_ptr();
+        facts.bundle_id_utf8 = editor.as_ptr();
         facts.focused_element_context_utf8 = terminal_context.as_ptr();
         unsafe {
             typeflow_host_config_resolve_input_policy(config, facts, &mut policy);
@@ -1953,7 +1955,7 @@ secondary_input_source_id = " com.apple.keylayout.Ukrainian "
             r#"
 [apps]
 disable_bundle_ids = [
-    "dev.zed.Zed",
+    "com.example.Editor",
 "#,
         )
         .unwrap();
