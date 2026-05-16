@@ -6,6 +6,7 @@ SWIFTC ?= xcrun swiftc
 CODESIGN ?= codesign
 CODESIGN_IDENTITY ?= -
 CODESIGN_FLAGS ?=
+PLISTBUDDY ?= /usr/libexec/PlistBuddy
 APPLICATIONS_DIR ?= $(HOME)/Applications
 
 ifeq ($(RUST_PROFILE),release)
@@ -32,6 +33,7 @@ BUILD_DIR := $(abspath build)
 MODULE_CACHE_DIR := $(BUILD_DIR)/clang-module-cache
 SMOKE_BIN := $(BUILD_DIR)/typeflow-staticlib-smoke
 APP_NAME := Typeflow
+TYPEFLOW_VERSION ?= $(shell cd $(ROOT_DIR) && ./scripts/typeflow-version.sh)
 APP_BUNDLE := $(BUILD_DIR)/$(APP_NAME).app
 APP_EXECUTABLE := $(APP_BUNDLE)/Contents/MacOS/$(APP_NAME)
 APP_INFO_PLIST := Resources/Info.plist
@@ -82,6 +84,7 @@ $(APP_ICON_ICNS): $(ICON_SOURCE)
 $(APP_EXECUTABLE): $(AGENT_SOURCES) $(APP_INFO_PLIST) $(APP_INFO_PLIST_STRINGS) $(APP_PKGINFO) $(APP_ICONS) TypeflowFFI/include/module.modulemap TypeflowFFI/include/typeflow_shim.h rust-staticlib
 	mkdir -p $(APP_BUNDLE)/Contents/MacOS $(APP_BUNDLE)/Contents/Resources/en.lproj $(MODULE_CACHE_DIR)
 	cp $(APP_INFO_PLIST) $(APP_BUNDLE)/Contents/Info.plist
+	$(PLISTBUDDY) -c "Set :CFBundleShortVersionString $(TYPEFLOW_VERSION)" $(APP_BUNDLE)/Contents/Info.plist
 	cp $(APP_INFO_PLIST_STRINGS) $(APP_BUNDLE)/Contents/Resources/en.lproj/InfoPlist.strings
 	cp $(APP_PKGINFO) $(APP_BUNDLE)/Contents/PkgInfo
 	plutil -lint $(APP_BUNDLE)/Contents/Info.plist

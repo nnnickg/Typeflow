@@ -2,6 +2,45 @@
 
 These checks verify the optimized Rust artifacts, not debug builds.
 
+## Version Contract
+
+The root `[workspace.package].version` in `Cargo.toml` is the Rust source of
+truth. Workspace crates inherit it, and the CLI prints it through Cargo's
+`CARGO_PKG_VERSION`.
+
+The macOS build injects that same Cargo version into
+`CFBundleShortVersionString` when it creates `Typeflow.app`. Release tags must
+be `v<version>`.
+
+Before publishing a GitHub release:
+
+```sh
+./scripts/verify-release-version.sh v1.0.0
+```
+
+For a new release, bump `Cargo.toml`, regenerate `Cargo.lock`, commit those
+changes, then create the tag from that commit. Creating a GitHub release does
+not change the version embedded in any binary.
+
+Minimal release sequence:
+
+```sh
+version=1.0.0
+
+# edit Cargo.toml
+cargo check --workspace
+./scripts/verify-release-version.sh "v$version"
+cargo test --workspace --locked
+cargo build --release --locked -p typeflow-cli
+target/release/typeflow -V
+
+git add Cargo.toml Cargo.lock
+git commit -m "release: v$version"
+git tag -a "v$version" -m "v$version"
+git push origin main "v$version"
+gh release create "v$version" --title "v$version" --generate-notes
+```
+
 ## Build
 
 ```sh

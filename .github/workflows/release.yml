@@ -47,6 +47,9 @@ jobs:
           swift --version
           xcodebuild -version
 
+      - name: Verify Release Version
+        run: ./scripts/verify-release-version.sh "$RELEASE_TAG"
+
       - name: Cache
         uses: Swatinem/rust-cache@v2.8.1
         with:
@@ -69,7 +72,9 @@ jobs:
           test -f "$RELEASE_ZIP"
           file "$RELEASE_BUILD_DIR/Typeflow.app/Contents/MacOS/Typeflow"
           codesign --verify --strict --verbose=2 "$RELEASE_BUILD_DIR/Typeflow.app"
-          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$RELEASE_BUILD_DIR/Typeflow.app/Contents/Info.plist"
+          APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$RELEASE_BUILD_DIR/Typeflow.app/Contents/Info.plist")"
+          test "$APP_VERSION" = "${RELEASE_TAG#v}"
+          echo "$APP_VERSION"
           shasum -a 256 "$RELEASE_ZIP" | tee "$RELEASE_ZIP.sha256"
 
       - name: Upload Release Assets

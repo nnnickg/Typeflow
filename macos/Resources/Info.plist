@@ -20,7 +20,7 @@
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.0.1</string>
+  <string>__TYPEFLOW_VERSION__</string>
   <key>CFBundleSignature</key>
   <string>????</string>
   <key>CFBundleSupportedPlatforms</key>

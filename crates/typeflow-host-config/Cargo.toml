@@ -1,13 +1,13 @@
 [package]
 name = "typeflow-host-config"
-version = "0.0.1"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
 
 [dependencies]
-typeflow-core = { version = "0.0.1", path = "../typeflow-core" }
+typeflow-core = { path = "../typeflow-core" }
 serde = { version = "1.0.228", features = ["derive"] }
 toml = "1.1.2"
 
