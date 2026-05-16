@@ -1,0 +1,79 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build and upload, for example v0.0.2
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  macos:
+    name: Build macOS App
+    runs-on: macos-latest
+    timeout-minutes: 30
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      RELEASE_BUILD_DIR: ${{ runner.temp }}/typeflow-release
+      RELEASE_ZIP: ${{ runner.temp }}/typeflow-release/dist/Typeflow-macos-universal.zip
+
+    steps:
+      - name: Checkout Release Tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+
+      - name: Toolchain
+        run: |
+          rustup show
+          cargo --version
+          rustc --version
+          swift --version
+          xcodebuild -version
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2.8.1
+        with:
+          shared-key: release-macos
+
+      - name: Install Universal Rust Targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      - name: Build Universal App
+        run: |
+          BUILD_DIR="$RELEASE_BUILD_DIR" \
+          CARGO_TARGET_DIR="$PWD/target" \
+          ./macos/scripts/package-universal.sh
+
+      - name: Verify Artifact
+        run: |
+          test -f "$RELEASE_ZIP"
+          file "$RELEASE_BUILD_DIR/Typeflow.app/Contents/MacOS/Typeflow"
+          codesign --verify --strict --verbose=2 "$RELEASE_BUILD_DIR/Typeflow.app"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$RELEASE_BUILD_DIR/Typeflow.app/Contents/Info.plist"
+          shasum -a 256 "$RELEASE_ZIP" | tee "$RELEASE_ZIP.sha256"
+
+      - name: Upload Release Assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$RELEASE_TAG" \
+            "$RELEASE_ZIP#Typeflow-macos-universal.zip" \
+            "$RELEASE_ZIP.sha256#Typeflow-macos-universal.zip.sha256" \
+            --clobber

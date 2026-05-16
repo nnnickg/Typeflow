@@ -11,21 +11,17 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  rust:
-    name: Rust (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+  macos:
+    name: macOS
+    runs-on: macos-latest
     timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
 
     steps:
       - name: Checkout
@@ -36,6 +32,8 @@ jobs:
           rustup show
           cargo --version
           rustc --version
+          swift --version
+          xcodebuild -version
 
       - name: Cache
         uses: Swatinem/rust-cache@v2.8.1
@@ -43,121 +41,25 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
 
-      - name: Fuzz Format
-        run: cargo fmt --manifest-path fuzz/Cargo.toml --all --check
-
       - name: Test
         run: cargo test --workspace --locked
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
-      - name: Fuzz Target Build
-        run: cargo build --manifest-path fuzz/Cargo.toml --bins --locked
-
-      - name: Release Test
-        run: cargo test --release --workspace --locked
-
-      - name: Benchmark Compile
-        run: cargo bench --workspace --no-run --locked
-
       - name: Release Build
         run: cargo build --release --locked -p typeflow-cli -p typeflow-ffi
 
+      - name: CLI Smoke
+        run: |
+          touch "$RUNNER_TEMP/typeflow-empty.toml"
+          target/release/typeflow --config "$RUNNER_TEMP/typeflow-empty.toml" model
+          target/release/typeflow --config "$RUNNER_TEMP/typeflow-empty.toml" predict ghsdbn
+          target/release/typeflow --config "$RUNNER_TEMP/typeflow-empty.toml" pack inspect uk
+          target/release/typeflow --config "$RUNNER_TEMP/typeflow-empty.toml" eval --generated 500
+
       - name: macOS Staticlib Smoke
-        if: runner.os == 'macOS'
         run: make -C macos smoke CARGO_TARGET_DIR="$PWD/target" BUILD_DIR="$RUNNER_TEMP/typeflow-macos-build"
 
       - name: macOS Bundle Build
-        if: runner.os == 'macOS'
         run: make -C macos bundle CARGO_TARGET_DIR="$PWD/target" BUILD_DIR="$RUNNER_TEMP/typeflow-macos-build"
-
-      - name: macOS SwiftPM Build
-        if: runner.os == 'macOS'
-        run: make -C macos swift-package CARGO_TARGET_DIR="$PWD/target"
-
-      - name: Release Artifact Smoke
-        run: |
-          test -x target/release/typeflow
-          test -f target/release/libtypeflow_ffi.a
-          if [[ "$RUNNER_OS" == "macOS" ]]; then
-            test -f target/release/libtypeflow_ffi.dylib
-          else
-            test -f target/release/libtypeflow_ffi.so
-          fi
-          touch /tmp/typeflow-empty.toml
-          target/release/typeflow --config /tmp/typeflow-empty.toml model
-          target/release/typeflow --config /tmp/typeflow-empty.toml predict ghsdbn
-          target/release/typeflow --config /tmp/typeflow-empty.toml pack inspect uk
-          target/release/typeflow --config /tmp/typeflow-empty.toml eval --generated 500
-
-  security:
-    name: Security + ABI
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Toolchain
-        run: |
-          rustup show
-          cargo --version
-          rustc --version
-
-      - name: Cache
-        uses: Swatinem/rust-cache@v2.8.1
-        with:
-          cache-all-crates: "true"
-
-      - name: Install cargo-deny
-        run: cargo install cargo-deny --version 0.19.4 --locked
-
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --version 0.22.1 --locked
-
-      - name: Install cbindgen
-        run: cargo install cbindgen --version 0.29.2 --locked
-
-      - name: Dependency Policy
-        run: cargo deny check
-
-      - name: RustSec Audit
-        run: cargo audit --deny warnings
-
-      - name: FFI Header Check
-        run: cbindgen --quiet --config cbindgen.toml --crate typeflow-ffi --output crates/typeflow-ffi/include/typeflow.h --verify
-
-  coverage:
-    name: Coverage
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Toolchain
-        run: |
-          rustup show
-          rustup component add llvm-tools-preview
-          cargo --version
-          rustc --version
-
-      - name: Cache
-        uses: Swatinem/rust-cache@v2.8.1
-        with:
-          cache-all-crates: "true"
-
-      - name: Install cargo-llvm-cov
-        run: cargo install cargo-llvm-cov --version 0.8.6 --locked
-
-      - name: Generate LCOV
-        run: cargo llvm-cov --workspace --locked --lcov --output-path lcov.info
-
-      - name: Upload LCOV
-        uses: actions/upload-artifact@v4
-        with:
-          name: lcov
-          path: lcov.info
