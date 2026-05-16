@@ -418,8 +418,7 @@ private final class TypeflowAgent: NSObject {
             applyObservation(
                 action,
                 engine: engine,
-                source: "manual",
-                replacementDelaySeconds: 0
+                source: "manual"
             )
         } catch {
             engine.resetToken()
@@ -431,7 +430,6 @@ private final class TypeflowAgent: NSObject {
         let deleteCount: Int
         let text: String
         let inverseText: String?
-        let delaySeconds: TimeInterval
         let focus: ReplacementFocus
     }
 
@@ -441,10 +439,7 @@ private final class TypeflowAgent: NSObject {
         let secondaryText: String
         let currentLayout: TypeflowLayout
 
-        func replacementPlan(
-            to targetLayout: TypeflowLayout,
-            delaySeconds: TimeInterval
-        ) -> ReplacementPlan? {
+        func replacementPlan(to targetLayout: TypeflowLayout) -> ReplacementPlan? {
             let currentText = text(for: currentLayout)
             let targetText = text(for: targetLayout)
             guard !currentText.isEmpty, !targetText.isEmpty else {
@@ -454,7 +449,6 @@ private final class TypeflowAgent: NSObject {
                 deleteCount: currentText.count,
                 text: targetText,
                 inverseText: currentText,
-                delaySeconds: delaySeconds,
                 focus: focus
             )
         }
@@ -472,8 +466,7 @@ private final class TypeflowAgent: NSObject {
     private func applyObservation(
         _ action: TypeflowObservationAction,
         engine: TypeflowEngine,
-        source: String,
-        replacementDelaySeconds: TimeInterval = 0.012
+        source: String
     ) {
         let started = ProcessInfo.processInfo.systemUptime
         defer {
@@ -493,15 +486,11 @@ private final class TypeflowAgent: NSObject {
                 thresholdMs: slowCallThresholdMs
             ) {
                 self.replacementPlan(
-                    from: engine.takePendingReplacement(),
-                    delaySeconds: replacementDelaySeconds
+                    from: engine.takePendingReplacement()
                 )
             }
             if source == "manual", replacementPlan == nil {
-                replacementPlan = manualToggleReplacementPlan(
-                    to: layout,
-                    delaySeconds: replacementDelaySeconds
-                )
+                replacementPlan = manualToggleReplacementPlan(to: layout)
             }
             measured("engine.resetToken.\(source)", thresholdMs: slowCallThresholdMs) {
                 engine.resetToken()
@@ -576,7 +565,6 @@ private final class TypeflowAgent: NSObject {
                 reason: source,
                 deleteCount: replacementPlan.deleteCount,
                 with: replacementPlan.text,
-                delaySeconds: replacementPlan.delaySeconds,
                 isStillValid: { [weak self] in
                     self?.replacementFocusIsStillValid(replacementPlan.focus) ?? false
                 }
@@ -584,10 +572,7 @@ private final class TypeflowAgent: NSObject {
         }
     }
 
-    private func replacementPlan(
-        from replacement: TypeflowReplacement?,
-        delaySeconds: TimeInterval
-    ) -> ReplacementPlan? {
+    private func replacementPlan(from replacement: TypeflowReplacement?) -> ReplacementPlan? {
         guard let focus = currentReplacementFocus else {
             return nil
         }
@@ -598,15 +583,11 @@ private final class TypeflowAgent: NSObject {
             deleteCount: replacement.deleteCount,
             text: replacement.text,
             inverseText: replacement.inverseText,
-            delaySeconds: delaySeconds,
             focus: focus
         )
     }
 
-    private func manualToggleReplacementPlan(
-        to targetLayout: TypeflowLayout,
-        delaySeconds: TimeInterval
-    ) -> ReplacementPlan? {
+    private func manualToggleReplacementPlan(to targetLayout: TypeflowLayout) -> ReplacementPlan? {
         guard let manualReplacementToggle else {
             return nil
         }
@@ -614,10 +595,7 @@ private final class TypeflowAgent: NSObject {
             self.manualReplacementToggle = nil
             return nil
         }
-        return manualReplacementToggle.replacementPlan(
-            to: targetLayout,
-            delaySeconds: delaySeconds
-        )
+        return manualReplacementToggle.replacementPlan(to: targetLayout)
     }
 
     private func updateManualReplacementToggle(
@@ -1578,7 +1556,6 @@ private final class TextReplacer {
         reason: String,
         deleteCount: Int,
         with text: String,
-        delaySeconds: TimeInterval,
         isStillValid: @escaping () -> Bool
     ) {
         guard deleteCount > 0, !text.isEmpty else {
@@ -1601,11 +1578,9 @@ private final class TextReplacer {
             }
 
             let workStarted = ProcessInfo.processInfo.systemUptime
-            measured("replacement.deleteLoop.\(reason)", thresholdMs: slowCallThresholdMs) {
-                for _ in 0..<deleteCount {
-                    Self.postKey(virtualKey: CGKeyCode(kVK_Delete), keyDown: true, source: source)
-                    Self.postKey(virtualKey: CGKeyCode(kVK_Delete), keyDown: false, source: source)
-                }
+            // Select first so a dropped Unicode event cannot silently delete user text.
+            measured("replacement.selectPrevious.\(reason)", thresholdMs: slowCallThresholdMs) {
+                Self.selectPreviousCharacters(deleteCount, source: source)
             }
             measured("replacement.postUnicode.\(reason)", thresholdMs: slowCallThresholdMs) {
                 Self.postUnicode(text, source: source)
@@ -1628,13 +1603,14 @@ private final class TextReplacer {
             }
         }
         pendingWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + delaySeconds, execute: workItem)
+        DispatchQueue.main.async(execute: workItem)
     }
 
     private static func postKey(
         virtualKey: CGKeyCode,
         keyDown: Bool,
-        source: CGEventSource?
+        source: CGEventSource?,
+        flags: CGEventFlags = []
     ) {
         guard let event = CGEvent(
             keyboardEventSource: source,
@@ -1643,8 +1619,26 @@ private final class TextReplacer {
         ) else {
             return
         }
+        event.flags = flags
         event.setIntegerValueField(.eventSourceUserData, value: syntheticEventMarker)
         event.post(tap: .cghidEventTap)
+    }
+
+    private static func selectPreviousCharacters(_ count: Int, source: CGEventSource?) {
+        for _ in 0..<count {
+            postKey(
+                virtualKey: CGKeyCode(kVK_LeftArrow),
+                keyDown: true,
+                source: source,
+                flags: .maskShift
+            )
+            postKey(
+                virtualKey: CGKeyCode(kVK_LeftArrow),
+                keyDown: false,
+                source: source,
+                flags: .maskShift
+            )
+        }
     }
 
     private static func postUnicode(_ text: String, source: CGEventSource?) {
