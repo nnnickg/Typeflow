@@ -157,7 +157,7 @@ jobs:
         run: cargo llvm-cov --workspace --locked --lcov --output-path lcov.info
 
       - name: Upload LCOV
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: lcov
           path: lcov.info
