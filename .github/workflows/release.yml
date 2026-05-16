@@ -27,14 +27,17 @@ jobs:
     timeout-minutes: 30
     env:
       RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
-      RELEASE_BUILD_DIR: ${{ runner.temp }}/typeflow-release
-      RELEASE_ZIP: ${{ runner.temp }}/typeflow-release/dist/Typeflow-macos-universal.zip
 
     steps:
       - name: Checkout Release Tag
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.release.tag_name || inputs.tag }}
+
+      - name: Configure Paths
+        run: |
+          echo "RELEASE_BUILD_DIR=$RUNNER_TEMP/typeflow-release" >> "$GITHUB_ENV"
+          echo "RELEASE_ZIP=$RUNNER_TEMP/typeflow-release/dist/Typeflow-macos-universal.zip" >> "$GITHUB_ENV"
 
       - name: Toolchain
         run: |

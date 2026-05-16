@@ -73,6 +73,7 @@ fn bench_ffi(c: &mut Criterion) {
             focused_element_role_description_utf8: std::ptr::null(),
             focused_element_identifier_utf8: identifier.as_ptr(),
             focused_element_description_utf8: std::ptr::null(),
+            focused_element_context_utf8: std::ptr::null(),
             focused_window_title_utf8: std::ptr::null(),
         };
         let mut policy = TfHostInputPolicy {
