@@ -96,6 +96,7 @@ pub struct TfHostSurfaceFacts {
     pub focused_element_role_description_utf8: *const c_char,
     pub focused_element_identifier_utf8: *const c_char,
     pub focused_element_description_utf8: *const c_char,
+    pub focused_element_context_utf8: *const c_char,
     pub focused_window_title_utf8: *const c_char,
 }
 
@@ -468,6 +469,7 @@ unsafe fn host_surface_facts_from_ffi<'a>(facts: TfHostSurfaceFacts) -> HostSurf
         focused_element_description: unsafe {
             borrowed_c_string(facts.focused_element_description_utf8)
         },
+        focused_element_context: unsafe { borrowed_c_string(facts.focused_element_context_utf8) },
         focused_window_title: unsafe { borrowed_c_string(facts.focused_window_title_utf8) },
     }
 }
@@ -1889,6 +1891,21 @@ secondary_input_source_id = " com.apple.keylayout.Ukrainian "
         assert_ne!(policy.flags & TF_HOST_POLICY_MANUAL_SWITCH_DISABLED, 0);
         assert_ne!(policy.flags & TF_HOST_POLICY_TERMINAL_SURFACE, 0);
 
+        let terminal_context = CString::new("AXGroup workspace-terminal-panel").unwrap();
+        let mut facts = empty_host_surface_facts();
+        facts.bundle_id_utf8 = zed.as_ptr();
+        facts.focused_element_context_utf8 = terminal_context.as_ptr();
+        unsafe {
+            typeflow_host_config_resolve_input_policy(config, facts, &mut policy);
+        }
+        assert_eq!(policy.reason, TF_HOST_POLICY_REASON_TERMINAL_SURFACE);
+        assert_ne!(
+            policy.flags & TF_HOST_POLICY_AUTOMATIC_PROCESSING_DISABLED,
+            0
+        );
+        assert_ne!(policy.flags & TF_HOST_POLICY_MANUAL_SWITCH_DISABLED, 0);
+        assert_ne!(policy.flags & TF_HOST_POLICY_TERMINAL_SURFACE, 0);
+
         unsafe {
             typeflow_host_config_free(config);
         }
@@ -2086,6 +2103,7 @@ disable_bundle_ids = [
             focused_element_role_description_utf8: std::ptr::null(),
             focused_element_identifier_utf8: std::ptr::null(),
             focused_element_description_utf8: std::ptr::null(),
+            focused_element_context_utf8: std::ptr::null(),
             focused_window_title_utf8: std::ptr::null(),
         }
     }

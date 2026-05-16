@@ -95,7 +95,7 @@ secondary = "uk"
 # are not normal document editors, and terminal apps vary in how they handle
 # keyboard source changes and cursor state. That includes Terminal.app, iTerm2, common
 # terminal apps, and embedded terminal panes when macOS exposes terminal-like
-# accessibility metadata.
+# accessibility metadata on the focused element or its parent containers.
 
 # Bundle IDs where Typeflow should stay completely silent.
 # No automatic observation behavior. No standalone Option layout switch.

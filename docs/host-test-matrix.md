@@ -50,6 +50,7 @@ Expected host behavior:
   and standalone Option switching.
 - Terminal-like surfaces bypass both automatic behavior and standalone Option
   switching even when the app is not listed in config.
-- Embedded terminal-pane detection depends on macOS Accessibility metadata. If
-  Typeflow is not Accessibility-trusted, terminal apps are still blocked by
-  bundle id but embedded terminal panes may look like normal editor text.
+- Embedded terminal-pane detection depends on macOS Accessibility metadata from
+  the focused element and its parent containers. If Typeflow is not
+  Accessibility-trusted, terminal apps are still blocked by bundle id but
+  embedded terminal panes may look like normal editor text.

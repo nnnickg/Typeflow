@@ -149,23 +149,28 @@ installed:
 1. With default embedded Ukrainian config, type `ghsdbn`; expected visible text:
    `привіт`. Typeflow should replace the just-typed token once and switch the
    real input source after the decision threshold for future keys.
-2. Type `http`, then tap standalone Option; expected visible text remains
-   `http` if no active convertible token exists. For an active wrong-layout
-   token, Option replaces that token once and changes the future keyboard source.
-3. Install any external secondary pack, set `language.secondary` to that pack
+2. Type `type`, then tap standalone Option; expected visible text becomes the
+   configured secondary rendering (`ензу` with the embedded Ukrainian pack), and
+   the future keyboard source switches to secondary. Tap standalone Option again
+   before typing another token; expected visible text returns to `type`, and the
+   future keyboard source switches back to English.
+3. After a token boundary, tap standalone Option with no active token; expected
+   no visible text mutation, but the future keyboard source toggles when manual
+   switching is allowed.
+4. Install any external secondary pack, set `language.secondary` to that pack
    id, configure `[macos].secondary_input_source_id` if auto-detection picks the
    wrong source, restart Typeflow, and verify automatic token replacement plus
    standalone Option replacement in an app that is not disabled.
-4. Press Option with another key; it should pass through as normal app input and
+5. Press Option with another key; it should pass through as normal app input and
    must not trigger manual switching.
-5. Add an app bundle id under `[apps].disable_auto_bundle_ids`, restart
+6. Add an app bundle id under `[apps].disable_auto_bundle_ids`, restart
    Typeflow, and confirm automatic layout switching does not fire in that app.
-6. In the same auto-disabled app, tap standalone Option in a normal text field
+7. In the same auto-disabled app, tap standalone Option in a normal text field
    and confirm it can replace the current tracked token manually.
-7. Add an app bundle id under `[apps].disable_bundle_ids`, restart Typeflow,
+8. Add an app bundle id under `[apps].disable_bundle_ids`, restart Typeflow,
    and confirm neither automatic observation behavior nor standalone Option switching
    fires. Repeat in a password field and confirm it does not fire.
-8. In Terminal.app and iTerm2, type a normally-switching token such as `ghsdbn`.
+9. In Terminal.app and iTerm2, type a normally-switching token such as `ghsdbn`.
    It must stay unchanged. Standalone Option must also pass through without
    switching. Repeat in an embedded terminal pane when the host app exposes
    terminal-like accessibility metadata.
@@ -239,6 +244,7 @@ Expected exported symbols:
 
 ```text
 _typeflow_engine_current_layout
+_typeflow_engine_copy_pending_replacement_inverse_utf8
 _typeflow_engine_default_config
 _typeflow_engine_force_switch_layout
 _typeflow_engine_free
@@ -251,6 +257,7 @@ _typeflow_engine_new_from_pack_dir
 _typeflow_engine_new_from_pack_dir_with_config
 _typeflow_engine_observe
 _typeflow_engine_pending_replacement_delete_count
+_typeflow_engine_pending_replacement_inverse_utf8_len
 _typeflow_engine_pending_replacement_utf8_len
 _typeflow_engine_reset_layout
 _typeflow_engine_reset_token

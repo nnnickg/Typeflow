@@ -26,6 +26,7 @@ private let accessibilityRefreshDebounceSeconds: TimeInterval = 0.075
 private let accessibilitySlowRefreshThresholdMs = 20.0
 private let accessibilitySlowRefreshLimit = 3
 private let accessibilityBackoffSeconds: TimeInterval = 60.0
+private let accessibilityContextMaxDepth = 6
 private let syntheticEventMarker: Int64 = 0x5459464c4f57
 
 @inline(__always)
@@ -887,6 +888,7 @@ private final class TypeflowAgent: NSObject {
                 focusedElementRoleDescription: accessibility.focusedElementRoleDescription,
                 focusedElementIdentifier: accessibility.focusedElementIdentifier,
                 focusedElementDescription: accessibility.focusedElementDescription,
+                focusedElementContext: accessibility.focusedElementContext,
                 focusedWindowTitle: accessibility.focusedWindowTitle
             )
         }
@@ -1066,11 +1068,12 @@ private final class TypeflowAgent: NSObject {
             resolved.facts.bundleID ?? "",
             resolved.facts.focusedElementIdentifier ?? "",
             resolved.facts.focusedElementRole ?? "",
+            resolved.facts.focusedElementContext ?? "",
         ].joined(separator: "|")
 
         if logKey != hostPolicyLogKey {
             logger.debug(
-                "hostPolicy reason=\(resolved.policy.reasonDescription, privacy: .public) refresh=\(reason, privacy: .public) secure=\(resolved.policy.secureInput, privacy: .private) autoDisabled=\(resolved.policy.automaticProcessingDisabled, privacy: .private) manualDisabled=\(resolved.policy.manualSwitchDisabled, privacy: .private) terminal=\(resolved.policy.terminalSurface, privacy: .private) bundleID=\(resolved.facts.bundleID ?? "unknown", privacy: .private) axRole=\(resolved.facts.focusedElementRole ?? "unknown", privacy: .private) axSubrole=\(resolved.facts.focusedElementSubrole ?? "unknown", privacy: .private) axID=\(resolved.facts.focusedElementIdentifier ?? "unknown", privacy: .private)"
+                "hostPolicy reason=\(resolved.policy.reasonDescription, privacy: .public) refresh=\(reason, privacy: .public) secure=\(resolved.policy.secureInput, privacy: .private) autoDisabled=\(resolved.policy.automaticProcessingDisabled, privacy: .private) manualDisabled=\(resolved.policy.manualSwitchDisabled, privacy: .private) terminal=\(resolved.policy.terminalSurface, privacy: .private) bundleID=\(resolved.facts.bundleID ?? "unknown", privacy: .private) axRole=\(resolved.facts.focusedElementRole ?? "unknown", privacy: .private) axSubrole=\(resolved.facts.focusedElementSubrole ?? "unknown", privacy: .private) axID=\(resolved.facts.focusedElementIdentifier ?? "unknown", privacy: .private) axContext=\(resolved.facts.focusedElementContext ?? "unknown", privacy: .private)"
             )
             hostPolicyLogKey = logKey
         }
@@ -1114,6 +1117,7 @@ private final class TypeflowAgent: NSObject {
         let focusedElementRoleDescription: String?
         let focusedElementIdentifier: String?
         let focusedElementDescription: String?
+        let focusedElementContext: String?
         let focusedWindowTitle: String?
 
         static let empty = AccessibilitySnapshot(
@@ -1122,6 +1126,7 @@ private final class TypeflowAgent: NSObject {
             focusedElementRoleDescription: nil,
             focusedElementIdentifier: nil,
             focusedElementDescription: nil,
+            focusedElementContext: nil,
             focusedWindowTitle: nil
         )
     }
@@ -1172,12 +1177,52 @@ private final class TypeflowAgent: NSObject {
                     copyAXString(element, attribute: kAXDescriptionAttribute as CFString)
                 }
             },
+            focusedElementContext: focusedElement.flatMap { element in
+                measured("AX.elementContext", thresholdMs: slowHostThresholdMs) {
+                    accessibilityContext(from: element)
+                }
+            },
             focusedWindowTitle: focusedWindow.flatMap { window in
                 measured("AX.windowTitle", thresholdMs: slowCallThresholdMs) {
                     copyAXString(window, attribute: kAXTitleAttribute as CFString)
                 }
             }
         )
+    }
+
+    private func accessibilityContext(from focusedElement: AXUIElement) -> String? {
+        var context: [String] = []
+        var element = focusedElement
+
+        for _ in 0..<accessibilityContextMaxDepth {
+            guard let parent = copyAXElement(element, attribute: kAXParentAttribute as CFString) else {
+                break
+            }
+            _ = AXUIElementSetMessagingTimeout(parent, 0.01)
+
+            appendAXString(parent, attribute: kAXRoleAttribute as CFString, to: &context)
+            appendAXString(parent, attribute: kAXSubroleAttribute as CFString, to: &context)
+            appendAXString(parent, attribute: kAXRoleDescriptionAttribute as CFString, to: &context)
+            appendAXString(parent, attribute: kAXIdentifierAttribute as CFString, to: &context)
+            appendAXString(parent, attribute: kAXDescriptionAttribute as CFString, to: &context)
+
+            element = parent
+        }
+
+        guard !context.isEmpty else {
+            return nil
+        }
+        return context.joined(separator: " ")
+    }
+
+    private func appendAXString(_ element: AXUIElement, attribute: CFString, to values: inout [String]) {
+        guard let value = copyAXString(element, attribute: attribute)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty
+        else {
+            return
+        }
+        values.append(value)
     }
 
     private func copyAXElement(_ element: AXUIElement, attribute: CFString) -> AXUIElement? {

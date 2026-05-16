@@ -87,6 +87,7 @@ typedef struct {
     const char *focused_element_role_description_utf8;
     const char *focused_element_identifier_utf8;
     const char *focused_element_description_utf8;
+    const char *focused_element_context_utf8;
     const char *focused_window_title_utf8;
 } TfHostSurfaceFacts;
 

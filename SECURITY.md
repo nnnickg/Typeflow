@@ -1,6 +1,6 @@
 # Security Policy
 
-Typeflow is pre-alpha. Only the current `main` branch is supported.
+Typeflow is public alpha software. Only the current `main` branch is supported.
 
 Do not report vulnerabilities in public issues. Use GitHub private vulnerability
 reporting when available:

@@ -126,8 +126,12 @@ written against this file, not against CLI convenience behavior.
 - Hosts that need replacement text must consume the pending snapshot with
   `typeflow_engine_pending_replacement_delete_count`,
   `typeflow_engine_pending_replacement_utf8_len`, and
-  `typeflow_engine_take_pending_replacement_utf8`. Reset, host-context changes,
-  invalid events, and non-switch observations clear the snapshot.
+  `typeflow_engine_take_pending_replacement_utf8`. Hosts that support manual
+  replacement toggles may also read the inverse snapshot with
+  `typeflow_engine_pending_replacement_inverse_utf8_len` and
+  `typeflow_engine_copy_pending_replacement_inverse_utf8` before taking the
+  replacement. Reset, host-context changes, invalid events, and non-switch
+  observations clear the snapshot.
 
 ## Data And Packs
 

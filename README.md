@@ -8,10 +8,11 @@ switches the real macOS input source for future keys.
 
 ## Status
 
-Pre-alpha macOS observer agent. Keep normal English and secondary keyboard
+Public alpha macOS observer agent. Keep normal English and secondary keyboard
 layouts installed; Typeflow switches those real system sources for future keys
-and uses synthetic key events for token replacement. The Rust engine works
-end-to-end on real data, and `macos/` builds and signs the agent app. See
+and replaces decided tokens with synthetic selection plus Unicode events. The
+Rust engine works end-to-end on real data, and `macos/` builds and signs the
+agent app. See
 [`docs/status.md`](docs/status.md) for the complete
 state-of-the-project snapshot.
 

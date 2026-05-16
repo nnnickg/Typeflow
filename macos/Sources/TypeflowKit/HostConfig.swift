@@ -22,6 +22,7 @@ public struct TypeflowHostSurfaceFacts {
     public var focusedElementRoleDescription: String?
     public var focusedElementIdentifier: String?
     public var focusedElementDescription: String?
+    public var focusedElementContext: String?
     public var focusedWindowTitle: String?
 
     public init(
@@ -34,6 +35,7 @@ public struct TypeflowHostSurfaceFacts {
         focusedElementRoleDescription: String? = nil,
         focusedElementIdentifier: String? = nil,
         focusedElementDescription: String? = nil,
+        focusedElementContext: String? = nil,
         focusedWindowTitle: String? = nil
     ) {
         self.secureInput = secureInput
@@ -45,6 +47,7 @@ public struct TypeflowHostSurfaceFacts {
         self.focusedElementRoleDescription = focusedElementRoleDescription
         self.focusedElementIdentifier = focusedElementIdentifier
         self.focusedElementDescription = focusedElementDescription
+        self.focusedElementContext = focusedElementContext
         self.focusedWindowTitle = focusedWindowTitle
     }
 
@@ -57,21 +60,24 @@ public struct TypeflowHostSurfaceFacts {
                             withOptionalCString(focusedElementRoleDescription) { focusedElementRoleDescriptionPointer in
                                 withOptionalCString(focusedElementIdentifier) { focusedElementIdentifierPointer in
                                     withOptionalCString(focusedElementDescription) { focusedElementDescriptionPointer in
-                                        withOptionalCString(focusedWindowTitle) { focusedWindowTitlePointer in
-                                            body(
-                                                TfHostSurfaceFacts(
-                                                    secure_input: secureInput ? 1 : 0,
-                                                    bundle_id_utf8: bundleIDPointer,
-                                                    application_name_utf8: applicationNamePointer,
-                                                    input_client_class_utf8: inputClientClassPointer,
-                                                    focused_element_role_utf8: focusedElementRolePointer,
-                                                    focused_element_subrole_utf8: focusedElementSubrolePointer,
-                                                    focused_element_role_description_utf8: focusedElementRoleDescriptionPointer,
-                                                    focused_element_identifier_utf8: focusedElementIdentifierPointer,
-                                                    focused_element_description_utf8: focusedElementDescriptionPointer,
-                                                    focused_window_title_utf8: focusedWindowTitlePointer
+                                        withOptionalCString(focusedElementContext) { focusedElementContextPointer in
+                                            withOptionalCString(focusedWindowTitle) { focusedWindowTitlePointer in
+                                                body(
+                                                    TfHostSurfaceFacts(
+                                                        secure_input: secureInput ? 1 : 0,
+                                                        bundle_id_utf8: bundleIDPointer,
+                                                        application_name_utf8: applicationNamePointer,
+                                                        input_client_class_utf8: inputClientClassPointer,
+                                                        focused_element_role_utf8: focusedElementRolePointer,
+                                                        focused_element_subrole_utf8: focusedElementSubrolePointer,
+                                                        focused_element_role_description_utf8: focusedElementRoleDescriptionPointer,
+                                                        focused_element_identifier_utf8: focusedElementIdentifierPointer,
+                                                        focused_element_description_utf8: focusedElementDescriptionPointer,
+                                                        focused_element_context_utf8: focusedElementContextPointer,
+                                                        focused_window_title_utf8: focusedWindowTitlePointer
+                                                    )
                                                 )
-                                            )
+                                            }
                                         }
                                     }
                                 }

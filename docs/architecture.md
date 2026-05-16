@@ -64,6 +64,8 @@ C ABI for the macOS bundle. The hot path is:
 - `typeflow_engine_token_len`
 - `typeflow_engine_pending_replacement_delete_count`
 - `typeflow_engine_pending_replacement_utf8_len`
+- `typeflow_engine_pending_replacement_inverse_utf8_len`
+- `typeflow_engine_copy_pending_replacement_inverse_utf8`
 - `typeflow_engine_take_pending_replacement_utf8`
 
 `TfObservation` is lifetime-free and text-free:
@@ -90,8 +92,9 @@ The macOS target is an LSUIElement background agent plus Swift wrappers:
 - `TypeflowKit/KeyCodeMap.swift` maps ANSI virtual keycodes to Rust physical
   key indices.
 - `TypeflowAgent/main.swift` installs a listen-only `CGEventTap`, observes
-  keys, replaces switched tokens with synthetic backspace/Unicode events, and
-  selects real macOS keyboard input sources for future keys. Installed app
+  keys, replaces switched tokens by selecting the previous tracked token and
+  posting Unicode over that selection, and selects real macOS keyboard input
+  sources for future keys. Installed app
   bundles register the main app with `SMAppService` so Typeflow launches at
   login. Startup explicitly requests Accessibility and Input Monitoring before
   creating the event tap.

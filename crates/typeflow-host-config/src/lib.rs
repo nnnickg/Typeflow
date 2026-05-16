@@ -193,6 +193,7 @@ pub struct HostSurfaceFacts {
     pub focused_element_role_description: Option<String>,
     pub focused_element_identifier: Option<String>,
     pub focused_element_description: Option<String>,
+    pub focused_element_context: Option<String>,
     pub focused_window_title: Option<String>,
 }
 
@@ -207,6 +208,7 @@ pub struct HostSurfaceFactsView<'a> {
     pub focused_element_role_description: Option<&'a str>,
     pub focused_element_identifier: Option<&'a str>,
     pub focused_element_description: Option<&'a str>,
+    pub focused_element_context: Option<&'a str>,
     pub focused_window_title: Option<&'a str>,
 }
 
@@ -480,6 +482,7 @@ impl HostSurfaceFacts {
             focused_element_role_description: self.focused_element_role_description.as_deref(),
             focused_element_identifier: self.focused_element_identifier.as_deref(),
             focused_element_description: self.focused_element_description.as_deref(),
+            focused_element_context: self.focused_element_context.as_deref(),
             focused_window_title: self.focused_window_title.as_deref(),
         }
     }
@@ -494,6 +497,7 @@ impl HostSurfaceFactsView<'_> {
             self.focused_element_role_description,
             self.focused_element_identifier,
             self.focused_element_description,
+            self.focused_element_context,
         ]
         .into_iter()
         .flatten()
@@ -729,6 +733,29 @@ exclude_bundle_ids = ["dev.zed.Zed"]
     }
 
     #[test]
+    fn terminal_surface_policy_uses_focused_element_context() {
+        let resolved = ResolvedHostConfig::from_source(
+            ConfigSource {
+                config: Config::default(),
+                path: None,
+            },
+            &HostEnvironment::default(),
+        )
+        .unwrap();
+        let policy = resolved.resolve_input_policy(&HostSurfaceFacts {
+            bundle_id: Some("dev.zed.Zed".to_owned()),
+            focused_element_role: Some("AXTextArea".to_owned()),
+            focused_element_context: Some("AXGroup workspace-terminal-panel".to_owned()),
+            ..HostSurfaceFacts::default()
+        });
+
+        assert_eq!(policy.reason, HostInputPolicyReason::TerminalSurface);
+        assert!(policy.disable_automatic_processing);
+        assert!(policy.disable_manual_switch);
+        assert!(policy.terminal_surface);
+    }
+
+    #[test]
     fn terminal_surface_policy_ignores_low_signal_titles() {
         let resolved = ResolvedHostConfig::from_source(
             ConfigSource {
@@ -742,6 +769,7 @@ exclude_bundle_ids = ["dev.zed.Zed"]
             bundle_id: Some("com.apple.TextEdit".to_owned()),
             focused_window_title: Some("terminal notes".to_owned()),
             focused_element_description: Some("shellfish recipe".to_owned()),
+            focused_element_context: Some("document editor group".to_owned()),
             ..HostSurfaceFacts::default()
         });
 

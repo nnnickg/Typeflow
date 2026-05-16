@@ -14,6 +14,8 @@ The embedded model files are:
 - `crates/typeflow-core/data/uk.ngrams.bin`
 - `crates/typeflow-core/data/en.dict.fst`
 - `crates/typeflow-core/data/uk.dict.fst`
+- `crates/typeflow-core/data/en.dict-prefix.bin`
+- `crates/typeflow-core/data/uk.dict-prefix.bin`
 
 They are generated statistical artifacts derived from third-party inputs:
 

@@ -1,6 +1,6 @@
 # Status
 
-Typeflow is currently a pass-through observer agent.
+Typeflow is currently a public alpha pass-through observer agent.
 
 ## Current Architecture
 
@@ -26,6 +26,9 @@ Typeflow is currently a pass-through observer agent.
   `typeflow_engine_pending_replacement_delete_count` +
   `typeflow_engine_pending_replacement_utf8_len` +
   `typeflow_engine_take_pending_replacement_utf8`
+- FFI inverse replacement snapshot for manual toggles:
+  `typeflow_engine_pending_replacement_inverse_utf8_len` +
+  `typeflow_engine_copy_pending_replacement_inverse_utf8`
 - FFI manual switch:
   `typeflow_engine_force_switch_layout(engine, *out TfObservation)`
 - Swift: `TypeflowObservationAction`
@@ -46,8 +49,8 @@ There is no live-rendering policy.
 
 ## Verified
 
-- `cargo test --workspace`
-- `cargo check --workspace --all-targets`
+- `cargo test --workspace --locked`
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`
 - `make -C macos bundle CARGO_TARGET_DIR="$PWD/target"`
 - `make -C macos swift-package CARGO_TARGET_DIR="$PWD/target"`
 
