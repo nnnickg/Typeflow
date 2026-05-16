@@ -51,7 +51,7 @@ jobs:
         run: ./scripts/verify-release-version.sh "$RELEASE_TAG"
 
       - name: Cache
-        uses: Swatinem/rust-cache@v2.8.1
+        uses: Swatinem/rust-cache@v2.9.1
         with:
           shared-key: release-macos
 
