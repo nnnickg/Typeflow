@@ -1,0 +1,1474 @@
+mod atomic;
+mod config;
+
+use std::collections::BTreeMap;
+use std::fmt::Write as _;
+use std::fs;
+use std::io::{self, BufRead, IsTerminal, Write};
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+
+use clap::{Arg, ArgAction, ArgMatches, Command};
+use crossterm::{
+    ExecutableCommand, cursor,
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    terminal::{self, ClearType},
+};
+use fst::Streamer;
+use serde_json::{Value, json};
+use typeflow_core::Layout;
+use typeflow_core::data::{
+    LanguageBundle, LanguagePack, LanguagePackManifest, PACK_DICT_FILE, PACK_DICT_PREFIX_FILE,
+    PACK_MANIFEST_FILE, PACK_NGRAMS_FILE,
+};
+use typeflow_core::{
+    Decision, Engine, EngineConfig, InputEvent, LayoutCandidates, LayoutScore, ObservationAction,
+    ScoreAnalysis, has_dictionary_evidence,
+};
+use typeflow_host_config::{self as host_config, HostEnvironment, ResolvedHostConfig};
+
+use config::{Config, ConfigSource};
+
+struct CliArgs {
+    subcommand: Option<String>,
+    rest: Vec<String>,
+    config_path: Option<PathBuf>,
+}
+
+fn main() -> ExitCode {
+    let parsed = match parse_args() {
+        Ok(Some(parsed)) => parsed,
+        Ok(None) => {
+            let mut command = cli();
+            if let Err(error) = command.print_help() {
+                eprintln!("error: print help: {error}");
+                return ExitCode::from(1);
+            }
+            println!();
+            return ExitCode::from(0);
+        }
+        Err(error) => {
+            let code = error.exit_code();
+            if let Err(print_error) = error.print() {
+                eprintln!("error: print clap error: {print_error}");
+            }
+            return ExitCode::from(code as u8);
+        }
+    };
+
+    let result = match parsed.subcommand.as_deref() {
+        Some("type") => cmd_type(&parsed.rest, parsed.config_path.as_deref()),
+        Some("stream") => cmd_stream(&parsed.rest, parsed.config_path.as_deref()),
+        Some("repl") => cmd_repl(parsed.config_path.as_deref()),
+        Some("predict") => cmd_predict(&parsed.rest, parsed.config_path.as_deref()),
+        Some("eval") => cmd_eval(&parsed.rest, parsed.config_path.as_deref()),
+        Some("model") => cmd_model(&parsed.rest, parsed.config_path.as_deref()),
+        Some("pack") => cmd_pack(&parsed.rest, parsed.config_path.as_deref()),
+        Some("config") => cmd_config(&parsed.rest, parsed.config_path.as_deref()),
+        Some(other) => Err(format!("unknown subcommand after clap parse: {other}")),
+        None => Ok(()),
+    };
+
+    match result {
+        Ok(()) => ExitCode::from(0),
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn parse_args() -> Result<Option<CliArgs>, clap::Error> {
+    let matches = cli().try_get_matches()?;
+    Ok(cli_args_from_matches(&matches))
+}
+
+fn cli() -> Command {
+    Command::new("typeflow")
+        .version(env!("CARGO_PKG_VERSION"))
+        .about("Keyboard-layout inference CLI")
+        .arg(
+            Arg::new("config")
+                .long("config")
+                .value_name("PATH")
+                .help("Use this TOML file instead of the default search path")
+                .global(true),
+        )
+        .subcommand(
+            Command::new("type")
+                .about("Process one or more tokens and print a per-key trace")
+                .arg(
+                    Arg::new("keys")
+                        .value_name("KEYS")
+                        .num_args(1..)
+                        .required(true),
+                ),
+        )
+        .subcommand(Command::new("stream").about("Read one token per line from stdin"))
+        .subcommand(Command::new("repl").about("Run the interactive raw-mode TTY"))
+        .subcommand(
+            Command::new("predict")
+                .about("Print the picked layout and rendered text for one or more tokens")
+                .arg(
+                    Arg::new("json")
+                        .long("json")
+                        .help("Emit newline-delimited JSON")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("keys")
+                        .value_name("KEYS")
+                        .num_args(1..)
+                        .required(true),
+                ),
+        )
+        .subcommand(
+            Command::new("eval")
+                .about("Run labeled layout checks")
+                .arg(
+                    Arg::new("generated")
+                        .long("generated")
+                        .value_name("LIMIT_PER_LAYOUT")
+                        .help("Generate dictionary-backed eval cases")
+                        .num_args(0..=1)
+                        .conflicts_with("tsv"),
+                )
+                .arg(
+                    Arg::new("tsv")
+                        .value_name("TSV")
+                        .help("Read cases as keys<TAB>expected-layout")
+                        .conflicts_with("generated"),
+                ),
+        )
+        .subcommand(Command::new("model").about("Print language-pack metadata"))
+        .subcommand(
+            Command::new("pack")
+                .about("Manage installed language packs")
+                .subcommand_required(true)
+                .subcommand(
+                    Command::new("install")
+                        .about("Validate and install a language pack")
+                        .arg(Arg::new("pack_dir").value_name("PACK_DIR").required(true)),
+                )
+                .subcommand(Command::new("list").about("List installed language packs"))
+                .subcommand(
+                    Command::new("use")
+                        .about("Set the active secondary language")
+                        .arg(Arg::new("id").value_name("ID").required(true)),
+                )
+                .subcommand(
+                    Command::new("inspect")
+                        .about("Print pack manifest and model metadata")
+                        .arg(Arg::new("pack").value_name("PACK_DIR|ID").required(true)),
+                ),
+        )
+        .subcommand(
+            Command::new("config")
+                .about("Manage Typeflow CLI configuration")
+                .subcommand_required(true)
+                .subcommand(
+                    Command::new("init")
+                        .about("Write a fully-commented default config")
+                        .arg(Arg::new("path").value_name("PATH")),
+                )
+                .subcommand(Command::new("show").about("Print the resolved effective config")),
+        )
+}
+
+fn cli_args_from_matches(matches: &ArgMatches) -> Option<CliArgs> {
+    let config_path = matches.get_one::<String>("config").map(PathBuf::from);
+    let (subcommand, sub_matches) = matches.subcommand()?;
+
+    let rest = match subcommand {
+        "type" => string_values(sub_matches, "keys"),
+        "stream" | "repl" | "model" => Vec::new(),
+        "predict" => {
+            let mut rest = Vec::new();
+            if sub_matches.get_flag("json") {
+                rest.push("--json".to_owned());
+            }
+            rest.extend(string_values(sub_matches, "keys"));
+            rest
+        }
+        "eval" => eval_args_from_matches(sub_matches),
+        "pack" => pack_args_from_matches(sub_matches),
+        "config" => config_args_from_matches(sub_matches),
+        _ => Vec::new(),
+    };
+
+    Some(CliArgs {
+        subcommand: Some(subcommand.to_owned()),
+        rest,
+        config_path,
+    })
+}
+
+fn eval_args_from_matches(matches: &ArgMatches) -> Vec<String> {
+    if matches.contains_id("generated") {
+        let mut args = vec!["--generated".to_owned()];
+        if let Some(limit) = matches.get_one::<String>("generated") {
+            args.push(limit.to_owned());
+        }
+        return args;
+    }
+
+    required_string(matches, "tsv").into_iter().collect()
+}
+
+fn pack_args_from_matches(matches: &ArgMatches) -> Vec<String> {
+    let Some((subcommand, sub_matches)) = matches.subcommand() else {
+        return Vec::new();
+    };
+
+    match subcommand {
+        "install" => vec![
+            "install".to_owned(),
+            required_string(sub_matches, "pack_dir").unwrap_or_default(),
+        ],
+        "list" => vec!["list".to_owned()],
+        "use" => vec![
+            "use".to_owned(),
+            required_string(sub_matches, "id").unwrap_or_default(),
+        ],
+        "inspect" => vec![
+            "inspect".to_owned(),
+            required_string(sub_matches, "pack").unwrap_or_default(),
+        ],
+        _ => Vec::new(),
+    }
+}
+
+fn config_args_from_matches(matches: &ArgMatches) -> Vec<String> {
+    let Some((subcommand, sub_matches)) = matches.subcommand() else {
+        return Vec::new();
+    };
+
+    match subcommand {
+        "init" => {
+            let mut args = vec!["init".to_owned()];
+            if let Some(path) = sub_matches.get_one::<String>("path") {
+                args.push(path.to_owned());
+            }
+            args
+        }
+        "show" => vec!["show".to_owned()],
+        _ => Vec::new(),
+    }
+}
+
+fn string_values(matches: &ArgMatches, name: &str) -> Vec<String> {
+    matches
+        .get_many::<String>(name)
+        .map(|values| values.cloned().collect())
+        .unwrap_or_default()
+}
+
+fn required_string(matches: &ArgMatches, name: &str) -> Option<String> {
+    matches.get_one::<String>(name).cloned()
+}
+
+fn load_config(explicit: Option<&Path>) -> Result<ConfigSource, String> {
+    Config::load(explicit)
+}
+
+fn configured_pack_dir(config: &Config) -> Option<PathBuf> {
+    host_config::configured_pack_dir(config)
+}
+
+fn build_engine(config: &Config) -> Result<Engine, String> {
+    let resolved = resolve_runtime_config(config)?;
+    let bundle = resolved.load_language_bundle()?;
+    Ok(Engine::with_shared_bundle(resolved.engine, bundle))
+}
+
+fn resolve_runtime_config(config: &Config) -> Result<ResolvedHostConfig, String> {
+    ResolvedHostConfig::from_source(
+        ConfigSource {
+            config: config.clone(),
+            path: None,
+        },
+        &HostEnvironment::from_process(),
+    )
+}
+
+fn normalized_secondary_id(config: &Config) -> String {
+    host_config::normalized_secondary_id(config)
+}
+
+fn cmd_type(args: &[String], explicit_config: Option<&Path>) -> Result<(), String> {
+    if args.is_empty() {
+        return Err("usage: typeflow type <KEYS> [<KEYS>...]".into());
+    }
+    let source = load_config(explicit_config)?;
+    let mut engine = build_engine(&source.config)?;
+
+    for (idx, token) in args.iter().enumerate() {
+        if idx > 0 {
+            engine.observe(InputEvent::EndToken);
+            println!("--- end of token ---");
+        }
+        process_token_verbose(&mut engine, token)?;
+    }
+
+    let score = engine.token_score();
+    println!();
+    println!("FINAL");
+    println!("layout: {}", layout_label(&engine, engine.current_layout()));
+    print_score_lines(&engine, &score);
+    print_margin_line(&engine, &score, engine.config());
+    Ok(())
+}
+
+fn process_token_verbose(engine: &mut Engine, token: &str) -> Result<(), String> {
+    for character in token.chars() {
+        let input = input_event_for_char(engine, character);
+        let output = engine.observe(input);
+        let english_candidate = output.candidates.english.clone();
+        let secondary_candidate = output.candidates.secondary.clone();
+        let decision = output.decision;
+        let action = output.action;
+        println!(
+            "key='{character}' {}='{}' {}='{}' decision={} action={}",
+            token_label(engine, Layout::English),
+            english_candidate,
+            token_label(engine, Layout::Secondary),
+            secondary_candidate,
+            decision_label(engine, decision),
+            action_label(engine, &action)
+        );
+    }
+    Ok(())
+}
+
+fn cmd_stream(args: &[String], explicit_config: Option<&Path>) -> Result<(), String> {
+    if !args.is_empty() {
+        return Err("usage: typeflow stream  (reads tokens from stdin, one per line)".into());
+    }
+    let source = load_config(explicit_config)?;
+    let mut engine = build_engine(&source.config)?;
+
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    let mut stdout = stdout.lock();
+
+    if stdin.is_terminal() {
+        eprintln!("typeflow stream: reading tokens from stdin (one per line); Ctrl-D to end.");
+    }
+
+    writeln!(
+        stdout,
+        "# keys\tdecision\trendered\t{}_total\t{}_total\tmargin",
+        token_label(&engine, Layout::English),
+        token_label(&engine, Layout::Secondary)
+    )
+    .map_err(io_str)?;
+
+    for line in stdin.lock().lines() {
+        let line = line.map_err(io_str)?;
+        let token = line.trim();
+        if token.is_empty() {
+            continue;
+        }
+
+        engine.reset_layout(Layout::English);
+        let prediction = match run_token_predicted(&mut engine, token) {
+            Ok(prediction) => prediction,
+            Err(error) => {
+                writeln!(stdout, "{token}\tERROR\t{error}\t0\t0\t0").map_err(io_str)?;
+                continue;
+            }
+        };
+
+        let rendered = prediction.rendered;
+        let score = prediction.score;
+        let layout = prediction.layout;
+        let margin = score.english.total - score.secondary.total;
+        writeln!(
+            stdout,
+            "{token}\t{}\t{}\t{:.2}\t{:.2}\t{:+.2}",
+            layout_label(&engine, layout),
+            rendered,
+            score.english.total,
+            score.secondary.total,
+            margin,
+        )
+        .map_err(io_str)?;
+    }
+
+    Ok(())
+}
+
+struct Prediction {
+    rendered: String,
+    layout: Layout,
+    score: ScoreAnalysis,
+}
+
+fn run_token_predicted(engine: &mut Engine, token: &str) -> Result<Prediction, String> {
+    for character in token.chars() {
+        let input = input_event_for_char(engine, character);
+        engine.observe(input);
+    }
+    let layout = engine.current_layout();
+    let rendered = engine.token_candidates().get(layout).to_owned();
+    let score = engine.token_score();
+    engine.observe(InputEvent::EndToken);
+    Ok(Prediction {
+        rendered,
+        layout,
+        score,
+    })
+}
+
+fn input_event_for_char(engine: &Engine, character: char) -> InputEvent {
+    engine.input_event_from_char(character)
+}
+
+fn cmd_predict(args: &[String], explicit_config: Option<&Path>) -> Result<(), String> {
+    let mut json = false;
+    let mut tokens: Vec<&String> = Vec::new();
+    for arg in args {
+        match arg.as_str() {
+            "--json" => json = true,
+            other if other.starts_with("--") => {
+                return Err(format!("unknown flag for predict: {other}"));
+            }
+            _ => tokens.push(arg),
+        }
+    }
+    if tokens.is_empty() {
+        return Err("usage: typeflow predict [--json] <KEYS>".into());
+    }
+
+    let source = load_config(explicit_config)?;
+    let mut engine = build_engine(&source.config)?;
+
+    let stdout = io::stdout();
+    let mut stdout = stdout.lock();
+
+    for (idx, token) in tokens.iter().enumerate() {
+        if idx > 0 {
+            engine.reset_layout(Layout::English);
+        }
+        let prediction = run_token_predicted(&mut engine, token)?;
+        let rendered = prediction.rendered;
+        let score = prediction.score;
+        let layout = prediction.layout;
+        let margin = score.english.total - score.secondary.total;
+
+        if json {
+            let output = json!({
+                "keys": token,
+                "layout": layout_label(&engine, layout),
+                "rendered": rendered,
+                "primary_id": token_label(&engine, Layout::English),
+                "secondary_id": token_label(&engine, Layout::Secondary),
+                "primary_total": json_float(score.english.total),
+                "secondary_total": json_float(score.secondary.total),
+                "margin": json_float(margin),
+            });
+            serde_json::to_writer(&mut stdout, &output).map_err(|e| format!("write json: {e}"))?;
+            writeln!(stdout).map_err(io_str)?;
+        } else {
+            writeln!(stdout, "{}\t{}", layout_label(&engine, layout), rendered).map_err(io_str)?;
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(Clone, Debug)]
+struct EvalCase {
+    name: String,
+    keys: String,
+    expected: Layout,
+}
+
+#[derive(Clone, Debug)]
+struct EvalFailure {
+    name: String,
+    keys: String,
+    expected: Layout,
+    actual: Layout,
+    rendered: String,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct EvalLengthStats {
+    total: usize,
+    failed: usize,
+}
+
+fn cmd_eval(args: &[String], explicit_config: Option<&Path>) -> Result<(), String> {
+    let source = load_config(explicit_config)?;
+    let mut engine = build_engine(&source.config)?;
+    let cases = eval_cases(args, &engine)?;
+
+    let mut passed = 0usize;
+    let mut failed = 0usize;
+    let mut confusion = [[0usize; 2]; 2];
+    let mut by_len: BTreeMap<usize, EvalLengthStats> = BTreeMap::new();
+    let mut failures: Vec<EvalFailure> = Vec::new();
+
+    for case in &cases {
+        engine.reset_layout(Layout::English);
+        let prediction = run_token_predicted(&mut engine, &case.keys)?;
+        let rendered = prediction.rendered;
+        let actual = prediction.layout;
+        let expected_idx = layout_index(case.expected);
+        let actual_idx = layout_index(actual);
+        confusion[expected_idx][actual_idx] += 1;
+
+        let len = case.keys.chars().count();
+        let len_stats = by_len.entry(len).or_default();
+        len_stats.total += 1;
+
+        if actual == case.expected {
+            passed += 1;
+        } else {
+            failed += 1;
+            len_stats.failed += 1;
+            failures.push(EvalFailure {
+                name: case.name.clone(),
+                keys: case.keys.clone(),
+                expected: case.expected,
+                actual,
+                rendered,
+            });
+        }
+    }
+
+    print_eval_report(&engine, passed, failed, &confusion, &by_len, &failures);
+
+    if failed == 0 {
+        Ok(())
+    } else {
+        Err("evaluation failed".into())
+    }
+}
+
+fn print_eval_report(
+    engine: &Engine,
+    passed: usize,
+    failed: usize,
+    confusion: &[[usize; 2]; 2],
+    by_len: &BTreeMap<usize, EvalLengthStats>,
+    failures: &[EvalFailure],
+) {
+    let total = passed + failed;
+    let accuracy = percentage(passed, total);
+    let false_positive = confusion[layout_index(Layout::English)][layout_index(Layout::Secondary)];
+    let false_negative = confusion[layout_index(Layout::Secondary)][layout_index(Layout::English)];
+
+    println!(
+        "eval: {} passed / {} failed / {} total ({:.2}% accuracy)",
+        passed, failed, total, accuracy
+    );
+    println!(
+        "confusion: expected\\actual\t{}\t{}",
+        layout_label(engine, Layout::English),
+        layout_label(engine, Layout::Secondary)
+    );
+    println!(
+        "confusion: {}\t{}\t{}",
+        layout_label(engine, Layout::English),
+        confusion[layout_index(Layout::English)][layout_index(Layout::English)],
+        confusion[layout_index(Layout::English)][layout_index(Layout::Secondary)]
+    );
+    println!(
+        "confusion: {}\t{}\t{}",
+        layout_label(engine, Layout::Secondary),
+        confusion[layout_index(Layout::Secondary)][layout_index(Layout::English)],
+        confusion[layout_index(Layout::Secondary)][layout_index(Layout::Secondary)]
+    );
+    println!(
+        "errors: false_positive_{}_to_{}={} false_negative_{}_to_{}={}",
+        token_label(engine, Layout::English),
+        token_label(engine, Layout::Secondary),
+        false_positive,
+        token_label(engine, Layout::Secondary),
+        token_label(engine, Layout::English),
+        false_negative
+    );
+
+    print_eval_length_report(by_len);
+    print_eval_failures(engine, failures);
+}
+
+fn print_eval_length_report(by_len: &BTreeMap<usize, EvalLengthStats>) {
+    println!("by_len: len\ttotal\tfailed\tfailure_rate");
+    for (len, stats) in by_len {
+        if stats.failed == 0 {
+            continue;
+        }
+        println!(
+            "by_len: {}\t{}\t{}\t{:.2}%",
+            len,
+            stats.total,
+            stats.failed,
+            percentage(stats.failed, stats.total)
+        );
+    }
+}
+
+fn print_eval_failures(engine: &Engine, failures: &[EvalFailure]) {
+    const FAILURE_SAMPLE_LIMIT: usize = 20;
+
+    for failure in failures.iter().take(FAILURE_SAMPLE_LIMIT) {
+        println!(
+            "FAIL {}\tkeys={}\texpected={}\tactual={}\trendered={}",
+            failure.name,
+            failure.keys,
+            layout_label(engine, failure.expected),
+            layout_label(engine, failure.actual),
+            failure.rendered,
+        );
+    }
+
+    if failures.len() > FAILURE_SAMPLE_LIMIT {
+        println!(
+            "FAIL ... {} additional failures omitted",
+            failures.len() - FAILURE_SAMPLE_LIMIT
+        );
+    }
+}
+
+fn layout_index(layout: Layout) -> usize {
+    match layout {
+        Layout::English => 0,
+        Layout::Secondary => 1,
+    }
+}
+
+fn percentage(count: usize, total: usize) -> f64 {
+    if total == 0 {
+        0.0
+    } else {
+        (count as f64 / total as f64) * 100.0
+    }
+}
+
+fn eval_cases(args: &[String], engine: &Engine) -> Result<Vec<EvalCase>, String> {
+    match args {
+        [] => Ok(builtin_eval_cases()),
+        [flag] if flag == "--generated" => generated_eval_cases(engine, 5_000),
+        [flag, limit] if flag == "--generated" => {
+            let limit = limit
+                .parse::<usize>()
+                .map_err(|e| format!("parse generated eval limit: {e}"))?;
+            if limit == 0 {
+                return Err("generated eval limit must be > 0".into());
+            }
+            generated_eval_cases(engine, limit)
+        }
+        [path] if !path.starts_with("--") => read_eval_cases(Path::new(path)),
+        _ => Err("usage: typeflow eval [--generated [limit-per-layout] | <tsv>]".into()),
+    }
+}
+
+fn read_eval_cases(path: &Path) -> Result<Vec<EvalCase>, String> {
+    let file = std::fs::File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
+    let reader = io::BufReader::new(file);
+    let mut cases = Vec::new();
+
+    for (idx, line) in reader.lines().enumerate() {
+        let line = line.map_err(io_str)?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        let mut parts = trimmed.split('\t');
+        let keys = parts
+            .next()
+            .ok_or_else(|| format!("{}:{} missing keys", path.display(), idx + 1))?;
+        let expected = parts
+            .next()
+            .ok_or_else(|| format!("{}:{} missing expected layout", path.display(), idx + 1))?;
+
+        cases.push(EvalCase {
+            name: format!("{}:{}", path.display(), idx + 1),
+            keys: keys.to_owned(),
+            expected: parse_layout(expected)?,
+        });
+    }
+
+    Ok(cases)
+}
+
+fn builtin_eval_cases() -> Vec<EvalCase> {
+    [
+        ("uk_pryvit", "ghsdbn", Layout::Secondary),
+        ("uk_pryvit_caps", "Ghsdbn", Layout::Secondary),
+        ("en_typeflow", "typeflow", Layout::English),
+        ("en_hello", "hello", Layout::English),
+        ("en_http", "http", Layout::English),
+        ("en_https_urlish", "https://example.com", Layout::English),
+        ("en_kubectl", "kubectl", Layout::English),
+        ("en_json", "json", Layout::English),
+        ("en_aws", "aws", Layout::English),
+        ("en_mixed_digits", "abc123", Layout::English),
+        ("en_snake_case", "snake_case", Layout::English),
+        ("en_camel_case", "camelCase", Layout::English),
+        ("en_acronym", "HTTP", Layout::English),
+    ]
+    .into_iter()
+    .map(|(name, keys, expected)| EvalCase {
+        name: name.to_owned(),
+        keys: keys.to_owned(),
+        expected,
+    })
+    .collect()
+}
+
+fn generated_eval_cases(engine: &Engine, limit_per_layout: usize) -> Result<Vec<EvalCase>, String> {
+    let mut cases = builtin_eval_cases();
+    cases.extend(generated_dictionary_cases(
+        engine,
+        Layout::English,
+        limit_per_layout,
+    )?);
+    let GeneratedSecondaryCases {
+        cases: secondary_cases,
+        skipped_ambiguous_exact_english,
+    } = generated_secondary_dictionary_cases(engine, limit_per_layout)?;
+    if skipped_ambiguous_exact_english > 0 {
+        println!(
+            "generated: skipped_ambiguous_secondary_exact_{}={}",
+            token_label(engine, Layout::English),
+            skipped_ambiguous_exact_english
+        );
+    }
+    cases.extend(secondary_cases);
+    Ok(cases)
+}
+
+struct GeneratedSecondaryCases {
+    cases: Vec<EvalCase>,
+    /// Words whose physical-key string is itself an exact English dictionary
+    /// entry. These collisions have no single correct automatic answer; see
+    /// `docs/calibration.md`.
+    skipped_ambiguous_exact_english: usize,
+}
+
+fn generated_dictionary_cases(
+    engine: &Engine,
+    expected: Layout,
+    limit: usize,
+) -> Result<Vec<EvalCase>, String> {
+    let pack = engine.bundle().pack(expected);
+    let mut words = dictionary_words_by_frequency(pack)?;
+    words.retain(|word| word.chars().count() >= engine.config().min_token_len);
+    words.truncate(limit);
+
+    let mut cases = Vec::with_capacity(words.len());
+    for (idx, word) in words.into_iter().enumerate() {
+        let Some(keys) = physical_keys_for_word(engine, &word) else {
+            continue;
+        };
+        cases.push(EvalCase {
+            name: format!(
+                "generated_{}_{}_{}",
+                token_label(engine, expected),
+                idx + 1,
+                word
+            ),
+            keys,
+            expected,
+        });
+    }
+
+    Ok(cases)
+}
+
+fn generated_secondary_dictionary_cases(
+    engine: &Engine,
+    limit: usize,
+) -> Result<GeneratedSecondaryCases, String> {
+    let pack = engine.bundle().pack(Layout::Secondary);
+    let mut words = dictionary_words_by_frequency(pack)?;
+    words.retain(|word| word.chars().count() >= engine.config().min_token_len);
+    words.truncate(limit);
+
+    let mut skipped_ambiguous_exact_english = 0usize;
+    let mut cases = Vec::with_capacity(words.len());
+    for (idx, word) in words.into_iter().enumerate() {
+        let Some(keys) = physical_keys_for_word(engine, &word) else {
+            continue;
+        };
+        if is_exact_dictionary_word(engine, Layout::English, &keys) {
+            skipped_ambiguous_exact_english += 1;
+            continue;
+        }
+        cases.push(EvalCase {
+            name: format!(
+                "generated_{}_{}_{}",
+                token_label(engine, Layout::Secondary),
+                idx + 1,
+                word
+            ),
+            keys,
+            expected: Layout::Secondary,
+        });
+    }
+
+    Ok(GeneratedSecondaryCases {
+        cases,
+        skipped_ambiguous_exact_english,
+    })
+}
+
+fn is_exact_dictionary_word(engine: &Engine, layout: Layout, word: &str) -> bool {
+    let candidates = match layout {
+        Layout::English => LayoutCandidates {
+            english: word.to_owned(),
+            secondary: String::new(),
+        },
+        Layout::Secondary => LayoutCandidates {
+            english: String::new(),
+            secondary: word.to_owned(),
+        },
+    };
+    let score = engine.score(&candidates);
+    match layout {
+        Layout::English => score.english.exact_count > 0,
+        Layout::Secondary => score.secondary.exact_count > 0,
+    }
+}
+
+fn dictionary_words_by_frequency(pack: &LanguagePack) -> Result<Vec<String>, String> {
+    let mut entries: Vec<(String, u64)> = Vec::new();
+    let mut stream = pack.dict.stream();
+
+    while let Some((key, count)) = stream.next() {
+        let word = std::str::from_utf8(key)
+            .map_err(|e| format!("dictionary {} contains non-UTF-8 key: {e}", pack.id))?;
+        entries.push((word.to_owned(), count));
+    }
+
+    entries.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    Ok(entries.into_iter().map(|(word, _)| word).collect())
+}
+
+fn physical_keys_for_word(engine: &Engine, word: &str) -> Option<String> {
+    let bundle = engine.bundle();
+    let mut keys = String::new();
+
+    for character in word.chars() {
+        let event = bundle.letter_event_from_char(character)?;
+        keys.push(bundle.render(event, Layout::English));
+    }
+
+    Some(keys)
+}
+
+fn parse_layout(value: &str) -> Result<Layout, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "en" | "eng" | "english" => Ok(Layout::English),
+        "uk" | "ukr" | "ukrainian" | "secondary" => Ok(Layout::Secondary),
+        other => Err(format!("unknown expected layout: {other}")),
+    }
+}
+
+fn cmd_model(args: &[String], explicit_config: Option<&Path>) -> Result<(), String> {
+    if !args.is_empty() {
+        return Err("usage: typeflow model".into());
+    }
+
+    let source = load_config(explicit_config)?;
+    let engine = build_engine(&source.config)?;
+
+    for layout in [Layout::English, Layout::Secondary] {
+        let pack = engine.bundle().pack(layout);
+        println!(
+            "{}\tid={}\tscript={}\tlayout={}\tformat={}\tbuild={}\tngrams={}B\tdict={}B\tdict_prefix={}B\tfingerprint={:016x}",
+            pack.display_name,
+            pack.id,
+            pack.script,
+            pack.keyboard_layout,
+            pack.metadata.format_version,
+            pack.metadata.build_id,
+            pack.metadata.ngram_bytes,
+            pack.metadata.dict_bytes,
+            pack.metadata.dict_prefix_bytes,
+            pack.metadata.fingerprint,
+        );
+    }
+
+    Ok(())
+}
+
+fn cmd_pack(args: &[String], explicit_config: Option<&Path>) -> Result<(), String> {
+    match args.first().map(String::as_str) {
+        Some("install") => {
+            if args.len() != 2 {
+                return Err("usage: typeflow pack install <PACK_DIR>".into());
+            }
+            install_pack(Path::new(&args[1]), explicit_config)
+        }
+        Some("list") => {
+            if args.len() != 1 {
+                return Err("usage: typeflow pack list".into());
+            }
+            list_packs(explicit_config)
+        }
+        Some("use") => {
+            if args.len() != 2 {
+                return Err("usage: typeflow pack use <ID>".into());
+            }
+            use_pack(args[1].as_str(), explicit_config)
+        }
+        Some("inspect") => {
+            if args.len() != 2 {
+                return Err("usage: typeflow pack inspect <PACK_DIR|ID>".into());
+            }
+            inspect_pack(args[1].as_str(), explicit_config)
+        }
+        Some(other) => Err(format!(
+            "unknown pack subcommand: {other}\n\nusage: typeflow pack <install|list|use|inspect>"
+        )),
+        None => Err("usage: typeflow pack <install|list|use|inspect>".into()),
+    }
+}
+
+fn install_pack(source_dir: &Path, explicit_config: Option<&Path>) -> Result<(), String> {
+    let source_config = load_config(explicit_config)?;
+    let install_root = pack_dir_or_error(&source_config.config)?;
+
+    let manifest = LanguagePackManifest::read_from_dir(source_dir)
+        .map_err(|e| format!("read pack {}: {e}", source_dir.display()))?;
+    let pack = LanguagePack::from_pack_dir(source_dir)
+        .map_err(|e| format!("validate pack {}: {e}", source_dir.display()))?;
+    let (ngrams_src, dict_src, dict_prefix_src) = manifest
+        .artifact_paths(source_dir)
+        .map_err(|e| format!("resolve pack artifacts: {e}"))?;
+
+    let target_dir = install_root.join(&pack.id);
+    fs::create_dir_all(&target_dir).map_err(|e| format!("create {}: {e}", target_dir.display()))?;
+    copy_pack_file(&ngrams_src, &target_dir.join(PACK_NGRAMS_FILE))?;
+    copy_pack_file(&dict_src, &target_dir.join(PACK_DICT_FILE))?;
+    copy_pack_file(&dict_prefix_src, &target_dir.join(PACK_DICT_PREFIX_FILE))?;
+    write_pack_manifest(&manifest.normalized_for_install(), &target_dir)?;
+
+    let installed = LanguagePack::from_pack_dir(&target_dir)
+        .map_err(|e| format!("validate installed pack {}: {e}", target_dir.display()))?;
+    println!(
+        "installed {}\t{}\t{}",
+        installed.id,
+        installed.display_name,
+        target_dir.display()
+    );
+    Ok(())
+}
+
+fn list_packs(explicit_config: Option<&Path>) -> Result<(), String> {
+    let source = load_config(explicit_config)?;
+    let install_root = pack_dir_or_error(&source.config)?;
+    println!("pack_dir: {}", install_root.display());
+    println!(
+        "active_secondary: {}",
+        normalized_secondary_id(&source.config)
+    );
+
+    if !install_root.is_dir() {
+        println!("(none)");
+        return Ok(());
+    }
+
+    let mut entries = fs::read_dir(&install_root)
+        .map_err(|e| format!("read {}: {e}", install_root.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(io_str)?;
+    entries.sort_by_key(|entry| entry.file_name());
+
+    let mut listed = 0usize;
+    for entry in entries {
+        let path = entry.path();
+        if !path.join(PACK_MANIFEST_FILE).is_file() {
+            continue;
+        }
+        listed += 1;
+        match LanguagePack::from_pack_dir(&path) {
+            Ok(pack) => println!(
+                "{}\t{}\t{}\t{}\t{:016x}",
+                pack.id,
+                pack.display_name,
+                pack.script,
+                pack.keyboard_layout,
+                pack.metadata.fingerprint
+            ),
+            Err(error) => println!(
+                "BROKEN\t{}\t{}",
+                path.file_name()
+                    .map(|name| name.to_string_lossy())
+                    .unwrap_or_else(|| path.as_os_str().to_string_lossy()),
+                error
+            ),
+        }
+    }
+
+    if listed == 0 {
+        println!("(none)");
+    }
+    Ok(())
+}
+
+fn use_pack(id: &str, explicit_config: Option<&Path>) -> Result<(), String> {
+    validate_cli_pack_id(id)?;
+    let config_path = writable_config_path(explicit_config)?;
+    let mut config = if config_path.is_file() {
+        load_config(Some(&config_path))?.config
+    } else {
+        Config::default()
+    };
+
+    if id != "uk" {
+        let install_root = pack_dir_or_error(&config)?;
+        let pack_path = install_root.join(id);
+        LanguagePack::from_pack_dir(&pack_path).map_err(|e| {
+            format!(
+                "pack '{id}' is not installed at {}: {e}",
+                pack_path.display()
+            )
+        })?;
+    }
+
+    config.language.secondary = id.to_owned();
+    config::write_config(&config_path, &config)?;
+    println!("configured secondary={id} in {}", config_path.display());
+    Ok(())
+}
+
+fn inspect_pack(value: &str, explicit_config: Option<&Path>) -> Result<(), String> {
+    if value == "uk" {
+        let bundle =
+            LanguageBundle::embedded_shared().map_err(|e| format!("load embedded bundle: {e}"))?;
+        print_pack_details(&bundle.secondary, "embedded");
+        return Ok(());
+    }
+
+    let source = load_config(explicit_config)?;
+    let install_root = pack_dir_or_error(&source.config)?;
+    let pack_path = resolve_pack_reference(value, &install_root);
+
+    let pack = LanguagePack::from_pack_dir(&pack_path)
+        .map_err(|e| format!("load pack {}: {e}", pack_path.display()))?;
+    print_pack_details(&pack, &pack_path.display().to_string());
+    Ok(())
+}
+
+fn print_pack_details(pack: &LanguagePack, location: &str) {
+    println!("path: {location}");
+    println!("id: {}", pack.id);
+    println!("display_name: {}", pack.display_name);
+    println!("script: {}", pack.script);
+    println!("layout: {}", pack.keyboard_layout);
+    println!("format_version: {}", pack.metadata.format_version);
+    println!("build_id: {}", pack.metadata.build_id);
+    println!("source_corpus: {}", pack.metadata.source_corpus);
+    println!("source_dictionary: {}", pack.metadata.source_dictionary);
+    println!("ngrams: {}B", pack.metadata.ngram_bytes);
+    println!("dict: {}B", pack.metadata.dict_bytes);
+    println!("dict_prefix: {}B", pack.metadata.dict_prefix_bytes);
+    println!("fingerprint: {:016x}", pack.metadata.fingerprint);
+}
+
+fn pack_dir_or_error(config: &Config) -> Result<PathBuf, String> {
+    configured_pack_dir(config).ok_or_else(|| {
+        "could not resolve pack directory; set TYPEFLOW_PACK_DIR or [packs].directory".to_owned()
+    })
+}
+
+fn writable_config_path(explicit_config: Option<&Path>) -> Result<PathBuf, String> {
+    explicit_config
+        .map(Path::to_path_buf)
+        .or_else(config::home_default)
+        .ok_or_else(|| {
+            "could not locate ~/.config/typeflow/config.toml; pass --config <path>".to_owned()
+        })
+}
+
+fn resolve_pack_reference(value: &str, install_root: &Path) -> PathBuf {
+    let path = PathBuf::from(value);
+    if path.exists() || path.join(PACK_MANIFEST_FILE).is_file() || value.contains('/') {
+        path
+    } else {
+        install_root.join(value)
+    }
+}
+
+fn validate_cli_pack_id(id: &str) -> Result<(), String> {
+    if id.trim().is_empty() {
+        return Err("pack id must not be empty".into());
+    }
+    if !id
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        return Err(format!(
+            "pack id '{id}' contains unsupported characters; use ASCII letters, digits, '-' or '_'"
+        ));
+    }
+    Ok(())
+}
+
+fn copy_pack_file(source: &Path, dest: &Path) -> Result<(), String> {
+    if paths_same(source, dest) {
+        return Ok(());
+    }
+    atomic::copy(source, dest)
+}
+
+fn write_pack_manifest(manifest: &LanguagePackManifest, target_dir: &Path) -> Result<(), String> {
+    let serialized = toml::to_string_pretty(manifest)
+        .map_err(|e| format!("serialize installed manifest: {e}"))?;
+    atomic::write(&target_dir.join(PACK_MANIFEST_FILE), serialized.as_bytes())
+}
+
+fn paths_same(left: &Path, right: &Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
+fn json_float(value: f32) -> Value {
+    if value.is_finite() {
+        json!(value)
+    } else {
+        Value::Null
+    }
+}
+
+fn cmd_repl(explicit_config: Option<&Path>) -> Result<(), String> {
+    let source = load_config(explicit_config)?;
+    let mut engine = build_engine(&source.config)?;
+    let config_label = source
+        .path
+        .as_ref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "<defaults>".to_owned());
+    let mut history: Vec<String> = Vec::new();
+    let mut committed: String = String::new();
+    let composing: String = String::new();
+
+    let mut stdout = io::stdout();
+    terminal::enable_raw_mode().map_err(io_str)?;
+    let _guard = RawModeGuard;
+    stdout
+        .execute(terminal::Clear(ClearType::All))
+        .map_err(io_str)?;
+
+    loop {
+        redraw(&mut engine, &history, &committed, &composing, &config_label).map_err(io_str)?;
+        let evt = event::read().map_err(io_str)?;
+        let Event::Key(KeyEvent {
+            code,
+            modifiers,
+            kind,
+            ..
+        }) = evt
+        else {
+            continue;
+        };
+        if kind != KeyEventKind::Press {
+            continue;
+        }
+        match (code, modifiers) {
+            (KeyCode::Esc, _) => break,
+            (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
+            (KeyCode::Backspace, _) => {
+                let action = engine.observe(InputEvent::Backspace).action;
+                committed.pop();
+                history.push(format!("Backspace -> {}", action_label(&engine, &action)));
+            }
+            (KeyCode::Char(' '), _) => {
+                let action = engine.observe(InputEvent::Literal(' ')).action;
+                committed.push(' ');
+                history.push(format!("Space -> {}", action_label(&engine, &action)));
+            }
+            (KeyCode::Enter, _) => {
+                let action = engine.observe(InputEvent::EndToken).action;
+                committed.push('\n');
+                history.push(format!("Enter -> {}", action_label(&engine, &action)));
+            }
+            (KeyCode::Char(character), _) => {
+                let output = engine.observe(input_event_for_char(&engine, character));
+                let decision = output.decision;
+                let action = output.action;
+                committed.push(character);
+                history.push(format!(
+                    "'{character}' -> decision={} action={}",
+                    decision_label(&engine, decision),
+                    action_label(&engine, &action)
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_config(args: &[String], explicit_config: Option<&Path>) -> Result<(), String> {
+    match args.first().map(String::as_str) {
+        Some("init") => {
+            let target = args.get(1).map(PathBuf::from).or_else(config::home_default);
+            let target = target.ok_or_else(|| {
+                "could not locate ~/.config/typeflow/config.toml; pass an explicit path".to_owned()
+            })?;
+            if target.exists() {
+                return Err(format!(
+                    "{} already exists; remove it or pass an alternative path",
+                    target.display()
+                ));
+            }
+            config::write_default_template(&target)?;
+            println!("wrote default config to {}", target.display());
+            Ok(())
+        }
+        Some("show") => {
+            let source = load_config(explicit_config)?;
+            match &source.path {
+                Some(path) => println!("# loaded from {}\n", path.display()),
+                None => println!("# no config file found; using built-in defaults\n"),
+            }
+            let serialized = toml::to_string_pretty(&source.config)
+                .map_err(|e| format!("serialize config: {e}"))?;
+            print!("{serialized}");
+            Ok(())
+        }
+        Some(other) => Err(format!(
+            "unknown config subcommand: {other}\n\nusage: typeflow config <init|show> [path]"
+        )),
+        None => Err("usage: typeflow config <init|show> [path]".into()),
+    }
+}
+
+struct RawModeGuard;
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        let _ = terminal::disable_raw_mode();
+        let _ = io::stdout().execute(terminal::Clear(ClearType::All));
+        let _ = io::stdout().execute(cursor::MoveTo(0, 0));
+    }
+}
+
+fn redraw(
+    engine: &mut Engine,
+    history: &[String],
+    committed: &str,
+    composing: &str,
+    config_label: &str,
+) -> io::Result<()> {
+    let mut stdout = io::stdout();
+    stdout.execute(terminal::Clear(ClearType::All))?;
+    stdout.execute(cursor::MoveTo(0, 0))?;
+
+    let score = engine.token_score();
+    let candidates = engine.token_candidates();
+
+    let mut buf = String::new();
+    let _ = writeln_cr(
+        &mut buf,
+        "TypeFlow REPL — Esc/Ctrl-C quit | Backspace delete | Space/Enter end-of-token",
+    );
+    let _ = writeln_cr(&mut buf, format!("config: {config_label}"));
+    let _ = writeln_cr(&mut buf, "");
+    let _ = writeln_cr(&mut buf, "What you would see in TextEdit:");
+    let _ = writeln_cr(
+        &mut buf,
+        format!(
+            "  {}",
+            visible_committed(&format!("{committed}{composing}"))
+        ),
+    );
+    let _ = writeln_cr(&mut buf, "");
+    let _ = writeln_cr(
+        &mut buf,
+        format!(
+            "Current layout: {}",
+            layout_label(engine, engine.current_layout())
+        ),
+    );
+    let _ = writeln_cr(
+        &mut buf,
+        format!(
+            "Token ({}): {}",
+            token_label(engine, Layout::English),
+            candidates.english
+        ),
+    );
+    let _ = writeln_cr(
+        &mut buf,
+        format!(
+            "Token ({}): {}",
+            token_label(engine, Layout::Secondary),
+            candidates.secondary
+        ),
+    );
+    let _ = writeln_cr(&mut buf, "");
+    let _ = writeln_cr(
+        &mut buf,
+        format_score_line(&score.english, &score_label(engine, Layout::English)),
+    );
+    let _ = writeln_cr(
+        &mut buf,
+        format_score_line(&score.secondary, &score_label(engine, Layout::Secondary)),
+    );
+    let _ = writeln_cr(&mut buf, "");
+
+    let verdict = format_margin_verdict(engine, &score, engine.config());
+    let _ = writeln_cr(
+        &mut buf,
+        format!(
+            "Margin ({} - {}): {verdict}",
+            score_label(engine, Layout::English),
+            score_label(engine, Layout::Secondary)
+        ),
+    );
+    let _ = writeln_cr(&mut buf, "");
+    let _ = writeln_cr(&mut buf, "Recent events (newest first):");
+    for line in history.iter().rev().take(8) {
+        let _ = writeln_cr(&mut buf, format!("  {line}"));
+    }
+
+    stdout.write_all(buf.as_bytes())?;
+    stdout.flush()?;
+    Ok(())
+}
+
+fn writeln_cr(buf: &mut String, line: impl AsRef<str>) -> std::fmt::Result {
+    buf.write_str(line.as_ref())?;
+    buf.write_str("\r\n")
+}
+
+/// Renders committed text in a single-line, escape-safe form for the REPL panel.
+/// Newlines become `⏎`, leading-edge tail-only display so very long sessions stay readable.
+fn visible_committed(text: &str) -> String {
+    const TAIL_CHARS: usize = 100;
+    let chars: Vec<char> = text.chars().collect();
+    let start = chars.len().saturating_sub(TAIL_CHARS);
+    let prefix = if start > 0 { "…" } else { "" };
+    let mut out = String::with_capacity(prefix.len() + chars.len() - start + 4);
+    out.push_str(prefix);
+    for character in &chars[start..] {
+        match character {
+            '\n' => out.push('⏎'),
+            '\r' => {}
+            c => out.push(*c),
+        }
+    }
+    if out.is_empty() {
+        out.push_str("(empty)");
+    }
+    out
+}
+
+fn format_score_line(score: &LayoutScore, label: &str) -> String {
+    format!(
+        "{label}  total={:>8.2}  bigram={:>8.2}  trigram={:>8.2}  exact={:>5.2}(n={})  prefix={:>5.2}(sum={})",
+        score.total,
+        score.bigram,
+        score.trigram,
+        score.dict_exact_bonus,
+        score.exact_count,
+        score.dict_prefix_bonus,
+        score.prefix_sum,
+    )
+}
+
+fn print_score_lines(engine: &Engine, score: &ScoreAnalysis) {
+    println!(
+        "{}",
+        format_score_line(&score.english, &score_label(engine, Layout::English))
+    );
+    println!(
+        "{}",
+        format_score_line(&score.secondary, &score_label(engine, Layout::Secondary))
+    );
+}
+
+fn layout_label(engine: &Engine, layout: Layout) -> &str {
+    engine.bundle().display_name(layout)
+}
+
+fn token_label(engine: &Engine, layout: Layout) -> &str {
+    engine.bundle().pack(layout).id.as_str()
+}
+
+fn score_label(engine: &Engine, layout: Layout) -> String {
+    token_label(engine, layout).to_ascii_uppercase()
+}
+
+fn print_margin_line(engine: &Engine, score: &ScoreAnalysis, config: &EngineConfig) {
+    println!(
+        "Margin ({} - {}): {}",
+        score_label(engine, Layout::English),
+        score_label(engine, Layout::Secondary),
+        format_margin_verdict(engine, score, config)
+    );
+}
+
+fn format_margin_verdict(engine: &Engine, score: &ScoreAnalysis, config: &EngineConfig) -> String {
+    let margin = score.english.total - score.secondary.total;
+    let (threshold, threshold_label) = if margin >= 0.0 {
+        margin_threshold(score.english, config)
+    } else {
+        margin_threshold(score.secondary, config)
+    };
+
+    if margin.abs() < threshold {
+        format!(
+            "{:+.2}  threshold={:.2} ({})  -> keep current",
+            margin, threshold, threshold_label
+        )
+    } else if margin > 0.0 {
+        format!(
+            "{:+.2}  threshold={:.2} ({})  -> Use({})",
+            margin,
+            threshold,
+            threshold_label,
+            layout_label(engine, Layout::English)
+        )
+    } else {
+        format!(
+            "{:+.2}  threshold={:.2} ({})  -> Use({})",
+            margin,
+            threshold,
+            threshold_label,
+            layout_label(engine, Layout::Secondary)
+        )
+    }
+}
+
+fn decision_label(engine: &Engine, decision: Decision) -> String {
+    match decision {
+        Decision::Keep => "Keep".to_owned(),
+        Decision::Bypass => "Bypass".to_owned(),
+        Decision::Use(layout) => format!("Use({})", layout_label(engine, layout)),
+    }
+}
+
+fn action_label(engine: &Engine, action: &ObservationAction) -> String {
+    match action {
+        ObservationAction::None => "None".to_owned(),
+        ObservationAction::SwitchFutureLayout(layout) => {
+            format!("SwitchFutureLayout({})", layout_label(engine, *layout))
+        }
+        ObservationAction::ResetToken => "ResetToken".to_owned(),
+    }
+}
+
+fn margin_threshold(score: LayoutScore, config: &EngineConfig) -> (f32, &'static str) {
+    if has_dictionary_evidence(score) {
+        (config.confidence_margin, "dictionary")
+    } else {
+        (config.ngram_only_confidence_margin, "ngram-only")
+    }
+}
+
+fn io_str(error: io::Error) -> String {
+    format!("{error}")
+}

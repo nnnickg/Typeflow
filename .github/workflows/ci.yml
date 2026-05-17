@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  macos:
+    name: macOS
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          rustup show
+          cargo --version
+          rustc --version
+          swift --version
+          xcodebuild -version
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2.8.1
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Release Build
+        run: cargo build --release --locked -p typeflow-cli -p typeflow-ffi
+
+      - name: CLI Smoke
+        run: |
+          touch "$RUNNER_TEMP/typeflow-empty.toml"
+          target/release/typeflow --config "$RUNNER_TEMP/typeflow-empty.toml" model
+          target/release/typeflow --config "$RUNNER_TEMP/typeflow-empty.toml" predict ghsdbn
+          target/release/typeflow --config "$RUNNER_TEMP/typeflow-empty.toml" pack inspect uk
+          target/release/typeflow --config "$RUNNER_TEMP/typeflow-empty.toml" eval --generated 500
+
+      - name: macOS Staticlib Smoke
+        run: make -C macos smoke CARGO_TARGET_DIR="$PWD/target" BUILD_DIR="$RUNNER_TEMP/typeflow-macos-build"
+
+      - name: macOS Bundle Build
+        run: make -C macos bundle CARGO_TARGET_DIR="$PWD/target" BUILD_DIR="$RUNNER_TEMP/typeflow-macos-build"

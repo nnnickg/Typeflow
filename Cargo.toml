@@ -1,0 +1,37 @@
+[workspace]
+members = [
+    "crates/typeflow-core",
+    "crates/typeflow-host-config",
+    "crates/typeflow-data",
+    "crates/typeflow-ffi",
+    "crates/typeflow-cli",
+]
+exclude = ["fuzz"]
+resolver = "2"
+
+[workspace.package]
+version = "1.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/nnnickg/typeflow"
+homepage = "https://github.com/nnnickg/typeflow"
+
+[workspace.dependencies]
+criterion = "0.8.2"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unwrap_used = "deny"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+strip = "symbols"

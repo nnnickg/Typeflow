@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleExecutable</key>
+  <string>Typeflow</string>
+  <key>CFBundleDisplayName</key>
+  <string>Typeflow</string>
+  <key>CFBundleIconFile</key>
+  <string>Typeflow.icns</string>
+  <key>CFBundleIdentifier</key>
+  <string>io.github.nnnickg.typeflow.agent</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>Typeflow</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>__TYPEFLOW_VERSION__</string>
+  <key>CFBundleSignature</key>
+  <string>????</string>
+  <key>CFBundleSupportedPlatforms</key>
+  <array>
+    <string>MacOSX</string>
+  </array>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>LSUIElement</key>
+  <true/>
+  <key>LSMinimumSystemVersion</key>
+  <string>14.0</string>
+  <key>NSPrincipalClass</key>
+  <string>NSApplication</string>
+  <key>NSAccessibilityUsageDescription</key>
+  <string>Typeflow observes keyboard events and foreground text surfaces to switch the active keyboard layout without rewriting document text.</string>
+  <key>NSInputMonitoringUsageDescription</key>
+  <string>Typeflow observes keyboard events so it can switch the active keyboard layout for future keys.</string>
+  <key>NSSupportsSuddenTermination</key>
+  <true/>
+</dict>
+</plist>

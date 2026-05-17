@@ -1,0 +1,23 @@
+[package]
+name = "typeflow-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+fst = "0.4.7"
+toml = "1.1.2"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+proptest = { version = "1.11.0", default-features = false, features = ["std"] }
+
+[[bench]]
+name = "engine"
+harness = false
