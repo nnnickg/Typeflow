@@ -1,10 +1,29 @@
 # Typeflow
 
+![Typeflow converts wrong-layout typing into the intended word](docs/assets/typeflow-demo.gif)
+
+[![Download Typeflow for macOS](https://img.shields.io/badge/download-macOS%20app-0A7AFF?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/nnnickg/Typeflow/releases/latest/download/Typeflow-macos-universal.zip)
+
+Typeflow is local-only: it does not send keystrokes, text, telemetry, or crash
+reports anywhere. The macOS app is distributed for user-trust installation with
+ad-hoc signing, not Apple Developer notarization, so macOS will require the
+normal manual trust step on first launch.
+
 Typeflow is a macOS background agent that observes typing and switches between
 English plus one configurable secondary keyboard layout. It does not render
 inline composition or become the active text compositor; when Rust decides a
 token was typed in the wrong layout, the agent replaces that token once and
 switches the real macOS input source for future keys.
+
+```sh
+typeflow --version
+typeflow predict ghsdbn
+```
+
+## Who this is for
+
+Bilingual and polyglot macOS users who constantly switch keyboard layouts and
+want wrong-layout words corrected locally without a cloud service in the path.
 
 ## Status
 
