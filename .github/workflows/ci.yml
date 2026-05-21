@@ -18,6 +18,48 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  linux:
+    name: Linux Rust
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          rustup show
+          cargo --version
+          rustc --version
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2.8.1
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      - name: Fuzz Targets
+        run: cargo build --manifest-path fuzz/Cargo.toml --bins --locked
+
+  coverage:
+    name: Core Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2.8.1
+
+      - name: Install Coverage Tool
+        run: cargo install cargo-llvm-cov --version 0.8.6 --locked
+
+      - name: typeflow-core Line Coverage
+        run: cargo llvm-cov -p typeflow-core --locked --summary-only --fail-under-lines 40
+
   macos:
     name: macOS
     runs-on: macos-latest
@@ -38,6 +80,11 @@ jobs:
       - name: Cache
         uses: Swatinem/rust-cache@v2.8.1
 
+      - name: Install Cargo Tools
+        run: |
+          cargo install --locked cargo-deny --version 0.19.4
+          cargo install --locked cbindgen --version 0.29.2
+
       - name: Format
         run: cargo fmt --all --check
 
@@ -46,6 +93,15 @@ jobs:
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Dependency Policy
+        run: cargo deny check
+
+      - name: FFI Header
+        run: cbindgen --quiet --config cbindgen.toml --crate typeflow-ffi --output crates/typeflow-ffi/include/typeflow.h --verify
+
+      - name: Fuzz Targets
+        run: cargo build --manifest-path fuzz/Cargo.toml --bins --locked
 
       - name: Release Build
         run: cargo build --release --locked -p typeflow-cli -p typeflow-ffi
@@ -57,9 +113,15 @@ jobs:
           target/release/typeflow --config "$RUNNER_TEMP/typeflow-empty.toml" predict ghsdbn
           target/release/typeflow --config "$RUNNER_TEMP/typeflow-empty.toml" pack inspect uk
           target/release/typeflow --config "$RUNNER_TEMP/typeflow-empty.toml" eval --generated 500
+          target/release/typeflow completions zsh >/dev/null
 
       - name: macOS Staticlib Smoke
         run: make -C macos smoke CARGO_TARGET_DIR="$PWD/target" BUILD_DIR="$RUNNER_TEMP/typeflow-macos-build"
+
+      - name: SwiftPM Build
+        run: |
+          CARGO_TARGET_DIR="$PWD/target" RUST_PROFILE=release xcrun swift run --package-path macos -c release typeflow-staticlib-smoke
+          CARGO_TARGET_DIR="$PWD/target" RUST_PROFILE=release xcrun swift build --package-path macos -c release --product Typeflow
 
       - name: macOS Bundle Build
         run: make -C macos bundle CARGO_TARGET_DIR="$PWD/target" BUILD_DIR="$RUNNER_TEMP/typeflow-macos-build"

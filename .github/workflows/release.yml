@@ -61,10 +61,11 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
-      - name: Build Universal App
+      - name: Build Ad-Hoc Universal App
         run: |
           BUILD_DIR="$RELEASE_BUILD_DIR" \
           CARGO_TARGET_DIR="$PWD/target" \
+          CODESIGN_IDENTITY="-" \
           ./macos/scripts/package-universal.sh
 
       - name: Verify Artifact
@@ -73,8 +74,11 @@ jobs:
           file "$RELEASE_BUILD_DIR/Typeflow.app/Contents/MacOS/Typeflow"
           codesign --verify --strict --verbose=2 "$RELEASE_BUILD_DIR/Typeflow.app"
           APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$RELEASE_BUILD_DIR/Typeflow.app/Contents/Info.plist")"
+          BUNDLE_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$RELEASE_BUILD_DIR/Typeflow.app/Contents/Info.plist")"
           test "$APP_VERSION" = "${RELEASE_TAG#v}"
+          test "$BUNDLE_VERSION" != "1"
           echo "$APP_VERSION"
+          echo "$BUNDLE_VERSION"
           shasum -a 256 "$RELEASE_ZIP" | tee "$RELEASE_ZIP.sha256"
 
       - name: Upload Release Assets

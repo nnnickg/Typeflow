@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 #[cfg(test)]
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
@@ -19,6 +20,7 @@ pub const PACK_DICT_FILE: &str = "dict.fst";
 pub const PACK_DICT_PREFIX_FILE: &str = "dict-prefix.bin";
 const NGRAM_MAGIC: &[u8; 8] = b"TFNG0002";
 const DICT_PREFIX_MAGIC: &[u8; 8] = b"TFPX0001";
+const EMBEDDED_UKRAINIAN_PUNCTUATION_LETTER_KEYS: &str = "`[]\\;',.~{}|:\"<>";
 const MAX_NGRAM_STRING_BYTES: usize = 256;
 const MAX_NGRAM_ENTRIES: usize = 10_000_000;
 
@@ -567,6 +569,8 @@ pub struct LanguagePackManifest {
     pub display_name: String,
     pub script: String,
     pub layout: String,
+    #[serde(default)]
+    pub punctuation_letter_keys: String,
     pub ngrams: PathBuf,
     pub dict: PathBuf,
     pub dict_prefix: PathBuf,
@@ -584,6 +588,7 @@ impl LanguagePackManifest {
             display_name: "Ukrainian".to_owned(),
             script: "Cyrillic".to_owned(),
             layout: "ukrainian-jcuken-osx".to_owned(),
+            punctuation_letter_keys: EMBEDDED_UKRAINIAN_PUNCTUATION_LETTER_KEYS.to_owned(),
             ngrams: PathBuf::from(PACK_NGRAMS_FILE),
             dict: PathBuf::from(PACK_DICT_FILE),
             dict_prefix: PathBuf::from(PACK_DICT_PREFIX_FILE),
@@ -645,6 +650,13 @@ impl LanguagePackManifest {
         })
     }
 
+    fn punctuation_letter_keys(&self, keyboard: &KeyboardMap) -> String {
+        if !self.punctuation_letter_keys.is_empty() {
+            return self.punctuation_letter_keys.clone();
+        }
+        keyboard.punctuation_letter_keys_against(&KeyboardMap::english_us())
+    }
+
     fn validate(&self) -> Result<(), BundleError> {
         if self.format_version != PACK_FORMAT_VERSION {
             return Err(BundleError::InvalidPack(format!(
@@ -656,6 +668,7 @@ impl LanguagePackManifest {
         require_non_empty("display_name", self.display_name.as_str())?;
         require_non_empty("script", self.script.as_str())?;
         require_non_empty("layout", self.layout.as_str())?;
+        validate_punctuation_letter_keys(self.punctuation_letter_keys.as_str())?;
         validate_pack_relative_path("ngrams", &self.ngrams)?;
         validate_pack_relative_path("dict", &self.dict)?;
         validate_pack_relative_path("dict_prefix", &self.dict_prefix)?;
@@ -699,11 +712,21 @@ pub struct LanguagePack {
     pub display_name: String,
     pub script: String,
     pub keyboard_layout: String,
+    pub punctuation_letter_keys: String,
     pub keyboard: KeyboardMap,
     pub model: LanguageModel,
     pub dict: fst::Map<Cow<'static, [u8]>>,
     pub dict_index: DictionaryIndex,
     pub metadata: PackMetadata,
+}
+
+struct LanguagePackDescriptor<'a> {
+    id: &'a str,
+    display_name: &'a str,
+    script: &'a str,
+    keyboard_layout: &'a str,
+    punctuation_letter_keys: &'a str,
+    keyboard: KeyboardMap,
 }
 
 pub struct DictionaryArtifacts<'a, D> {
@@ -744,25 +767,73 @@ impl LanguagePack {
     where
         D: Into<Cow<'static, [u8]>>,
     {
+        Self::from_bytes_with_punctuation(
+            LanguagePackDescriptor {
+                id,
+                display_name,
+                script,
+                keyboard_layout,
+                punctuation_letter_keys: "",
+                keyboard,
+            },
+            ngrams,
+            dict_bytes,
+        )
+    }
+
+    fn from_bytes_with_punctuation<D>(
+        descriptor: LanguagePackDescriptor<'_>,
+        ngrams: &[u8],
+        dict_bytes: D,
+    ) -> Result<Self, BundleError>
+    where
+        D: Into<Cow<'static, [u8]>>,
+    {
         let dict_bytes = dict_bytes.into();
+        let dict = fst::Map::new(dict_bytes)?;
+        let dict_index = DictionaryIndex::from_dict(&dict);
+        let dict_prefix_bytes = dict_index.to_artifact_bytes()?;
+        Self::from_bytes_with_prefix_and_punctuation(
+            descriptor,
+            ngrams,
+            DictionaryArtifacts {
+                dict: Cow::Owned(dict.as_fst().as_bytes().to_vec()),
+                prefix: DictionaryPrefixBytes::Borrowed(&dict_prefix_bytes),
+            },
+        )
+    }
+
+    fn from_bytes_with_prefix_and_punctuation<D>(
+        descriptor: LanguagePackDescriptor<'_>,
+        ngrams: &[u8],
+        dictionary: DictionaryArtifacts<'_, D>,
+    ) -> Result<Self, BundleError>
+    where
+        D: Into<Cow<'static, [u8]>>,
+    {
+        validate_punctuation_letter_keys(descriptor.punctuation_letter_keys)?;
+        let dict_bytes = dictionary.dict.into();
         let compiled = decode_compiled_language_data(ngrams)?;
-        if compiled.language_tag != id {
+        if compiled.language_tag != descriptor.id {
             return Err(BundleError::LanguageTagMismatch {
-                expected: id.to_owned(),
+                expected: descriptor.id.to_owned(),
                 actual: compiled.language_tag,
             });
         }
         let dict = fst::Map::new(dict_bytes)?;
-        let dict_index = DictionaryIndex::from_dict(&dict);
-        let dict_prefix_bytes = dict_index.to_artifact_bytes()?;
-        let metadata =
-            PackMetadata::from_bytes(ngrams, dict.as_fst().as_bytes(), &dict_prefix_bytes);
+        let dict_index = dictionary.prefix.decode_index()?;
+        let metadata = PackMetadata::from_bytes(
+            ngrams,
+            dict.as_fst().as_bytes(),
+            dictionary.prefix.as_bytes(),
+        );
         Ok(Self {
-            id: id.to_owned(),
-            display_name: display_name.to_owned(),
-            script: script.to_owned(),
-            keyboard_layout: keyboard_layout.to_owned(),
-            keyboard,
+            id: descriptor.id.to_owned(),
+            display_name: descriptor.display_name.to_owned(),
+            script: descriptor.script.to_owned(),
+            keyboard_layout: descriptor.keyboard_layout.to_owned(),
+            punctuation_letter_keys: descriptor.punctuation_letter_keys.to_owned(),
+            keyboard: descriptor.keyboard,
             model: LanguageModel::from_compiled(compiled),
             dict,
             dict_index,
@@ -782,48 +853,43 @@ impl LanguagePack {
     where
         D: Into<Cow<'static, [u8]>>,
     {
-        let dict_bytes = dictionary.dict.into();
-        let compiled = decode_compiled_language_data(ngrams)?;
-        if compiled.language_tag != id {
-            return Err(BundleError::LanguageTagMismatch {
-                expected: id.to_owned(),
-                actual: compiled.language_tag,
-            });
-        }
-        let dict = fst::Map::new(dict_bytes)?;
-        let dict_index = dictionary.prefix.decode_index()?;
-        let metadata = PackMetadata::from_bytes(
+        Self::from_bytes_with_prefix_and_punctuation(
+            LanguagePackDescriptor {
+                id,
+                display_name,
+                script,
+                keyboard_layout,
+                punctuation_letter_keys: "",
+                keyboard,
+            },
             ngrams,
-            dict.as_fst().as_bytes(),
-            dictionary.prefix.as_bytes(),
-        );
-        Ok(Self {
-            id: id.to_owned(),
-            display_name: display_name.to_owned(),
-            script: script.to_owned(),
-            keyboard_layout: keyboard_layout.to_owned(),
-            keyboard,
-            model: LanguageModel::from_compiled(compiled),
-            dict,
-            dict_index,
-            metadata,
-        })
+            dictionary,
+        )
     }
 
     pub fn from_pack_dir(pack_dir: &Path) -> Result<Self, BundleError> {
+        reject_symlink(pack_dir, "pack directory")?;
         let manifest = LanguagePackManifest::read_from_dir(pack_dir)?;
         let keyboard = manifest.keyboard_map()?;
         let (ngrams_path, dict_path, dict_prefix_path) = manifest.artifact_paths(pack_dir)?;
+        reject_symlink(&ngrams_path, "ngram artifact")?;
+        reject_symlink(&dict_path, "dictionary artifact")?;
+        reject_symlink(&dict_prefix_path, "dictionary prefix artifact")?;
         let ngrams = fs::read(&ngrams_path)?;
         let dict_bytes = fs::read(&dict_path)?;
         let dict_prefix_bytes = fs::read(&dict_prefix_path)?;
 
-        let mut pack = Self::from_bytes_with_prefix(
-            manifest.id.as_str(),
-            manifest.display_name.as_str(),
-            manifest.script.as_str(),
-            manifest.layout.as_str(),
-            keyboard,
+        let punctuation_letter_keys = manifest.punctuation_letter_keys(&keyboard);
+
+        let mut pack = Self::from_bytes_with_prefix_and_punctuation(
+            LanguagePackDescriptor {
+                id: manifest.id.as_str(),
+                display_name: manifest.display_name.as_str(),
+                script: manifest.script.as_str(),
+                keyboard_layout: manifest.layout.as_str(),
+                punctuation_letter_keys: punctuation_letter_keys.as_str(),
+                keyboard,
+            },
             ngrams.as_slice(),
             DictionaryArtifacts {
                 dict: Cow::Owned(dict_bytes),
@@ -977,12 +1043,15 @@ impl LanguageBundle {
                     prefix: DictionaryPrefixBytes::Static(en_dict_prefix),
                 },
             )?,
-            secondary: LanguagePack::from_bytes_with_prefix(
-                "uk",
-                "Ukrainian",
-                "Cyrillic",
-                "ukrainian-jcuken-osx",
-                KeyboardMap::ukrainian_jcuken_osx(),
+            secondary: LanguagePack::from_bytes_with_prefix_and_punctuation(
+                LanguagePackDescriptor {
+                    id: "uk",
+                    display_name: "Ukrainian",
+                    script: "Cyrillic",
+                    keyboard_layout: "ukrainian-jcuken-osx",
+                    punctuation_letter_keys: EMBEDDED_UKRAINIAN_PUNCTUATION_LETTER_KEYS,
+                    keyboard: KeyboardMap::ukrainian_jcuken_osx(),
+                },
                 secondary_ngrams,
                 DictionaryArtifacts {
                     dict: Cow::Borrowed(secondary_dict),
@@ -1049,12 +1118,15 @@ impl LanguageBundle {
                 en_ngrams,
                 en_dict,
             )?,
-            secondary: LanguagePack::from_bytes(
-                "uk",
-                "Ukrainian",
-                "Cyrillic",
-                "ukrainian-jcuken-osx",
-                KeyboardMap::ukrainian_jcuken_osx(),
+            secondary: LanguagePack::from_bytes_with_punctuation(
+                LanguagePackDescriptor {
+                    id: "uk",
+                    display_name: "Ukrainian",
+                    script: "Cyrillic",
+                    keyboard_layout: "ukrainian-jcuken-osx",
+                    punctuation_letter_keys: EMBEDDED_UKRAINIAN_PUNCTUATION_LETTER_KEYS,
+                    keyboard: KeyboardMap::ukrainian_jcuken_osx(),
+                },
                 secondary_ngrams,
                 secondary_dict,
             )?,
@@ -1086,12 +1158,15 @@ impl LanguageBundle {
                     prefix: DictionaryPrefixBytes::Borrowed(en_dict_prefix),
                 },
             )?,
-            secondary: LanguagePack::from_bytes_with_prefix(
-                "uk",
-                "Ukrainian",
-                "Cyrillic",
-                "ukrainian-jcuken-osx",
-                KeyboardMap::ukrainian_jcuken_osx(),
+            secondary: LanguagePack::from_bytes_with_prefix_and_punctuation(
+                LanguagePackDescriptor {
+                    id: "uk",
+                    display_name: "Ukrainian",
+                    script: "Cyrillic",
+                    keyboard_layout: "ukrainian-jcuken-osx",
+                    punctuation_letter_keys: EMBEDDED_UKRAINIAN_PUNCTUATION_LETTER_KEYS,
+                    keyboard: KeyboardMap::ukrainian_jcuken_osx(),
+                },
                 secondary_ngrams,
                 DictionaryArtifacts {
                     dict: secondary_dict,
@@ -1186,6 +1261,8 @@ fn synthetic_pack(
         display_name: display_name.to_owned(),
         script: script.to_owned(),
         keyboard_layout: keyboard_layout.to_owned(),
+        punctuation_letter_keys: keyboard
+            .punctuation_letter_keys_against(&KeyboardMap::english_us()),
         keyboard,
         model: synthetic_model(id, words),
         dict,
@@ -1303,6 +1380,23 @@ fn validate_pack_id(id: &str) -> Result<(), BundleError> {
     Ok(())
 }
 
+fn validate_punctuation_letter_keys(value: &str) -> Result<(), BundleError> {
+    let mut seen = HashSet::new();
+    for character in value.chars() {
+        if !seen.insert(character) {
+            return Err(BundleError::InvalidPack(format!(
+                "punctuation_letter_keys contains duplicate character {character:?}"
+            )));
+        }
+        if crate::PhysicalKey::from_char(character).is_none() || character.is_ascii_alphabetic() {
+            return Err(BundleError::InvalidPack(format!(
+                "punctuation_letter_keys character {character:?} is not an English punctuation-position key"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn validate_pack_relative_path(field: &str, path: &Path) -> Result<(), BundleError> {
     if path.as_os_str().is_empty() {
         return Err(BundleError::InvalidPack(format!("{field} path is empty")));
@@ -1330,6 +1424,17 @@ fn validate_pack_relative_path(field: &str, path: &Path) -> Result<(), BundleErr
 fn resolve_pack_file(pack_dir: &Path, relative: &Path) -> Result<PathBuf, BundleError> {
     validate_pack_relative_path("artifact", relative)?;
     Ok(pack_dir.join(relative))
+}
+
+fn reject_symlink(path: &Path, label: &str) -> Result<(), BundleError> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Err(BundleError::InvalidPack(format!(
+            "{label} must not be a symlink: {}",
+            path.display()
+        )));
+    }
+    Ok(())
 }
 
 pub fn encode_compiled_language_data(

@@ -88,7 +88,20 @@ fn temp_path(dest: &Path, parent: &Path, attempt: u32) -> Result<PathBuf, String
 }
 
 fn sync_parent_best_effort(parent: &Path) {
-    if let Ok(parent_file) = File::open(parent) {
-        let _ = parent_file.sync_all();
+    match File::open(parent) {
+        Ok(parent_file) => {
+            if let Err(error) = parent_file.sync_all() {
+                eprintln!(
+                    "warning: fsync parent directory {}: {error}",
+                    parent.display()
+                );
+            }
+        }
+        Err(error) => {
+            eprintln!(
+                "warning: open parent directory {} for fsync: {error}",
+                parent.display()
+            );
+        }
     }
 }

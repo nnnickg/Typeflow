@@ -22,6 +22,9 @@ private let performanceLogAll = ProcessInfo.processInfo.environment["TYPEFLOW_PE
 private let slowProcessThresholdMs = 2.0
 private let slowHostThresholdMs = 0.75
 private let slowCallThresholdMs = 0.25
+private let inputMonitoringProbeSeconds: TimeInterval = 30.0
+private let tapTimeoutWindowSeconds: TimeInterval = 10.0
+private let tapTimeoutBackoffSeconds: TimeInterval = 5.0
 private let accessibilityRefreshDebounceSeconds: TimeInterval = 0.075
 private let accessibilitySlowRefreshThresholdMs = 20.0
 private let accessibilitySlowRefreshLimit = 3
@@ -147,6 +150,11 @@ private final class TypeflowAgent: NSObject {
     private var pendingInputSourceSelectionWorkItem: DispatchWorkItem?
     private var replacementGeneration: UInt64 = 0
     private var manualReplacementToggle: ManualReplacementToggle?
+    private var inputMonitoringProbeTimer: Timer?
+    private var inputMonitoringAccessRevoked = false
+    private var inputMonitoringRevocationNotified = false
+    private var tapTimeouts: [TimeInterval] = []
+    private var tapReenableWorkItem: DispatchWorkItem?
 
     init(hostConfig: TypeflowHostConfig, engine: TypeflowEngine) {
         self.hostConfig = hostConfig
@@ -165,6 +173,7 @@ private final class TypeflowAgent: NSObject {
         guard requestInputMonitoringAccessIfNeeded() else {
             throw TypeflowStartupError.inputMonitoringPermissionDenied
         }
+        startInputMonitoringAccessProbe()
         currentFrontmostApplication = NSWorkspace.shared.frontmostApplication
         syncLayoutWithCurrentInputSource()
         registerInputSourceChangedObserver()
@@ -244,19 +253,66 @@ private final class TypeflowAgent: NSObject {
 
     func handleEvent(type: CGEventType, event: CGEvent) {
         switch type {
-        case .tapDisabledByTimeout, .tapDisabledByUserInput:
-            if let eventTap {
-                CGEvent.tapEnable(tap: eventTap, enable: true)
-                logger.notice("re-enabled event tap")
-            }
+        case .tapDisabledByTimeout:
+            handleTapDisabledByTimeout()
+        case .tapDisabledByUserInput:
+            reenableEventTap(reason: "userInput")
         case .keyDown:
+            guard !inputMonitoringAccessRevoked else {
+                return
+            }
             processKey(event)
         case .flagsChanged:
+            guard !inputMonitoringAccessRevoked else {
+                return
+            }
             processFlagsChanged(event)
         case .leftMouseDown, .rightMouseDown, .otherMouseDown:
             handlePotentialFocusChange(reason: "mouseDown")
         default:
             break
+        }
+    }
+
+    private func handleTapDisabledByTimeout() {
+        let now = ProcessInfo.processInfo.systemUptime
+        tapTimeouts = tapTimeouts.filter { now - $0 <= tapTimeoutWindowSeconds }
+        tapTimeouts.append(now)
+
+        if tapTimeouts.count >= 2 {
+            logger.error("event tap disabled by timeout repeatedly; backing off before re-enable")
+            tapTimeouts.removeAll()
+            reenableEventTap(reason: "timeoutBackoff", delay: tapTimeoutBackoffSeconds)
+            return
+        }
+
+        reenableEventTap(reason: "timeout")
+    }
+
+    private func reenableEventTap(reason: String, delay: TimeInterval = 0) {
+        guard let eventTap else {
+            return
+        }
+
+        tapReenableWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else {
+                return
+            }
+            guard !self.inputMonitoringAccessRevoked else {
+                logger.debug("event tap re-enable skipped reason=\(reason, privacy: .public) inputMonitoringRevoked=true")
+                return
+            }
+            CGEvent.tapEnable(tap: eventTap, enable: true)
+            self.tapReenableWorkItem = nil
+            logger.notice("re-enabled event tap reason=\(reason, privacy: .public)")
+        }
+        tapReenableWorkItem = workItem
+
+        if delay > 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+        } else {
+            DispatchQueue.main.async(execute: workItem)
         }
     }
 
@@ -369,6 +425,7 @@ private final class TypeflowAgent: NSObject {
         let keyCode = Int(event.getIntegerValueField(.keyboardEventKeycode))
         let isOptionKey = keyCode == kVK_Option || keyCode == kVK_RightOption
         guard isOptionKey else {
+            manualReplacementToggle = nil
             cancelPendingManualSwitch()
             return
         }
@@ -383,6 +440,7 @@ private final class TypeflowAgent: NSObject {
             // manual switch arm. Without this, a Shift-down followed by an
             // Option-tap would commit a layout flip on Option release.
             if !nonOptionModifiers.isEmpty {
+                manualReplacementToggle = nil
                 resetPendingManualSwitch()
                 return
             }
@@ -400,6 +458,7 @@ private final class TypeflowAgent: NSObject {
         let shouldSwitch = !manualSwitchCancelled && nonOptionModifiers.isEmpty
         resetPendingManualSwitch()
         guard shouldSwitch else {
+            manualReplacementToggle = nil
             return
         }
 
@@ -665,6 +724,7 @@ private final class TypeflowAgent: NSObject {
 
     private func handlePotentialFocusChange(reason: String) {
         resetPendingManualSwitch()
+        manualReplacementToggle = nil
         guard accessibilityObserver != nil else {
             return
         }
@@ -701,6 +761,8 @@ private final class TypeflowAgent: NSObject {
     }
 
     deinit {
+        inputMonitoringProbeTimer?.invalidate()
+        tapReenableWorkItem?.cancel()
         unregisterInputSourceChangedObserver()
     }
 
@@ -1109,6 +1171,59 @@ private final class TypeflowAgent: NSObject {
             logger.error("input monitoring access status unknown")
             return false
         }
+    }
+
+    private func startInputMonitoringAccessProbe() {
+        inputMonitoringProbeTimer?.invalidate()
+        let timer = Timer.scheduledTimer(withTimeInterval: inputMonitoringProbeSeconds, repeats: true) { [weak self] _ in
+            self?.probeInputMonitoringAccess()
+        }
+        timer.tolerance = inputMonitoringProbeSeconds / 3
+        inputMonitoringProbeTimer = timer
+    }
+
+    private func probeInputMonitoringAccess() {
+        switch IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) {
+        case kIOHIDAccessTypeGranted:
+            if inputMonitoringAccessRevoked {
+                inputMonitoringAccessRevoked = false
+                inputMonitoringRevocationNotified = false
+                reenableEventTap(reason: "inputMonitoringRestored")
+                logger.notice("input monitoring access restored")
+            }
+        case kIOHIDAccessTypeDenied, kIOHIDAccessTypeUnknown:
+            handleInputMonitoringAccessRevoked()
+        default:
+            logger.error("input monitoring access status unknown during runtime probe")
+            handleInputMonitoringAccessRevoked()
+        }
+    }
+
+    private func handleInputMonitoringAccessRevoked() {
+        if !inputMonitoringAccessRevoked {
+            logger.error("input monitoring access revoked; event processing disabled")
+            notifyInputMonitoringAccessRevoked()
+        }
+        inputMonitoringAccessRevoked = true
+        engine.resetToken()
+        cancelPendingReplacement(reason: "inputMonitoringRevoked")
+        cancelPendingInputSourceSelection(reason: "inputMonitoringRevoked")
+        if let eventTap {
+            CGEvent.tapEnable(tap: eventTap, enable: false)
+        }
+    }
+
+    private func notifyInputMonitoringAccessRevoked() {
+        guard !inputMonitoringRevocationNotified else {
+            return
+        }
+        inputMonitoringRevocationNotified = true
+
+        let notification = NSUserNotification()
+        notification.title = "Typeflow Input Monitoring Disabled"
+        notification.informativeText = "Enable Typeflow in System Settings > Privacy & Security > Input Monitoring, then restart Typeflow if typing is not observed."
+        NSUserNotificationCenter.default.deliver(notification)
+        NSApplication.shared.requestUserAttention(.criticalRequest)
     }
 
     private struct AccessibilitySnapshot {
@@ -1626,6 +1741,10 @@ private final class TextReplacer {
             // Select first so a dropped Unicode event cannot silently delete user text.
             measured("replacement.selectPrevious.\(reason)", thresholdMs: slowCallThresholdMs) {
                 Self.selectPreviousCharacters(deleteCount, source: source)
+            }
+            guard isStillValid() else {
+                self.cancelPending(reason: "postValidationFailed")
+                return
             }
             measured("replacement.postUnicode.\(reason)", thresholdMs: slowCallThresholdMs) {
                 Self.postUnicode(text, source: source)

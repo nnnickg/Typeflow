@@ -21,12 +21,6 @@ SWIFT_OPT_FLAGS := -Onone
 SWIFT_PACKAGE_CONFIG := debug
 endif
 
-ifeq ($(CODESIGN_IDENTITY),-)
-CODESIGN_RUNTIME_FLAGS :=
-else
-CODESIGN_RUNTIME_FLAGS := --options runtime --timestamp
-endif
-
 FFI_INCLUDE_DIR := $(abspath TypeflowFFI/include)
 RUST_STATICLIB := $(RUST_LIB_DIR)/libtypeflow_ffi.a
 BUILD_DIR := $(abspath build)
@@ -34,6 +28,7 @@ MODULE_CACHE_DIR := $(BUILD_DIR)/clang-module-cache
 SMOKE_BIN := $(BUILD_DIR)/typeflow-staticlib-smoke
 APP_NAME := Typeflow
 TYPEFLOW_VERSION ?= $(shell cd $(ROOT_DIR) && ./scripts/typeflow-version.sh)
+TYPEFLOW_BUNDLE_VERSION ?= $(shell cd $(ROOT_DIR) && ./scripts/typeflow-bundle-version.sh)
 APP_BUNDLE := $(BUILD_DIR)/$(APP_NAME).app
 APP_EXECUTABLE := $(APP_BUNDLE)/Contents/MacOS/$(APP_NAME)
 APP_INFO_PLIST := Resources/Info.plist
@@ -51,7 +46,7 @@ SWIFT_COMMON_FLAGS := $(SWIFT_OPT_FLAGS) -module-cache-path $(MODULE_CACHE_DIR) 
 RUST_LINK_FLAGS := -Xlinker -force_load -Xlinker $(RUST_STATICLIB)
 AGENT_FRAMEWORK_FLAGS := -framework AppKit -framework ApplicationServices -framework Carbon -framework ServiceManagement -framework IOKit
 
-.PHONY: all rust-staticlib smoke swift-package bundle release-universal install-user clean
+.PHONY: all rust-staticlib smoke swift-package check-adhoc-codesign bundle release-universal install-user clean
 
 all: smoke bundle
 
@@ -81,18 +76,23 @@ $(APP_ICON_ICNS): $(ICON_SOURCE)
 	tiffutil -cat $(ICON_TIFF_DIR)/icon_16.tiff $(ICON_TIFF_DIR)/icon_32.tiff $(ICON_TIFF_DIR)/icon_48.tiff $(ICON_TIFF_DIR)/icon_128.tiff $(ICON_TIFF_DIR)/icon_256.tiff $(ICON_TIFF_DIR)/icon_512.tiff $(ICON_TIFF_DIR)/icon_1024.tiff -out $(ICON_MULTI_TIFF) >/dev/null 2>/dev/null
 	tiff2icns $(ICON_MULTI_TIFF) $(APP_ICON_ICNS)
 
+check-adhoc-codesign:
+	@test "$(CODESIGN_IDENTITY)" = "-" || { echo "error: Typeflow packaging is ad-hoc only; set CODESIGN_IDENTITY=-" >&2; exit 2; }
+
 $(APP_EXECUTABLE): $(AGENT_SOURCES) $(APP_INFO_PLIST) $(APP_INFO_PLIST_STRINGS) $(APP_PKGINFO) $(APP_ICONS) TypeflowFFI/include/module.modulemap TypeflowFFI/include/typeflow_shim.h rust-staticlib
 	mkdir -p $(APP_BUNDLE)/Contents/MacOS $(APP_BUNDLE)/Contents/Resources/en.lproj $(MODULE_CACHE_DIR)
 	cp $(APP_INFO_PLIST) $(APP_BUNDLE)/Contents/Info.plist
 	$(PLISTBUDDY) -c "Set :CFBundleShortVersionString $(TYPEFLOW_VERSION)" $(APP_BUNDLE)/Contents/Info.plist
+	$(PLISTBUDDY) -c "Set :CFBundleVersion $(TYPEFLOW_BUNDLE_VERSION)" $(APP_BUNDLE)/Contents/Info.plist
+	@test "$(TYPEFLOW_BUNDLE_VERSION)" != "1" || { echo "error: refusing CFBundleVersion=1" >&2; exit 1; }
 	cp $(APP_INFO_PLIST_STRINGS) $(APP_BUNDLE)/Contents/Resources/en.lproj/InfoPlist.strings
 	cp $(APP_PKGINFO) $(APP_BUNDLE)/Contents/PkgInfo
 	plutil -lint $(APP_BUNDLE)/Contents/Info.plist
 	$(SWIFTC) $(SWIFT_COMMON_FLAGS) $(AGENT_SOURCES) $(RUST_LINK_FLAGS) $(AGENT_FRAMEWORK_FLAGS) -o $(APP_EXECUTABLE)
 
-bundle: $(APP_EXECUTABLE)
+bundle: check-adhoc-codesign $(APP_EXECUTABLE)
 	plutil -p $(APP_BUNDLE)/Contents/Info.plist >/dev/null
-	$(CODESIGN) --force --sign "$(CODESIGN_IDENTITY)" $(CODESIGN_RUNTIME_FLAGS) $(CODESIGN_FLAGS) $(APP_BUNDLE)
+	$(CODESIGN) --force --sign "$(CODESIGN_IDENTITY)" $(CODESIGN_FLAGS) $(APP_BUNDLE)
 	$(CODESIGN) --verify --strict --verbose=2 $(APP_BUNDLE)
 	file $(APP_EXECUTABLE)
 

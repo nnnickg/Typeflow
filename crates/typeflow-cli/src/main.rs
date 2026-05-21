@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
+use clap_complete::{Shell, generate};
 use crossterm::{
     ExecutableCommand, cursor,
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
@@ -65,6 +66,7 @@ fn main() -> ExitCode {
         Some("model") => cmd_model(&parsed.rest, parsed.config_path.as_deref()),
         Some("pack") => cmd_pack(&parsed.rest, parsed.config_path.as_deref()),
         Some("config") => cmd_config(&parsed.rest, parsed.config_path.as_deref()),
+        Some("completions") => cmd_completions(&parsed.rest),
         Some(other) => Err(format!("unknown subcommand after clap parse: {other}")),
         None => Ok(()),
     };
@@ -73,7 +75,7 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::from(0),
         Err(error) => {
             eprintln!("error: {error}");
-            ExitCode::from(1)
+            ExitCode::from(exit_code_for_error(&error))
         }
     }
 }
@@ -81,6 +83,46 @@ fn main() -> ExitCode {
 fn parse_args() -> Result<Option<CliArgs>, clap::Error> {
     let matches = cli().try_get_matches()?;
     Ok(cli_args_from_matches(&matches))
+}
+
+fn exit_code_for_error(error: &str) -> u8 {
+    const EX_USAGE: u8 = 2;
+    const EX_DATAERR: u8 = 65;
+    const EX_NOINPUT: u8 = 66;
+    const EX_UNAVAILABLE: u8 = 69;
+    const EX_CONFIG: u8 = 78;
+
+    if error.starts_with("usage:")
+        || error.contains("\n\nusage:")
+        || error.starts_with("unknown ")
+        || error.starts_with("unsupported shell")
+        || error.contains("generated eval limit must be > 0")
+    {
+        return EX_USAGE;
+    }
+    if error.contains("config")
+        || error.contains("pack directory")
+        || error.contains("language.secondary")
+    {
+        return EX_CONFIG;
+    }
+    if error.starts_with("read ")
+        || error.starts_with("load ")
+        || error.starts_with("open ")
+        || error.contains("does not exist")
+        || error.contains("not installed")
+    {
+        return EX_NOINPUT;
+    }
+    if error.starts_with("parse ")
+        || error.starts_with("invalid ")
+        || error.starts_with("validate ")
+        || error.contains("mismatch")
+    {
+        return EX_DATAERR;
+    }
+
+    EX_UNAVAILABLE
 }
 
 fn cli() -> Command {
@@ -173,6 +215,11 @@ fn cli() -> Command {
                 )
                 .subcommand(Command::new("show").about("Print the resolved effective config")),
         )
+        .subcommand(
+            Command::new("completions")
+                .about("Generate shell completion script")
+                .arg(Arg::new("shell").value_name("SHELL").required(true)),
+        )
 }
 
 fn cli_args_from_matches(matches: &ArgMatches) -> Option<CliArgs> {
@@ -193,6 +240,7 @@ fn cli_args_from_matches(matches: &ArgMatches) -> Option<CliArgs> {
         "eval" => eval_args_from_matches(sub_matches),
         "pack" => pack_args_from_matches(sub_matches),
         "config" => config_args_from_matches(sub_matches),
+        "completions" => required_string(sub_matches, "shell").into_iter().collect(),
         _ => Vec::new(),
     };
 
@@ -934,6 +982,7 @@ fn cmd_pack(args: &[String], explicit_config: Option<&Path>) -> Result<(), Strin
 fn install_pack(source_dir: &Path, explicit_config: Option<&Path>) -> Result<(), String> {
     let source_config = load_config(explicit_config)?;
     let install_root = pack_dir_or_error(&source_config.config)?;
+    reject_symlink(source_dir, "pack directory")?;
 
     let manifest = LanguagePackManifest::read_from_dir(source_dir)
         .map_err(|e| format!("read pack {}: {e}", source_dir.display()))?;
@@ -948,7 +997,11 @@ fn install_pack(source_dir: &Path, explicit_config: Option<&Path>) -> Result<(),
     copy_pack_file(&ngrams_src, &target_dir.join(PACK_NGRAMS_FILE))?;
     copy_pack_file(&dict_src, &target_dir.join(PACK_DICT_FILE))?;
     copy_pack_file(&dict_prefix_src, &target_dir.join(PACK_DICT_PREFIX_FILE))?;
-    write_pack_manifest(&manifest.normalized_for_install(), &target_dir)?;
+    let mut installed_manifest = manifest.normalized_for_install();
+    if installed_manifest.punctuation_letter_keys.is_empty() {
+        installed_manifest.punctuation_letter_keys = pack.punctuation_letter_keys.clone();
+    }
+    write_pack_manifest(&installed_manifest, &target_dir)?;
 
     let installed = LanguagePack::from_pack_dir(&target_dir)
         .map_err(|e| format!("validate installed pack {}: {e}", target_dir.display()))?;
@@ -1049,7 +1102,7 @@ fn inspect_pack(value: &str, explicit_config: Option<&Path>) -> Result<(), Strin
 
     let source = load_config(explicit_config)?;
     let install_root = pack_dir_or_error(&source.config)?;
-    let pack_path = resolve_pack_reference(value, &install_root);
+    let pack_path = resolve_pack_reference(value, &install_root)?;
 
     let pack = LanguagePack::from_pack_dir(&pack_path)
         .map_err(|e| format!("load pack {}: {e}", pack_path.display()))?;
@@ -1063,6 +1116,7 @@ fn print_pack_details(pack: &LanguagePack, location: &str) {
     println!("display_name: {}", pack.display_name);
     println!("script: {}", pack.script);
     println!("layout: {}", pack.keyboard_layout);
+    println!("punctuation_letter_keys: {}", pack.punctuation_letter_keys);
     println!("format_version: {}", pack.metadata.format_version);
     println!("build_id: {}", pack.metadata.build_id);
     println!("source_corpus: {}", pack.metadata.source_corpus);
@@ -1088,12 +1142,17 @@ fn writable_config_path(explicit_config: Option<&Path>) -> Result<PathBuf, Strin
         })
 }
 
-fn resolve_pack_reference(value: &str, install_root: &Path) -> PathBuf {
+fn resolve_pack_reference(value: &str, install_root: &Path) -> Result<PathBuf, String> {
     let path = PathBuf::from(value);
-    if path.exists() || path.join(PACK_MANIFEST_FILE).is_file() || value.contains('/') {
-        path
+    if path.is_absolute()
+        || value.contains('/')
+        || fs::symlink_metadata(&path).is_ok()
+        || path.join(PACK_MANIFEST_FILE).symlink_metadata().is_ok()
+    {
+        reject_symlink(&path, "pack reference")?;
+        Ok(path)
     } else {
-        install_root.join(value)
+        Ok(install_root.join(value))
     }
 }
 
@@ -1113,10 +1172,20 @@ fn validate_cli_pack_id(id: &str) -> Result<(), String> {
 }
 
 fn copy_pack_file(source: &Path, dest: &Path) -> Result<(), String> {
+    reject_symlink(source, "pack artifact")?;
     if paths_same(source, dest) {
         return Ok(());
     }
     atomic::copy(source, dest)
+}
+
+fn reject_symlink(path: &Path, label: &str) -> Result<(), String> {
+    let metadata =
+        fs::symlink_metadata(path).map_err(|e| format!("stat {label} {}: {e}", path.display()))?;
+    if metadata.file_type().is_symlink() {
+        return Err(format!("{label} must not be a symlink: {}", path.display()));
+    }
+    Ok(())
 }
 
 fn write_pack_manifest(manifest: &LanguagePackManifest, target_dir: &Path) -> Result<(), String> {
@@ -1242,6 +1311,29 @@ fn cmd_config(args: &[String], explicit_config: Option<&Path>) -> Result<(), Str
             "unknown config subcommand: {other}\n\nusage: typeflow config <init|show> [path]"
         )),
         None => Err("usage: typeflow config <init|show> [path]".into()),
+    }
+}
+
+fn cmd_completions(args: &[String]) -> Result<(), String> {
+    let [shell] = args else {
+        return Err("usage: typeflow completions <bash|elvish|fish|powershell|zsh>".into());
+    };
+    let shell = parse_completion_shell(shell)?;
+    let mut command = cli();
+    generate(shell, &mut command, "typeflow", &mut io::stdout());
+    Ok(())
+}
+
+fn parse_completion_shell(value: &str) -> Result<Shell, String> {
+    match value {
+        "bash" => Ok(Shell::Bash),
+        "elvish" => Ok(Shell::Elvish),
+        "fish" => Ok(Shell::Fish),
+        "powershell" | "pwsh" => Ok(Shell::PowerShell),
+        "zsh" => Ok(Shell::Zsh),
+        _ => Err(format!(
+            "unsupported shell '{value}'; expected bash, elvish, fish, powershell, or zsh"
+        )),
     }
 }
 

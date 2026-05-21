@@ -31,7 +31,9 @@ docs/
 ├── calibration.md   eval policy and ambiguous-token handling
 ├── engine.md        scoring math, what the config knobs actually do
 ├── invariants.md    core/host contract the macOS layer must obey
+├── operator-runbook.md  logs, config checks, permission checks
 ├── panic-unsafe-audit.md  panic/unsafe audit notes
+├── privacy.md       what Input Monitoring/Accessibility data is read and stored
 ├── release-verification.md  optimized build checks and packaging caveat
 └── status.md        current state, outstanding work, open questions
 macos/                Swift staticlib smoke + macOS agent bundle build
@@ -126,8 +128,8 @@ cbindgen --quiet --config cbindgen.toml --crate typeflow-ffi --output crates/typ
 # Build and ad-hoc sign the macOS agent app bundle.
 make -C macos bundle
 
-# Build a universal, hardened-runtime macOS release zip.
-make -C macos release-universal CODESIGN_IDENTITY="Developer ID Application: <name> (<team>)"
+# Build a universal macOS release zip with ad-hoc signing.
+make -C macos release-universal
 
 # Install, start, and register the agent as a login item for the current user.
 make -C macos install-user
@@ -145,6 +147,10 @@ typeflow pack install /tmp/secondary.typeflow-pack
 typeflow pack list
 typeflow pack use secondary
 typeflow pack inspect secondary
+
+# Generate shell completions.
+typeflow completions zsh > /tmp/typeflow.zsh
+typeflow completions bash > /tmp/typeflow.bash
 
 # Stream tokens from stdin.
 echo -e "ghsdbn\nhello\nyt" | typeflow stream
@@ -172,6 +178,11 @@ IDs. `TYPEFLOW_DATA_DIR` and `TYPEFLOW_PACK_DIR` override TOML in both the CLI
 and macOS host. Manual switching is not configurable in TOML: the macOS host
 hardcodes standalone Option press/release.
 Option+another key is treated as normal app input.
+
+Privacy and operations docs:
+
+- [`docs/privacy.md`](docs/privacy.md)
+- [`docs/operator-runbook.md`](docs/operator-runbook.md)
 
 Example app exclusion config:
 
@@ -201,10 +212,9 @@ Terminal bundles and embedded terminal panes are auto-detected and behave like
 cargo test --workspace
 ```
 
-CI runs Linux and macOS Rust checks, fuzz target builds, dependency security
-checks, FFI header verification, LCOV coverage generation, Swift staticlib and
-SwiftPM builds, the macOS agent bundle build, and release CLI smoke for every push to
-`main` and every pull request.
+CI runs macOS Rust checks, fuzz target builds, dependency security checks, FFI
+header verification, Swift staticlib and SwiftPM builds, the macOS agent bundle
+build, and release CLI smoke for every push to `main` and every pull request.
 
 ## License
 

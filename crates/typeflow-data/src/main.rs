@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::env;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -10,12 +10,12 @@ use anyhow::{Context, Result, bail};
 use flate2::read::GzDecoder;
 use fst::MapBuilder;
 use serde::Deserialize;
-use typeflow_core::KeyboardMap;
 use typeflow_core::data::{
     CompiledLanguageData, DictionaryIndex, KeyboardManifest, LanguagePack, LanguagePackManifest,
     PACK_DICT_FILE, PACK_DICT_PREFIX_FILE, PACK_FORMAT_VERSION, PACK_NGRAMS_FILE,
     encode_compiled_language_data, encode_dictionary_index,
 };
+use typeflow_core::{KeyboardMap, PhysicalKey};
 
 const EN_OPUS_URL: &str = "https://object.pouta.csc.fi/OPUS-OpenSubtitles/v2018/mono/en.txt.gz";
 const UK_OPUS_URL: &str = "https://object.pouta.csc.fi/OPUS-OpenSubtitles/v2018/mono/uk.txt.gz";
@@ -162,6 +162,35 @@ impl Language {
                 .context("built-in Ukrainian alphabet must be valid"),
         }
     }
+
+    fn text_filter(self) -> TextFilter {
+        match self {
+            Language::English => TextFilter::None,
+            Language::Ukrainian => TextFilter::UkrainianMarkers,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum TextFilter {
+    None,
+    UkrainianMarkers,
+}
+
+impl TextFilter {
+    fn accepts(self, text: &str) -> bool {
+        match self {
+            TextFilter::None => true,
+            TextFilter::UkrainianMarkers => text.chars().any(is_ukrainian_marker),
+        }
+    }
+}
+
+fn is_ukrainian_marker(character: char) -> bool {
+    matches!(
+        character.to_lowercase().next().unwrap_or(character),
+        'і' | 'ї' | 'є' | 'ґ'
+    )
 }
 
 #[derive(Clone, Debug)]
@@ -199,6 +228,10 @@ impl Normalizer {
             None
         }
     }
+
+    fn alphabet_len(&self) -> usize {
+        self.alphabet.len()
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -214,6 +247,7 @@ struct PackBuildSpec {
     dictionary_sha256: Option<String>,
     plaintext_budget_bytes: Option<u64>,
     dictionary_top_k: Option<usize>,
+    punctuation_letter_keys: Option<String>,
     source_corpus: Option<String>,
     source_dictionary: Option<String>,
     build_id: Option<String>,
@@ -249,6 +283,11 @@ fn cmd_build_pack(args: &[String]) -> Result<()> {
     eprintln!("== {} ==", spec.id);
 
     let normalizer = Normalizer::from_alphabet(&spec.alphabet)?;
+    let keyboard = pack_keyboard_map(spec.layout.as_str(), spec.keyboard.as_ref())?;
+    let punctuation_letter_keys = spec
+        .punctuation_letter_keys
+        .clone()
+        .unwrap_or_else(|| keyboard.punctuation_letter_keys_against(&KeyboardMap::english_us()));
     let corpus_path = resolve_input(
         spec_dir,
         &args.cache_dir,
@@ -267,8 +306,18 @@ fn cmd_build_pack(args: &[String]) -> Result<()> {
     )?;
 
     let plaintext_budget = spec.plaintext_budget_bytes.unwrap_or(u64::MAX);
-    let (bigrams, trigrams) = count_ngrams(&corpus_path, &normalizer, plaintext_budget)?;
-    let compiled = compile_ngrams(spec.id.as_str(), bigrams, trigrams)?;
+    let (bigrams, trigrams) = count_ngrams(
+        &corpus_path,
+        &normalizer,
+        plaintext_budget,
+        TextFilter::None,
+    )?;
+    let compiled = compile_ngrams(
+        spec.id.as_str(),
+        normalizer.alphabet_len(),
+        bigrams,
+        trigrams,
+    )?;
     let ngram_path = args.out_dir.join(PACK_NGRAMS_FILE);
     write_ngram_artifact(&ngram_path, &compiled)?;
     eprintln!(
@@ -280,7 +329,13 @@ fn cmd_build_pack(args: &[String]) -> Result<()> {
 
     let dict_top_k = spec.dictionary_top_k.unwrap_or(DICT_TOP_K);
     let dict_path = args.out_dir.join(PACK_DICT_FILE);
-    let entries = build_fst(&dictionary_path, &dict_path, &normalizer, dict_top_k)?;
+    let entries = build_fst(
+        &dictionary_path,
+        &dict_path,
+        &normalizer,
+        dict_top_k,
+        TextFilter::None,
+    )?;
     eprintln!("   wrote {} ({} entries)", dict_path.display(), entries);
     let dict_prefix_path = args.out_dir.join(PACK_DICT_PREFIX_FILE);
     let prefix_entries = write_dict_prefix_artifact(&dict_prefix_path, &dict_path)?;
@@ -296,6 +351,7 @@ fn cmd_build_pack(args: &[String]) -> Result<()> {
         display_name: spec.display_name,
         script: spec.script,
         layout: spec.layout,
+        punctuation_letter_keys,
         ngrams: PathBuf::from(PACK_NGRAMS_FILE),
         dict: PathBuf::from(PACK_DICT_FILE),
         dict_prefix: PathBuf::from(PACK_DICT_PREFIX_FILE),
@@ -380,6 +436,7 @@ fn read_pack_spec(path: &Path) -> Result<PackBuildSpec> {
 
 fn validate_pack_spec(spec: &PackBuildSpec) -> Result<()> {
     require_spec_field("id", &spec.id)?;
+    validate_pack_id(&spec.id)?;
     require_spec_field("display_name", &spec.display_name)?;
     require_spec_field("script", &spec.script)?;
     require_spec_field("layout", &spec.layout)?;
@@ -400,18 +457,26 @@ fn validate_pack_spec(spec: &PackBuildSpec) -> Result<()> {
     if let Some(sha256) = spec.dictionary_sha256.as_deref() {
         validate_sha256_hex("dictionary_sha256", sha256)?;
     }
-
-    if let Some(keyboard) = &spec.keyboard {
-        KeyboardMap::from_rows(keyboard.unshifted.as_str(), keyboard.shifted.as_str())
-            .context("invalid [keyboard] rows")?;
-    } else if KeyboardMap::named(&spec.layout).is_none() {
-        bail!(
-            "unknown layout '{}'; set a built-in layout name or provide [keyboard] rows",
-            spec.layout
-        );
+    if let Some(keys) = spec.punctuation_letter_keys.as_deref() {
+        validate_punctuation_letter_keys(keys)?;
     }
 
+    pack_keyboard_map(spec.layout.as_str(), spec.keyboard.as_ref())?;
+
     Ok(())
+}
+
+fn pack_keyboard_map(layout: &str, keyboard: Option<&KeyboardManifest>) -> Result<KeyboardMap> {
+    if let Some(keyboard) = keyboard {
+        return KeyboardMap::from_rows(keyboard.unshifted.as_str(), keyboard.shifted.as_str())
+            .context("invalid [keyboard] rows");
+    }
+
+    KeyboardMap::named(layout).ok_or_else(|| {
+        anyhow::anyhow!(
+            "unknown layout '{layout}'; set a built-in layout name or provide [keyboard] rows"
+        )
+    })
 }
 
 fn require_spec_field(field: &str, value: &str) -> Result<()> {
@@ -421,8 +486,42 @@ fn require_spec_field(field: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_pack_id(id: &str) -> Result<()> {
+    if id == "en" {
+        bail!("spec field 'id' cannot be 'en'; English is the fixed primary side");
+    }
+    if !id
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        bail!("spec field 'id' must use ASCII letters, digits, '-' or '_'");
+    }
+    Ok(())
+}
+
+fn validate_punctuation_letter_keys(value: &str) -> Result<()> {
+    let mut seen = HashSet::new();
+    for character in value.chars() {
+        if !seen.insert(character) {
+            bail!("punctuation_letter_keys contains duplicate character {character:?}");
+        }
+        if PhysicalKey::from_char(character).is_none() || character.is_ascii_alphabetic() {
+            bail!(
+                "punctuation_letter_keys character {character:?} is not an English punctuation-position key"
+            );
+        }
+    }
+    Ok(())
+}
+
 fn prepare_pack_dir(path: &Path, force: bool) -> Result<()> {
-    if path.exists() {
+    if let Ok(metadata) = fs::symlink_metadata(path) {
+        if metadata.file_type().is_symlink() {
+            bail!(
+                "{} is a symlink; refusing to write pack output through symlinks",
+                path.display()
+            );
+        }
         if !path.is_dir() {
             bail!("{} exists and is not a directory", path.display());
         }
@@ -465,6 +564,11 @@ fn resolve_input(
     } else {
         spec_dir.join(source_path)
     };
+    let metadata = fs::symlink_metadata(&path)
+        .with_context(|| format!("stat {kind} input {}", path.display()))?;
+    if metadata.file_type().is_symlink() {
+        bail!("{kind} input must not be a symlink: {}", path.display());
+    }
     if !path.is_file() {
         bail!("{kind} input does not exist: {}", path.display());
     }
@@ -509,12 +613,18 @@ fn build_language(
     let lang = input.language;
     eprintln!("== {} ==", lang.tag());
     let normalizer = lang.normalizer()?;
+    let text_filter = lang.text_filter();
 
     let opus_cache = cache_dir.join(format!("opus-{}.txt.gz", lang.tag()));
     download_with_cache(input.opus_url, &opus_cache, input.opus_integrity)?;
 
-    let (bigrams, trigrams) = count_ngrams(&opus_cache, &normalizer, input.plaintext_budget)?;
-    let compiled = compile_ngrams(lang.tag(), bigrams, trigrams)?;
+    let (bigrams, trigrams) = count_ngrams(
+        &opus_cache,
+        &normalizer,
+        input.plaintext_budget,
+        text_filter,
+    )?;
+    let compiled = compile_ngrams(lang.tag(), normalizer.alphabet_len(), bigrams, trigrams)?;
     let ngram_path = data_dir.join(format!("{}.ngrams.bin", lang.tag()));
     write_ngram_artifact(&ngram_path, &compiled)?;
     eprintln!(
@@ -527,7 +637,7 @@ fn build_language(
     let freq_cache = cache_dir.join(format!("freq-{}.txt", lang.tag()));
     download_with_cache(input.freq_url, &freq_cache, input.freq_integrity)?;
     let fst_path = data_dir.join(format!("{}.dict.fst", lang.tag()));
-    let entries = build_fst(&freq_cache, &fst_path, &normalizer, DICT_TOP_K)?;
+    let entries = build_fst(&freq_cache, &fst_path, &normalizer, DICT_TOP_K, text_filter)?;
     eprintln!("   wrote {} ({} entries)", fst_path.display(), entries);
     let prefix_path = data_dir.join(format!("{}.dict-prefix.bin", lang.tag()));
     let prefix_entries = write_dict_prefix_artifact(&prefix_path, &fst_path)?;
@@ -562,32 +672,62 @@ fn download_with_cache(url: &str, dest: &Path, integrity: DownloadIntegrity<'_>)
         return Ok(());
     }
 
-    eprintln!("   GET {}", url);
+    let temp = dest.with_extension("partial");
+    let mut resume_from = prepare_partial_download(dest, &temp, integrity)?;
+    if dest.is_file() {
+        return Ok(());
+    }
+    if resume_from > 0 {
+        eprintln!("   GET {} (resume from {})", url, human_bytes(resume_from));
+    } else {
+        eprintln!("   GET {}", url);
+    }
     let started = Instant::now();
     let agent = ureq::Agent::config_builder()
         .timeout_global(Some(std::time::Duration::from_secs(30 * 60)))
         .build()
         .new_agent();
-    let mut response = agent
-        .get(url)
-        .call()
-        .with_context(|| format!("GET {url}"))?;
+    let mut request = agent.get(url);
+    if resume_from > 0 {
+        request = request.header("Range", format!("bytes={resume_from}-"));
+    }
+    let mut response = request.call().with_context(|| format!("GET {url}"))?;
+    let append = if resume_from > 0 && response.status().as_u16() == 206 {
+        true
+    } else {
+        if resume_from > 0 {
+            eprintln!("   server did not honor Range; restarting download");
+            fs::remove_file(&temp).with_context(|| format!("remove {}", temp.display()))?;
+            resume_from = 0;
+        }
+        false
+    };
     let content_length = response.body().content_length();
 
     let mut reader = response.body_mut().as_reader();
-    let temp = dest.with_extension("partial");
-    let mut writer = io::BufWriter::new(File::create(&temp)?);
-    let (written, sha256) = copy_and_sha256(&mut reader, &mut writer)?;
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(!append)
+        .append(append)
+        .open(&temp)
+        .with_context(|| format!("open {}", temp.display()))?;
+    let mut writer = io::BufWriter::new(file);
+    let (written, sha256) = if append {
+        copy_and_sha256_with_prefix(&temp, resume_from, &mut reader, &mut writer)?
+    } else {
+        copy_and_sha256(&mut reader, &mut writer)?
+    };
     writer.flush()?;
     drop(writer);
 
     if let Some(expected) = content_length
-        && written != expected
+        && written != resume_from.saturating_add(expected)
     {
         let _ = fs::remove_file(&temp);
         bail!(
             "downloaded byte count mismatch for {url}: expected Content-Length {}, wrote {}",
-            expected,
+            resume_from.saturating_add(expected),
             written
         );
     }
@@ -659,6 +799,43 @@ fn verify_file_integrity(path: &Path, integrity: DownloadIntegrity<'_>) -> Resul
     Ok(())
 }
 
+fn prepare_partial_download(
+    dest: &Path,
+    temp: &Path,
+    integrity: DownloadIntegrity<'_>,
+) -> Result<u64> {
+    let Ok(metadata) = fs::symlink_metadata(temp) else {
+        return Ok(0);
+    };
+    if metadata.file_type().is_symlink() {
+        bail!("partial download path is a symlink: {}", temp.display());
+    }
+    if !metadata.is_file() {
+        fs::remove_file(temp).with_context(|| format!("remove {}", temp.display()))?;
+        return Ok(0);
+    }
+
+    let size = metadata.len();
+    if size == 0 {
+        return Ok(0);
+    }
+    if let Some(expected) = integrity.size_bytes {
+        if size == expected {
+            verify_file_integrity(temp, integrity)?;
+            fs::rename(temp, dest)
+                .with_context(|| format!("rename {} -> {}", temp.display(), dest.display()))?;
+            eprintln!("   recovered complete partial {}", dest.display());
+            return Ok(0);
+        }
+        if size > expected {
+            fs::remove_file(temp).with_context(|| format!("remove {}", temp.display()))?;
+            return Ok(0);
+        }
+    }
+
+    Ok(size)
+}
+
 fn copy_and_sha256(reader: &mut impl Read, writer: &mut impl Write) -> Result<(u64, String)> {
     let mut hasher = Sha256::new();
     let mut written = 0u64;
@@ -675,6 +852,55 @@ fn copy_and_sha256(reader: &mut impl Read, writer: &mut impl Write) -> Result<(u
     }
 
     Ok((written, hasher.finalize_hex()))
+}
+
+fn copy_and_sha256_with_prefix(
+    prefix_path: &Path,
+    prefix_len: u64,
+    reader: &mut impl Read,
+    writer: &mut impl Write,
+) -> Result<(u64, String)> {
+    let mut hasher = Sha256::new();
+    let mut written = hash_prefix(prefix_path, prefix_len, &mut hasher)?;
+    let mut buffer = [0u8; 64 * 1024];
+
+    loop {
+        let len = reader.read(&mut buffer)?;
+        if len == 0 {
+            break;
+        }
+        writer.write_all(&buffer[..len])?;
+        hasher.update(&buffer[..len]);
+        written = written.saturating_add(len as u64);
+    }
+
+    Ok((written, hasher.finalize_hex()))
+}
+
+fn hash_prefix(path: &Path, prefix_len: u64, hasher: &mut Sha256) -> Result<u64> {
+    let mut file = File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let mut remaining = prefix_len;
+    let mut written = 0u64;
+    let mut buffer = [0u8; 64 * 1024];
+
+    while remaining > 0 {
+        let limit = buffer.len().min(remaining as usize);
+        let len = file
+            .read(&mut buffer[..limit])
+            .with_context(|| format!("read {}", path.display()))?;
+        if len == 0 {
+            bail!(
+                "partial download {} ended before expected resume offset {}",
+                path.display(),
+                prefix_len
+            );
+        }
+        hasher.update(&buffer[..len]);
+        written = written.saturating_add(len as u64);
+        remaining -= len as u64;
+    }
+
+    Ok(written)
 }
 
 fn sha256_file(path: &Path) -> Result<String> {
@@ -887,12 +1113,16 @@ fn count_ngram_lines(
     lines: &[String],
     normalizer: &Normalizer,
     worker_count: usize,
+    text_filter: TextFilter,
 ) -> (NgramCounts, NgramCounts) {
     let active_workers = worker_count.clamp(1, lines.len().max(1));
     if active_workers == 1 {
         let mut bigrams = HashMap::new();
         let mut trigrams = HashMap::new();
         for line in lines {
+            if !text_filter.accepts(line) {
+                continue;
+            }
             count_normalized_ngrams(line, normalizer, &mut bigrams, &mut trigrams);
         }
         return (bigrams, trigrams);
@@ -906,6 +1136,9 @@ fn count_ngram_lines(
                 let mut bigrams = HashMap::new();
                 let mut trigrams = HashMap::new();
                 for line in chunk {
+                    if !text_filter.accepts(line) {
+                        continue;
+                    }
                     count_normalized_ngrams(line, normalizer, &mut bigrams, &mut trigrams);
                 }
                 (bigrams, trigrams)
@@ -941,6 +1174,7 @@ fn merge_ngram_batch(
     batch: &mut Vec<String>,
     normalizer: &Normalizer,
     worker_count: usize,
+    text_filter: TextFilter,
     bigrams: &mut NgramCounts,
     trigrams: &mut NgramCounts,
 ) {
@@ -948,7 +1182,8 @@ fn merge_ngram_batch(
         return;
     }
 
-    let (batch_bigrams, batch_trigrams) = count_ngram_lines(batch, normalizer, worker_count);
+    let (batch_bigrams, batch_trigrams) =
+        count_ngram_lines(batch, normalizer, worker_count, text_filter);
     merge_ngram_counts(bigrams, batch_bigrams);
     merge_ngram_counts(trigrams, batch_trigrams);
     batch.clear();
@@ -958,6 +1193,7 @@ fn count_ngrams(
     corpus_path: &Path,
     normalizer: &Normalizer,
     plaintext_budget: u64,
+    text_filter: TextFilter,
 ) -> Result<(NgramCounts, NgramCounts)> {
     let worker_count = thread::available_parallelism()
         .map(usize::from)
@@ -993,6 +1229,7 @@ fn count_ngrams(
                 &mut batch,
                 normalizer,
                 worker_count,
+                text_filter,
                 &mut bigrams,
                 &mut trigrams,
             );
@@ -1018,6 +1255,7 @@ fn count_ngrams(
         &mut batch,
         normalizer,
         worker_count,
+        text_filter,
         &mut bigrams,
         &mut trigrams,
     );
@@ -1033,6 +1271,7 @@ fn count_ngrams(
 
 fn compile_ngrams(
     language_tag: &str,
+    alphabet_len: usize,
     bigrams: NgramCounts,
     trigrams: NgramCounts,
 ) -> Result<CompiledLanguageData> {
@@ -1046,9 +1285,8 @@ fn compile_ngrams(
     let bigram_total: u64 = bigrams.values().sum();
     let trigram_total: u64 = trigrams.values().sum();
 
-    // Laplace-style add-one smoothing across the observed vocabulary.
-    let bigram_v = bigrams.len().max(1) as f32;
-    let trigram_v = trigrams.len().max(1) as f32;
+    let bigram_v = ngram_vocabulary_size(alphabet_len, 2)?;
+    let trigram_v = ngram_vocabulary_size(alphabet_len, 3)?;
 
     let bigram_floor = ((1.0_f32) / (bigram_total as f32 + bigram_v)).log10();
     let trigram_floor = ((1.0_f32) / (trigram_total as f32 + trigram_v)).log10();
@@ -1078,6 +1316,14 @@ fn compile_ngrams(
         bigram_floor,
         trigram_floor,
     })
+}
+
+fn ngram_vocabulary_size(alphabet_len: usize, order: u32) -> Result<f32> {
+    let size = alphabet_len
+        .max(1)
+        .checked_pow(order)
+        .context("ngram smoothing vocabulary is too large")?;
+    Ok(size as f32)
 }
 
 fn encode_bigram(first: char, second: char) -> u64 {
@@ -1129,6 +1375,7 @@ fn build_fst(
     fst_path: &Path,
     normalizer: &Normalizer,
     dict_top_k: usize,
+    text_filter: TextFilter,
 ) -> Result<usize> {
     eprintln!("   building dictionary FST...");
 
@@ -1154,6 +1401,9 @@ fn build_fst(
             .collect::<Option<String>>()
             .unwrap_or_default();
         if normalized_word.is_empty() {
+            continue;
+        }
+        if !text_filter.accepts(&normalized_word) {
             continue;
         }
 
@@ -1203,8 +1453,9 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        NgramCounts, Normalizer, Sha256, count_ngram_lines, count_normalized_ngrams, encode_bigram,
-        encode_trigram,
+        NgramCounts, Normalizer, Sha256, TextFilter, compile_ngrams, count_ngram_lines,
+        count_normalized_ngrams, encode_bigram, encode_compiled_language_data, encode_trigram,
+        validate_pack_id,
     };
 
     #[test]
@@ -1245,13 +1496,78 @@ mod tests {
         let normalizer = Normalizer::ascii_letters();
         let lines = vec!["abc".to_owned(), "bcd".to_owned()];
 
-        let (bigrams, trigrams) = count_ngram_lines(&lines, &normalizer, 2);
+        let (bigrams, trigrams) = count_ngram_lines(&lines, &normalizer, 2, TextFilter::None);
 
         assert_eq!(bigram_count(&bigrams, 'a', 'b'), Some(&1));
         assert_eq!(bigram_count(&bigrams, 'b', 'c'), Some(&2));
         assert_eq!(bigram_count(&bigrams, 'c', 'd'), Some(&1));
         assert_eq!(trigram_count(&trigrams, 'a', 'b', 'c'), Some(&1));
         assert_eq!(trigram_count(&trigrams, 'b', 'c', 'd'), Some(&1));
+    }
+
+    #[test]
+    fn compile_ngrams_smooths_against_full_alphabet_vocabulary() -> super::Result<()> {
+        let mut bigrams = HashMap::new();
+        bigrams.insert(encode_bigram('a', 'b'), 2);
+        let mut trigrams = HashMap::new();
+        trigrams.insert(encode_trigram('a', 'b', 'c'), 3);
+
+        let compiled = compile_ngrams("xx", 3, bigrams, trigrams)?;
+
+        let expected_bigram_floor = (1.0_f32 / (2.0 + 9.0)).log10();
+        let expected_trigram_floor = (1.0_f32 / (3.0 + 27.0)).log10();
+        assert!((compiled.bigram_floor - expected_bigram_floor).abs() < f32::EPSILON);
+        assert!((compiled.trigram_floor - expected_trigram_floor).abs() < f32::EPSILON);
+        Ok(())
+    }
+
+    #[test]
+    fn compile_ngrams_serializes_deterministically() -> super::Result<()> {
+        let bigram_items = [
+            (encode_bigram('b', 'a'), 4),
+            (encode_bigram('a', 'b'), 2),
+            (encode_bigram('c', 'a'), 1),
+        ];
+        let trigram_items = [
+            (encode_trigram('c', 'a', 'b'), 7),
+            (encode_trigram('a', 'b', 'c'), 3),
+            (encode_trigram('b', 'c', 'a'), 5),
+        ];
+
+        let first = compile_ngrams(
+            "xx",
+            3,
+            bigram_items.into_iter().collect(),
+            trigram_items.into_iter().collect(),
+        )?;
+        let second = compile_ngrams(
+            "xx",
+            3,
+            bigram_items.into_iter().rev().collect(),
+            trigram_items.into_iter().rev().collect(),
+        )?;
+
+        assert_eq!(
+            encode_compiled_language_data(&first)?,
+            encode_compiled_language_data(&second)?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pack_id_rejects_reserved_and_path_like_values() {
+        assert!(validate_pack_id("uk").is_ok());
+        assert!(validate_pack_id("en").is_err());
+        assert!(validate_pack_id("../uk").is_err());
+        assert!(validate_pack_id("uk/en").is_err());
+    }
+
+    #[test]
+    fn ukrainian_marker_filter_rejects_unmarked_cyrillic_text() {
+        assert!(TextFilter::UkrainianMarkers.accepts("привіт"));
+        assert!(TextFilter::UkrainianMarkers.accepts("ґрунт"));
+        assert!(!TextFilter::UkrainianMarkers.accepts("абвд"));
+        assert!(!TextFilter::UkrainianMarkers.accepts("прст"));
     }
 
     fn bigram_count(counts: &NgramCounts, first: char, second: char) -> Option<&u64> {

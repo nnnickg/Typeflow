@@ -62,6 +62,7 @@ id = "secondary"
 display_name = "Secondary"
 script = "Cyrillic"
 layout = "custom"
+punctuation_letter_keys = "[]{};:\"'<>.,"
 ngrams = "ngrams.bin"
 dict = "dict.fst"
 dict_prefix = "dict-prefix.bin"
@@ -72,7 +73,8 @@ shifted = "..."
 ```
 
 The manifest may also contain `source_corpus`, `source_dictionary`, and
-`build_id` metadata.
+`build_id` metadata. `punctuation_letter_keys` is optional for old packs; when
+it is missing, the loader derives the set from the pack keyboard map.
 
 ## Artifact Licensing
 
@@ -105,6 +107,10 @@ dictionary inputs. Pack authors should fill `source_corpus` and
 - Each keyboard-row character must be a single non-combining UTF-16 code unit.
   The current keyboard model stores one rendered scalar per physical key, so
   non-BMP and combining output require a future ABI/model expansion.
+- `punctuation_letter_keys` contains English-layout punctuation-position
+  characters whose physical keys render as secondary-layout letters. The engine
+  uses this per-pack set instead of assuming Ukrainian-specific punctuation
+  behavior.
 
 The loader rejects any manifest whose `format_version` is not exactly
 `PACK_FORMAT_VERSION`.

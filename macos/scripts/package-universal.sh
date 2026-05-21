@@ -12,6 +12,7 @@ macos_deployment_target="${MACOS_DEPLOYMENT_TARGET:-13.0}"
 codesign_identity="${CODESIGN_IDENTITY:--}"
 archs="${TYPEFLOW_MACOS_ARCHS:-arm64 x86_64}"
 typeflow_version="${TYPEFLOW_VERSION:-$("$root_dir/scripts/typeflow-version.sh")}"
+typeflow_bundle_version="${TYPEFLOW_BUNDLE_VERSION:-$("$root_dir/scripts/typeflow-bundle-version.sh")}"
 
 app_bundle="$build_dir/$app_name.app"
 app_executable="$app_bundle/Contents/MacOS/$app_name"
@@ -80,6 +81,11 @@ copy_bundle_resources() {
     mkdir -p "$app_bundle/Contents/MacOS" "$app_bundle/Contents/Resources/en.lproj"
     cp "$info_plist" "$app_bundle/Contents/Info.plist"
     /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $typeflow_version" "$app_bundle/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $typeflow_bundle_version" "$app_bundle/Contents/Info.plist"
+    if [[ "$typeflow_bundle_version" == "1" ]]; then
+        echo "error: refusing CFBundleVersion=1" >&2
+        return 1
+    fi
     cp "$info_plist_strings" "$app_bundle/Contents/Resources/en.lproj/InfoPlist.strings"
     cp "$pkginfo" "$app_bundle/Contents/PkgInfo"
     plutil -lint "$app_bundle/Contents/Info.plist"
@@ -110,10 +116,11 @@ build_icons() {
 }
 
 codesign_bundle() {
-    local codesign_args=(--force --sign "$codesign_identity")
     if [[ "$codesign_identity" != "-" ]]; then
-        codesign_args+=(--options runtime --timestamp)
+        echo "error: Typeflow release packaging is ad-hoc only; set CODESIGN_IDENTITY=-" >&2
+        return 2
     fi
+    local codesign_args=(--force --sign "$codesign_identity")
 
     codesign "${codesign_args[@]}" "$app_bundle"
     codesign --verify --strict --verbose=2 "$app_bundle"
@@ -123,32 +130,6 @@ create_zip() {
     mkdir -p "$dist_dir"
     rm -f "$zip_path"
     ditto -c -k --keepParent "$app_bundle" "$zip_path"
-}
-
-notarize_if_configured() {
-    if [[ -z "${NOTARY_PROFILE:-}" && -z "${APPLE_ID:-}" ]]; then
-        return 0
-    fi
-    if [[ "$codesign_identity" == "-" ]]; then
-        echo "notarization requires a Developer ID codesign identity, not ad-hoc signing" >&2
-        return 2
-    fi
-
-    if [[ -n "${NOTARY_PROFILE:-}" ]]; then
-        xcrun notarytool submit "$zip_path" --keychain-profile "$NOTARY_PROFILE" --wait
-    else
-        : "${APPLE_ID:?APPLE_ID is required when NOTARY_PROFILE is not set}"
-        : "${APPLE_TEAM_ID:?APPLE_TEAM_ID is required when NOTARY_PROFILE is not set}"
-        : "${APPLE_APP_PASSWORD:?APPLE_APP_PASSWORD is required when NOTARY_PROFILE is not set}"
-        xcrun notarytool submit "$zip_path" \
-            --apple-id "$APPLE_ID" \
-            --team-id "$APPLE_TEAM_ID" \
-            --password "$APPLE_APP_PASSWORD" \
-            --wait
-    fi
-
-    xcrun stapler staple "$app_bundle"
-    create_zip
 }
 
 copy_bundle_resources
@@ -175,7 +156,6 @@ done
 
 codesign_bundle
 create_zip
-notarize_if_configured
 
 file "$app_executable"
 echo "app: $app_bundle"

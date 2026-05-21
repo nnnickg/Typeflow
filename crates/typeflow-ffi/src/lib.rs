@@ -1172,8 +1172,14 @@ pub unsafe extern "C" fn typeflow_engine_force_switch_layout(
 
         let target = opposite_layout(engine.engine.current_layout());
         engine.set_pending_replacement(target);
-        let output = engine.engine.force_switch_layout();
-        out.write(output.action);
+        let action = {
+            let output = engine.engine.force_switch_layout();
+            output.action.clone()
+        };
+        if !matches!(&action, ObservationAction::SwitchFutureLayout(_)) {
+            engine.clear_pending_replacement();
+        }
+        out.write(action);
     });
 }
 
@@ -1421,12 +1427,12 @@ mod tests {
         TF_OBSERVATION_NONE, TF_OBSERVATION_RESET_TOKEN, TF_OBSERVATION_SWITCH_FUTURE_LAYOUT,
         TfEngineConfig, TfEvent, TfHostInputPolicy, TfHostSurfaceFacts, TfObservation,
         decode_event, default_ffi_config, engine_config_from_ffi,
-        typeflow_engine_copy_pending_replacement_inverse_utf8, typeflow_engine_default_config,
-        typeflow_engine_force_switch_layout, typeflow_engine_free,
+        typeflow_engine_copy_pending_replacement_inverse_utf8, typeflow_engine_current_layout,
+        typeflow_engine_default_config, typeflow_engine_force_switch_layout, typeflow_engine_free,
         typeflow_engine_new_embedded_with_config, typeflow_engine_new_from_host_config,
         typeflow_engine_observe, typeflow_engine_pending_replacement_delete_count,
         typeflow_engine_pending_replacement_inverse_utf8_len,
-        typeflow_engine_pending_replacement_utf8_len,
+        typeflow_engine_pending_replacement_utf8_len, typeflow_engine_set_host_context,
         typeflow_engine_take_pending_replacement_utf8,
         typeflow_host_config_auto_disabled_bundle_count, typeflow_host_config_data_directory,
         typeflow_host_config_disabled_bundle_count, typeflow_host_config_engine_config,
@@ -1663,6 +1669,32 @@ mod tests {
             Some("type")
         );
         assert_eq!(pending_replacement_text(engine).as_deref(), Some("ензу"));
+        assert_eq!(
+            unsafe { typeflow_engine_pending_replacement_delete_count(engine) },
+            0
+        );
+
+        unsafe {
+            typeflow_engine_free(engine);
+        }
+    }
+
+    #[test]
+    fn force_switch_does_not_switch_or_keep_replacement_when_secure_input_is_active() {
+        let engine = typeflow_engine_new_embedded_with_config(default_ffi_config());
+        assert!(!engine.is_null());
+
+        let mut observation = empty_observation();
+        unsafe {
+            typeflow_engine_set_host_context(engine, TF_CONTEXT_SECURE_INPUT);
+            typeflow_engine_force_switch_layout(engine, &mut observation);
+        }
+
+        assert_eq!(observation.tag, TF_OBSERVATION_NONE);
+        assert_eq!(
+            unsafe { typeflow_engine_current_layout(engine) },
+            TF_LAYOUT_ENGLISH
+        );
         assert_eq!(
             unsafe { typeflow_engine_pending_replacement_delete_count(engine) },
             0

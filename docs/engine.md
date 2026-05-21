@@ -29,9 +29,10 @@ Why both? Bigrams are stable but coarse — `er` is common in many languages.
 Trigrams are sharper but only kick in once the token has 3+ chars. Combining
 them catches both short and long tokens.
 
-Unseen n-grams (e.g., `ьъ` in well-formed Cyrillic text) get a smoothed floor
-log-probability. This is the implicit "impossible bigram penalty": EN-typed-as-RU
-text generates lots of unseen secondary-layout n-grams, dragging that score way down.
+Unseen n-grams (e.g., `ьъ` in well-formed Cyrillic text) get an add-one
+smoothed floor over the full alphabet vocabulary (`alphabet_len^n`). This is the
+implicit "impossible bigram penalty": EN-typed-as-RU text generates lots of
+unseen secondary-layout n-grams, dragging that score way down.
 
 ## Dictionary signal
 

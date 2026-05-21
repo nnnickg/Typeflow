@@ -41,6 +41,12 @@ plaintext_budget_bytes = 200000000
 # Optional. Default: 500000
 dictionary_top_k = 500000
 
+# Optional. English-layout punctuation-position characters that should remain
+# part of a token because this secondary keyboard maps those physical keys to
+# letters. If omitted, the builder derives this from [keyboard] or the named
+# layout.
+punctuation_letter_keys = "[]{};:\"'<>.,"
+
 # Optional. If set, local files and downloaded cache files must match.
 corpus_sha256 = "..."
 dictionary_sha256 = "..."
@@ -67,8 +73,9 @@ filters words through `alphabet`, then builds the FST dictionary and serialized
 prefix-evidence index.
 
 For HTTP/HTTPS inputs, `typeflow-data` validates `Content-Length` when the
-server provides it. Embedded EN/UK sources are additionally pinned by byte count
-and SHA-256. External pack specs should set `corpus_sha256` and
+server provides it and resumes incomplete `*.partial` downloads with `Range:`
+when the server supports it. Embedded EN/UK sources are additionally pinned by
+byte count and SHA-256. External pack specs should set `corpus_sha256` and
 `dictionary_sha256` when the input source is expected to be reproducible.
 
 ## Limits

@@ -304,9 +304,12 @@ impl ResolvedHostConfig {
             .validate()
             .map_err(|e| format!("invalid engine config: {e}"))?;
 
+        let secondary_language = normalized_secondary_id(&source.config);
+        validate_secondary_id(&secondary_language)?;
+
         Ok(Self {
             engine,
-            secondary_language: normalized_secondary_id(&source.config),
+            secondary_language,
             pack_directory: configured_pack_dir_with_environment(&source.config, environment),
             data_directory: configured_data_dir_with_environment(&source.config, environment),
             app_policy: AppDisablePolicy::from_bundle_ids(
@@ -626,6 +629,21 @@ pub fn normalized_secondary_id(config: &Config) -> String {
     }
 }
 
+fn validate_secondary_id(id: &str) -> Result<(), String> {
+    if id == "en" {
+        return Err("invalid language.secondary: 'en' is reserved for the primary side".to_owned());
+    }
+    if !id
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        return Err(format!(
+            "invalid language.secondary '{id}': use ASCII letters, digits, '-' or '_'"
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -908,6 +926,26 @@ secondary_input_source_id = " com.apple.keylayout.Ukrainian "
             Some("com.apple.keylayout.Ukrainian".to_owned())
         );
         assert_eq!(resolved.engine_source_description(), "embedded");
+    }
+
+    #[test]
+    fn resolved_host_config_rejects_invalid_secondary_language_ids() {
+        for secondary in ["../uk", "uk/../en", "en"] {
+            let config = toml::from_str::<Config>(&format!(
+                r#"
+[language]
+secondary = "{secondary}"
+"#
+            ))
+            .unwrap();
+
+            let error = ResolvedHostConfig::from_source(
+                ConfigSource { config, path: None },
+                &HostEnvironment::default(),
+            )
+            .unwrap_err();
+            assert!(error.contains("language.secondary"));
+        }
     }
 
     #[test]

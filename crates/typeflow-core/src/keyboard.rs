@@ -254,6 +254,26 @@ impl KeyboardMap {
         }
     }
 
+    pub fn punctuation_letter_keys_against(&self, primary: &KeyboardMap) -> String {
+        let mut keys = String::new();
+        for index in 0..PhysicalKey::COUNT {
+            let Some(physical_key) = PhysicalKey::from_index(index as u8) else {
+                continue;
+            };
+            add_punctuation_letter_key(
+                &mut keys,
+                primary.render(physical_key, false),
+                self.render(physical_key, false),
+            );
+            add_punctuation_letter_key(
+                &mut keys,
+                primary.render(physical_key, true),
+                self.render(physical_key, true),
+            );
+        }
+        keys
+    }
+
     pub fn letter_event_from_char(&self, value: char) -> Option<LetterEvent> {
         let lower = value.to_lowercase().next().unwrap_or(value);
         if let Some(mut event) = self.lookup.get(&lower).copied() {
@@ -286,6 +306,13 @@ impl KeyboardMap {
         }
         lookup
     }
+}
+
+fn add_punctuation_letter_key(keys: &mut String, primary: char, secondary: char) {
+    if primary.is_ascii_alphabetic() || !secondary.is_alphabetic() || keys.contains(primary) {
+        return;
+    }
+    keys.push(primary);
 }
 
 fn parse_keyboard_row(

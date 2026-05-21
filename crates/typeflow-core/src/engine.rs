@@ -20,7 +20,7 @@ pub struct Engine {
     host_context: HostContext,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct LayoutNgrams {
     english: RollingNgrams,
     secondary: RollingNgrams,
@@ -32,27 +32,20 @@ impl LayoutNgrams {
         self.secondary.clear();
     }
 
-    fn from_candidates(candidates: &LayoutCandidates, bundle: &LanguageBundle) -> Self {
-        Self {
-            english: RollingNgrams::from_text(
-                &bundle.pack(Layout::English).model,
-                &candidates.english,
-            ),
-            secondary: RollingNgrams::from_text(
-                &bundle.pack(Layout::Secondary).model,
-                &candidates.secondary,
-            ),
-        }
+    fn pop(&mut self) {
+        self.english.pop();
+        self.secondary.pop();
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct RollingNgrams {
     raw_bigram: f32,
     raw_trigram: f32,
-    char_count: usize,
-    previous_two: char,
-    previous_one: char,
+    normalized: Vec<char>,
+    chunk_lens: Vec<usize>,
+    bigram_contribs: Vec<f32>,
+    trigram_contribs: Vec<f32>,
 }
 
 impl RollingNgrams {
@@ -60,38 +53,58 @@ impl RollingNgrams {
         *self = Self::default();
     }
 
-    fn from_text(model: &LanguageModel, text: &str) -> Self {
-        let mut ngrams = Self::default();
-        for character in text.chars() {
-            ngrams.push(model, character);
-        }
-        ngrams
-    }
-
     fn push(&mut self, model: &LanguageModel, character: char) {
+        let start_len = self.normalized.len();
         for normalized in character.to_lowercase() {
             self.push_normalized(model, normalized);
         }
+        self.chunk_lens.push(self.normalized.len() - start_len);
     }
 
     fn push_normalized(&mut self, model: &LanguageModel, current: char) {
-        self.char_count += 1;
-        if self.char_count >= 2 {
-            self.raw_bigram += model.bigram_log_prob_for_chars(self.previous_one, current);
-        }
-        if self.char_count >= 3 {
-            self.raw_trigram +=
-                model.trigram_log_prob_for_chars(self.previous_two, self.previous_one, current);
-        }
-        self.previous_two = self.previous_one;
-        self.previous_one = current;
+        let len = self.normalized.len();
+        let bigram = if len >= 1 {
+            model.bigram_log_prob_for_chars(self.normalized[len - 1], current)
+        } else {
+            0.0
+        };
+        let trigram = if len >= 2 {
+            model.trigram_log_prob_for_chars(
+                self.normalized[len - 2],
+                self.normalized[len - 1],
+                current,
+            )
+        } else {
+            0.0
+        };
+
+        self.raw_bigram += bigram;
+        self.raw_trigram += trigram;
+        self.normalized.push(current);
+        self.bigram_contribs.push(bigram);
+        self.trigram_contribs.push(trigram);
     }
 
-    fn totals(self) -> NgramTotals {
+    fn pop(&mut self) {
+        let Some(count) = self.chunk_lens.pop() else {
+            return;
+        };
+        for _ in 0..count {
+            self.normalized.pop();
+            if let Some(score) = self.bigram_contribs.pop() {
+                self.raw_bigram -= score;
+            }
+            if let Some(score) = self.trigram_contribs.pop() {
+                self.raw_trigram -= score;
+            }
+        }
+    }
+
+    fn totals(&self) -> NgramTotals {
         NgramTotals {
             raw_bigram: self.raw_bigram,
             raw_trigram: self.raw_trigram,
-            char_count: self.char_count,
+            char_count: self.normalized.len(),
         }
     }
 }
@@ -206,6 +219,12 @@ impl Engine {
     }
 
     pub fn force_switch_layout(&mut self) -> ObservationOutput<'_> {
+        if self.host_context.bypasses_engine() {
+            let action = self.reset_action();
+            self.reset_token();
+            return self.snapshot(action, Decision::Bypass);
+        }
+
         let target = match self.layout {
             Layout::English => Layout::Secondary,
             Layout::Secondary => Layout::English,
@@ -240,7 +259,7 @@ impl Engine {
 
     fn step_letter(&mut self, event: LetterEvent) -> (ObservationAction, Decision) {
         if self.bypass_until_boundary {
-            if is_english_separator_key_char(self.bundle.render(event, Layout::English)) {
+            if self.is_english_punctuation_letter_key(event) {
                 let action = self.reset_action();
                 self.reset_token();
                 return (action, Decision::Bypass);
@@ -311,7 +330,7 @@ impl Engine {
         self.token.pop();
         self.candidates.english.pop();
         self.candidates.secondary.pop();
-        self.recompute_ngrams();
+        self.ngrams.pop();
         self.score_cache = None;
         if self.token.is_empty() {
             self.reset_token();
@@ -415,13 +434,19 @@ impl Engine {
     }
 
     fn should_reset_on_separator(&mut self, event: LetterEvent) -> bool {
-        if self.layout != Layout::English
-            || !is_english_separator_key_char(self.bundle.render(event, Layout::English))
-        {
+        if self.layout != Layout::English || !self.is_english_punctuation_letter_key(event) {
             return false;
         }
 
         !has_dictionary_evidence(self.score_current().secondary)
+    }
+
+    fn is_english_punctuation_letter_key(&self, event: LetterEvent) -> bool {
+        let english = self.bundle.render(event, Layout::English);
+        self.bundle
+            .secondary
+            .punctuation_letter_keys
+            .contains(english)
     }
 
     fn reset_action(&self) -> ObservationAction {
@@ -493,10 +518,6 @@ impl Engine {
         self.score_cache = Some(score);
         score
     }
-
-    fn recompute_ngrams(&mut self) {
-        self.ngrams = LayoutNgrams::from_candidates(&self.candidates, &self.bundle);
-    }
 }
 
 /// Returns true when the token contains a Shift-modified letter at any position
@@ -508,36 +529,6 @@ fn has_internal_caps(token: &[LetterEvent]) -> bool {
 
 fn is_acronym_like(token: &[LetterEvent]) -> bool {
     token.len() >= 2 && token.iter().all(|event| event.shift)
-}
-
-/// True for English-US punctuation-position characters that share physical keys
-/// with secondary-layout letters.
-///
-/// These characters are produced by physical keys that, in non-English layouts,
-/// emit real letters (e.g. Cyrillic б/ю/ж/є/х/ї/ґ). The engine therefore
-/// receives them as `LetterEvent`s rather than literals so they can extend a
-/// secondary-layout token. While the active layout is English, they reset the
-/// observed token only when the appended secondary candidate has no dictionary
-/// prefix or exact-word evidence.
-fn is_english_separator_key_char(character: char) -> bool {
-    matches!(
-        character,
-        '`' | '['
-            | ']'
-            | '\\'
-            | ';'
-            | '\''
-            | ','
-            | '.'
-            | '~'
-            | '{'
-            | '}'
-            | '|'
-            | ':'
-            | '"'
-            | '<'
-            | '>'
-    )
 }
 
 /// True for characters that are NOT mapped to any physical key position in

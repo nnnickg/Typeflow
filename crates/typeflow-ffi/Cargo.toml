@@ -10,8 +10,8 @@ publish = false
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [dependencies]
-typeflow-core = { path = "../typeflow-core" }
-typeflow-host-config = { path = "../typeflow-host-config" }
+typeflow-core.workspace = true
+typeflow-host-config.workspace = true
 
 [lints]
 workspace = true

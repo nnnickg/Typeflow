@@ -287,6 +287,32 @@ mod tests {
     }
 
     #[test]
+    fn manual_switch_bypasses_secure_and_full_disabled_contexts() {
+        for context in [
+            HostContext {
+                secure_input: true,
+                automatic_processing_disabled: false,
+                automatic_switching_disabled: false,
+            },
+            HostContext {
+                secure_input: false,
+                automatic_processing_disabled: true,
+                automatic_switching_disabled: false,
+            },
+        ] {
+            let mut engine = engine();
+            engine.set_host_context(context);
+
+            let output = engine.force_switch_layout();
+
+            assert_eq!(output.action, ObservationAction::None);
+            assert_eq!(output.decision, Decision::Bypass);
+            assert_eq!(engine.current_layout(), Layout::English);
+            assert_eq!(engine.token_len(), 0);
+        }
+    }
+
+    #[test]
     fn internal_caps_and_acronyms_render_without_switching() {
         let mut case_engine = engine();
         for (idx, key) in [

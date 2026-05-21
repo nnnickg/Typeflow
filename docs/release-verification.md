@@ -133,37 +133,40 @@ Expected:
 ## macOS Universal Release Package
 
 The release packaging path builds separate Rust and Swift artifacts for arm64
-and x86_64, merges them with `lipo`, signs the app bundle, and writes a zip:
+and x86_64, merges them with `lipo`, ad-hoc signs the app bundle, and writes a
+zip. This is intentional: Typeflow is distributed on a user-trust model.
 
 ```sh
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
-make -C macos release-universal CODESIGN_IDENTITY="Developer ID Application: <name> (<team>)"
+make -C macos release-universal
 ```
 
 Expected:
 
 - `macos/build/release/Typeflow.app/Contents/MacOS/Typeflow` verifies both
   `arm64` and `x86_64` with `lipo -verify_arch`.
-- Codesigning uses hardened runtime and timestamp when `CODESIGN_IDENTITY` is
-  not `-`.
+- `codesign --verify --strict` passes for the ad-hoc signature.
+- `CFBundleVersion` is set to `<major version>.<git commit count>` and must not
+  be `1`.
 - `macos/build/release/dist/Typeflow-macos-universal.zip` exists.
 
-For local unsigned smoke testing on the current machine only:
+For local single-architecture smoke testing on the current machine only:
 
 ```sh
 TYPEFLOW_MACOS_ARCHS=arm64 make -C macos release-universal
 ```
 
-To notarize, either configure an App Store Connect keychain profile:
+The GitHub release workflow builds with `CODESIGN_IDENTITY="-"`. The packaging
+scripts reject any other identity, so hardened-runtime entitlements are
+intentionally absent. Users who download the zip must explicitly trust the app
+on first launch.
+
+If macOS keeps the quarantine attribute on a downloaded build, the user can
+remove it after inspecting the release checksum:
 
 ```sh
-NOTARY_PROFILE=typeflow-notary \
-make -C macos release-universal CODESIGN_IDENTITY="Developer ID Application: <name> (<team>)"
+xattr -dr com.apple.quarantine Typeflow.app
 ```
-
-or provide `APPLE_ID`, `APPLE_TEAM_ID`, and `APPLE_APP_PASSWORD`. The script
-submits the zip with `xcrun notarytool`, staples the app bundle, and recreates
-the zip after stapling.
 
 To install and start for the current user:
 
@@ -249,12 +252,12 @@ Running tests/abi_smoke.rs
 
 ## Coverage
 
-The CI coverage job generates an LCOV artifact from the full Rust workspace:
+CI enforces `typeflow-core` line coverage at 40%. To reproduce it locally:
 
 ```sh
 rustup component add llvm-tools-preview
 cargo install cargo-llvm-cov --version 0.8.6 --locked
-cargo llvm-cov --workspace --locked --lcov --output-path lcov.info
+cargo llvm-cov -p typeflow-core --locked --summary-only --fail-under-lines 40
 ```
 
 ## Fuzz Target Build

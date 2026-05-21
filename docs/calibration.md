@@ -23,10 +23,7 @@ Concrete embedded Ukrainian examples:
 
 | Keys | Secondary rendering | Current result | Policy |
 |---|---|---|---|
-| `hers` | `руки` | English | acceptable ambiguity |
-| `here` | `руку` | English | acceptable ambiguity |
 | `nels` | `туди` | English | acceptable ambiguity |
-| `herb` | `рукі` | English | not the `руки` key sequence in the embedded layout |
 
 ## Generated Eval
 
@@ -46,7 +43,7 @@ generated: skipped_ambiguous_secondary_exact_en=<count>
 The count covers exact English collisions, which have no single correct
 automatic answer. Secondary words whose physical-key sequence contains
 `, . ; ' [ ] \` or a shifted form are not skipped. In non-English layouts those
-keys produce real letters (Cyrillic б, ю, ж, є, х, ї, ґ for the embedded
+keys produce real letters (Ukrainian б, ю, ж, є, х, ї, ґ for the embedded
 Ukrainian pack), so the engine keeps them in the observed token when the
 secondary candidate remains a dictionary prefix or exact word. The same keys
 still reset unambiguous English prose punctuation.

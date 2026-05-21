@@ -51,9 +51,10 @@ written against this file, not against CLI convenience behavior.
 - `reset_layout(layout)` changes active layout and clears token state.
 - `EndToken`, `Literal(char)`, `HostBypass`, focus loss, app switch, secure
   input, and disabled surfaces reset the observed token.
-- English punctuation-position `LetterEvent`s reset the observed token only
-  when appending the key leaves the secondary candidate without dictionary
-  prefix or exact-word evidence.
+- English punctuation-position `LetterEvent`s listed by the active secondary
+  pack's `punctuation_letter_keys` stay eligible as token letters. They reset
+  the observed token only when appending the key leaves the secondary candidate
+  without dictionary prefix or exact-word evidence.
 - `Backspace` removes one `LetterEvent` from token state and reconciles the
   inferred layout for the shortened token.
 - Backspace on an empty token is a no-op for engine state.
@@ -140,6 +141,8 @@ written against this file, not against CLI convenience behavior.
 - Pack manifests must stay within the pack directory. Path traversal is invalid.
 - Pack ids are stable user-facing identifiers. `en` is reserved and cannot be a
   secondary pack id.
+- Secondary packs own their `punctuation_letter_keys`; the engine must not
+  assume Ukrainian-specific punctuation-key behavior.
 - Pack format compatibility is governed by `PACK_FORMAT_VERSION`.
 - `docs/artifact-format.md` defines what requires a format-version bump.
 

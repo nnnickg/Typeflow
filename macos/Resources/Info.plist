@@ -28,15 +28,15 @@
     <string>MacOSX</string>
   </array>
   <key>CFBundleVersion</key>
-  <string>1</string>
+  <string>__TYPEFLOW_BUNDLE_VERSION__</string>
   <key>LSUIElement</key>
   <true/>
   <key>LSMinimumSystemVersion</key>
-  <string>14.0</string>
+  <string>13.0</string>
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
   <key>NSAccessibilityUsageDescription</key>
-  <string>Typeflow observes keyboard events and foreground text surfaces to switch the active keyboard layout without rewriting document text.</string>
+  <string>Typeflow observes keyboard events and foreground text surfaces so it can switch keyboard layouts and replace detected wrong-layout tokens.</string>
   <key>NSInputMonitoringUsageDescription</key>
   <string>Typeflow observes keyboard events so it can switch the active keyboard layout for future keys.</string>
   <key>NSSupportsSuddenTermination</key>

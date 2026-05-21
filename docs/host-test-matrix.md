@@ -17,7 +17,7 @@ Core cases for every normal text field:
 
 | Input | Expected visible text | Purpose |
 | --- | --- | --- |
-| `ghsdbn` | secondary word, e.g. `привіт` / `привет` by configured pack | automatic token replacement |
+| `ghsdbn` | secondary word, e.g. `привіт` by configured pack | automatic token replacement |
 | `[fnf` | secondary candidate when valid, otherwise unchanged | punctuation-position keys stay engine-owned, not ad hoc text parsing |
 | `hello ghsdbn` | `hello ` plus replaced secondary word | space resets observed token before next replacement |
 | `http` | `http` | English technical token remains untouched |
@@ -43,6 +43,12 @@ Expected host behavior:
   inline ownership UI, no overlay.
 - When Rust returns `SwitchFutureLayout`, Typeflow replaces the current token
   once and changes the real macOS keyboard source for future keys.
+- Token replacement is posted as synthetic selection plus synthetic Unicode
+  events. If focus changes between decision and post, Typeflow must cancel the
+  replacement. If focus changes after selection but before Unicode insertion,
+  the selected text can remain selected and the token may be left unchanged.
+  Treat any wrong-field replacement or wrong-field selection as a release
+  blocker.
 - Password fields bypass Typeflow observation.
 - Apps in `apps.disable_auto_bundle_ids` disable automatic layout switching but
   still allow standalone Option in normal non-secure fields.
