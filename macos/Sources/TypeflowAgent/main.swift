@@ -552,9 +552,6 @@ private final class TypeflowAgent: NSObject {
             if source == "manual", replacementPlan == nil {
                 replacementPlan = manualToggleReplacementPlan(to: layout)
             }
-            measured("engine.resetToken.\(source)", thresholdMs: slowCallThresholdMs) {
-                engine.resetToken()
-            }
             scheduleInputSourceSelection(
                 layout,
                 source: source,
@@ -598,6 +595,30 @@ private final class TypeflowAgent: NSObject {
         replacementPlan: ReplacementPlan?,
         replacementGeneration capturedReplacementGeneration: UInt64
     ) {
+        if let replacementPlan {
+            guard capturedReplacementGeneration == replacementGeneration else {
+                return
+            }
+            guard replacementFocusIsStillValid(replacementPlan.focus) else {
+                cancelPendingReplacement(reason: "replacementFocusInvalid")
+                return
+            }
+            if source != "manual" {
+                manualReplacementToggle = nil
+            }
+            let replaced = textReplacer.replaceLastToken(
+                reason: source,
+                deleteCount: replacementPlan.deleteCount,
+                with: replacementPlan.text,
+                isStillValid: { [weak self] in
+                    self?.replacementFocusIsStillValid(replacementPlan.focus) ?? false
+                }
+            )
+            guard replaced else {
+                return
+            }
+        }
+
         let selected = measured("inputSource.selectForFuture.\(source)", thresholdMs: slowCallThresholdMs) {
             sourceSwitcher.selectForFuture(layout, reason: source)
         }
@@ -609,26 +630,13 @@ private final class TypeflowAgent: NSObject {
         }
         syncedInputSourceLayout = layout
         inputSourceStateReady = true
-        guard capturedReplacementGeneration == replacementGeneration else {
-            return
-        }
         if let replacementPlan {
             if source == "manual" {
                 updateManualReplacementToggle(
                     from: replacementPlan,
                     targetLayout: layout
                 )
-            } else {
-                manualReplacementToggle = nil
             }
-            textReplacer.replaceLastToken(
-                reason: source,
-                deleteCount: replacementPlan.deleteCount,
-                with: replacementPlan.text,
-                isStillValid: { [weak self] in
-                    self?.replacementFocusIsStillValid(replacementPlan.focus) ?? false
-                }
-            )
         }
     }
 
@@ -1399,7 +1407,6 @@ private final class TypeflowAgent: NSObject {
         if clearsManualToggle {
             manualReplacementToggle = nil
         }
-        textReplacer.cancelPending(reason: reason)
     }
 
     private func cancelPendingInputSourceSelection(reason: String) {
@@ -1699,75 +1706,48 @@ private final class TextReplacer {
         category: "Replacement"
     )
     private let source = CGEventSource(stateID: .hidSystemState)
-    private var pendingWorkItem: DispatchWorkItem?
-    private var generation: UInt64 = 0
 
-    func cancelPending(reason: String) {
-        guard pendingWorkItem != nil else {
-            return
-        }
-        generation &+= 1
-        pendingWorkItem?.cancel()
-        pendingWorkItem = nil
-        logger.debug("cancelled pending replacement reason=\(reason, privacy: .public)")
-    }
-
+    @discardableResult
     func replaceLastToken(
         reason: String,
         deleteCount: Int,
         with text: String,
         isStillValid: @escaping () -> Bool
-    ) {
+    ) -> Bool {
         guard deleteCount > 0, !text.isEmpty else {
-            return
+            return false
         }
 
-        cancelPending(reason: "superseded")
-        generation &+= 1
-        let scheduledGeneration = generation
         let requestedAt = ProcessInfo.processInfo.systemUptime
-        let workItem = DispatchWorkItem { [weak self, source, logger] in
-            guard let self,
-                  self.generation == scheduledGeneration
-            else {
-                return
-            }
-            guard isStillValid() else {
-                self.cancelPending(reason: "validationFailed")
-                return
-            }
-
-            let workStarted = ProcessInfo.processInfo.systemUptime
-            // Select first so a dropped Unicode event cannot silently delete user text.
-            measured("replacement.selectPrevious.\(reason)", thresholdMs: slowCallThresholdMs) {
-                Self.selectPreviousCharacters(deleteCount, source: source)
-            }
-            guard isStillValid() else {
-                self.cancelPending(reason: "postValidationFailed")
-                return
-            }
-            measured("replacement.postUnicode.\(reason)", thresholdMs: slowCallThresholdMs) {
-                Self.postUnicode(text, source: source)
-            }
-            logPerformance(
-                name: "replacement.work.\(reason)",
-                started: workStarted,
-                thresholdMs: slowCallThresholdMs
-            )
-            logPerformance(
-                name: "replacement.decisionToPost.\(reason)",
-                started: requestedAt,
-                thresholdMs: slowCallThresholdMs
-            )
-            logger.notice(
-                "replaced token reason=\(reason, privacy: .public) deleteCount=\(deleteCount, privacy: .public) insertedUtf16=\(text.utf16.count, privacy: .public)"
-            )
-            if self.generation == scheduledGeneration {
-                self.pendingWorkItem = nil
-            }
+        guard isStillValid() else {
+            return false
         }
-        pendingWorkItem = workItem
-        DispatchQueue.main.async(execute: workItem)
+
+        let workStarted = ProcessInfo.processInfo.systemUptime
+        // Select first so a dropped Unicode event cannot silently delete user text.
+        measured("replacement.selectPrevious.\(reason)", thresholdMs: slowCallThresholdMs) {
+            Self.selectPreviousCharacters(deleteCount, source: source)
+        }
+        guard isStillValid() else {
+            return false
+        }
+        measured("replacement.postUnicode.\(reason)", thresholdMs: slowCallThresholdMs) {
+            Self.postUnicode(text, source: source)
+        }
+        logPerformance(
+            name: "replacement.work.\(reason)",
+            started: workStarted,
+            thresholdMs: slowCallThresholdMs
+        )
+        logPerformance(
+            name: "replacement.decisionToPost.\(reason)",
+            started: requestedAt,
+            thresholdMs: slowCallThresholdMs
+        )
+        logger.notice(
+            "replaced token reason=\(reason, privacy: .public) deleteCount=\(deleteCount, privacy: .public) insertedUtf16=\(text.utf16.count, privacy: .public)"
+        )
+        return true
     }
 
     private static func postKey(
