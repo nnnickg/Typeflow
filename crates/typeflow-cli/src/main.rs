@@ -1298,6 +1298,13 @@ fn cmd_config(args: &[String], explicit_config: Option<&Path>) -> Result<(), Str
         }
         Some("show") => {
             let source = load_config(explicit_config)?;
+            ResolvedHostConfig::from_source(
+                ConfigSource {
+                    config: source.config.clone(),
+                    path: source.path.clone(),
+                },
+                &HostEnvironment::from_process(),
+            )?;
             match &source.path {
                 Some(path) => println!("# loaded from {}\n", path.display()),
                 None => println!("# no config file found; using built-in defaults\n"),

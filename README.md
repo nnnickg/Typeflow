@@ -15,6 +15,9 @@ inline composition or become the active text compositor; when Rust decides a
 token was typed in the wrong layout, the agent replaces that token once and
 switches the real macOS input source for future keys.
 
+Ukrainian is the built-in default secondary language; other secondary languages
+are loaded from local packs.
+
 ```sh
 typeflow --version
 typeflow predict ghsdbn

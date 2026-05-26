@@ -25,7 +25,7 @@ typeflow config show
 typeflow --config /path/to/config.toml config show
 ```
 
-Check the active model source and installed secondary pack metadata:
+Check the active model source and secondary language metadata:
 
 ```sh
 typeflow model
@@ -33,6 +33,10 @@ typeflow pack list
 typeflow pack inspect uk
 typeflow pack inspect "$(typeflow config show | sed -n 's/^secondary = "\(.*\)"/\1/p')"
 ```
+
+The embedded default secondary language is Ukrainian, and
+`typeflow pack inspect uk` reports its embedded metadata. The final command
+inspects the active secondary side when it is an installed local pack.
 
 ## Permissions
 

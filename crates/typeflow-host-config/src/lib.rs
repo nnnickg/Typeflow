@@ -306,6 +306,8 @@ impl ResolvedHostConfig {
 
         let secondary_language = normalized_secondary_id(&source.config);
         validate_secondary_id(&secondary_language)?;
+        let macos_input_sources = MacOSInputSourceConfig::from_config(&source.config);
+        validate_macos_secondary_input_source(&secondary_language, &macos_input_sources)?;
 
         Ok(Self {
             engine,
@@ -316,7 +318,7 @@ impl ResolvedHostConfig {
                 source.config.apps.disable_bundle_ids.clone(),
                 source.config.apps.disable_auto_bundle_ids.clone(),
             ),
-            macos_input_sources: MacOSInputSourceConfig::from_config(&source.config),
+            macos_input_sources,
             source_path: source.path,
         })
     }
@@ -644,6 +646,29 @@ fn validate_secondary_id(id: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_macos_secondary_input_source(
+    secondary_language: &str,
+    input_sources: &MacOSInputSourceConfig,
+) -> Result<(), String> {
+    if secondary_language != "uk" {
+        return Ok(());
+    }
+    let Some(input_source_id) = input_sources.secondary_input_source_id.as_deref() else {
+        return Ok(());
+    };
+    if macos_input_source_looks_ukrainian(input_source_id) {
+        return Ok(());
+    }
+
+    Err(format!(
+        "macos.secondary_input_source_id '{input_source_id}' does not look like a Ukrainian input source, but language.secondary = 'uk' uses the embedded Ukrainian model; set language.secondary to the installed secondary pack id or choose a Ukrainian macOS input source"
+    ))
+}
+
+fn macos_input_source_looks_ukrainian(input_source_id: &str) -> bool {
+    input_source_id.to_ascii_lowercase().contains("ukrainian")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -946,6 +971,56 @@ secondary = "{secondary}"
             .unwrap_err();
             assert!(error.contains("language.secondary"));
         }
+    }
+
+    #[test]
+    fn resolved_host_config_rejects_embedded_ukrainian_macos_source_mismatch() {
+        let config = toml::from_str::<Config>(
+            r#"
+[language]
+secondary = "uk"
+
+[macos]
+secondary_input_source_id = "com.apple.keylayout.ABC"
+"#,
+        )
+        .unwrap();
+
+        let error = ResolvedHostConfig::from_source(
+            ConfigSource { config, path: None },
+            &HostEnvironment::default(),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("secondary_input_source_id"));
+        assert!(error.contains("embedded Ukrainian model"));
+        assert!(error.contains("installed secondary pack id"));
+    }
+
+    #[test]
+    fn resolved_host_config_accepts_embedded_ukrainian_macos_source_match() {
+        let config = toml::from_str::<Config>(
+            r#"
+[language]
+secondary = "uk"
+
+[macos]
+secondary_input_source_id = "com.apple.keylayout.Ukrainian"
+"#,
+        )
+        .unwrap();
+
+        let resolved = ResolvedHostConfig::from_source(
+            ConfigSource { config, path: None },
+            &HostEnvironment::default(),
+        )
+        .unwrap();
+
+        assert_eq!(resolved.secondary_language, "uk");
+        assert_eq!(
+            resolved.macos_input_sources.secondary_input_source_id,
+            Some("com.apple.keylayout.Ukrainian".to_owned())
+        );
     }
 
     #[test]

@@ -1032,7 +1032,7 @@ checksum = "756daf9b1013ebe47a8776667b466417e2d4c5679d441c26230efd9ef78692db"
 
 [[package]]
 name = "typeflow-cli"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "clap",
  "clap_complete",
@@ -1047,7 +1047,7 @@ dependencies = [
 
 [[package]]
 name = "typeflow-core"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "criterion",
  "fst",
@@ -1058,7 +1058,7 @@ dependencies = [
 
 [[package]]
 name = "typeflow-data"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "flate2",
@@ -1071,7 +1071,7 @@ dependencies = [
 
 [[package]]
 name = "typeflow-ffi"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "criterion",
  "typeflow-core",
@@ -1080,7 +1080,7 @@ dependencies = [
 
 [[package]]
 name = "typeflow-host-config"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "serde",
  "toml",

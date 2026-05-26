@@ -2,6 +2,9 @@
 
 Typeflow is currently a public alpha pass-through observer agent.
 
+The default embedded secondary language is Ukrainian. Other secondary languages
+come from local packs.
+
 ## Current Architecture
 
 - Rust owns token tracking, scoring, and future layout state.

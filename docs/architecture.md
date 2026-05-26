@@ -17,6 +17,9 @@ an overlay, or call host insertion/replacement APIs per key. Host mutation is a
 single explicit token-replacement side effect when Rust decides the active token
 belongs to the other layout.
 
+The embedded default language pair is English plus Ukrainian. External packs
+replace only the secondary side.
+
 ## Crates
 
 ### `typeflow-core`

@@ -9,8 +9,8 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-typeflow-core = { path = "../crates/typeflow-core", version = "1.1.0" }
-typeflow-ffi = { path = "../crates/typeflow-ffi", version = "1.1.0" }
+typeflow-core = { path = "../crates/typeflow-core", version = "1.2.0" }
+typeflow-ffi = { path = "../crates/typeflow-ffi", version = "1.2.0" }
 
 [[bin]]
 name = "artifact_decoders"
