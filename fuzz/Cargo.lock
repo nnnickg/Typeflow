@@ -218,8 +218,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "756daf9b1013ebe47a8776667b466417e2d4c5679d441c26230efd9ef78692db"
 
 [[package]]
-name = "typeflow-core"
-version = "1.2.1"
+name = "typeclaw-core"
+version = "1.2.2"
 dependencies = [
  "fst",
  "serde",
@@ -227,29 +227,29 @@ dependencies = [
 ]
 
 [[package]]
-name = "typeflow-ffi"
-version = "1.2.1"
+name = "typeclaw-ffi"
+version = "1.2.2"
 dependencies = [
- "typeflow-core",
- "typeflow-host-config",
+ "typeclaw-core",
+ "typeclaw-host-config",
 ]
 
 [[package]]
-name = "typeflow-fuzz"
+name = "typeclaw-fuzz"
 version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
- "typeflow-core",
- "typeflow-ffi",
+ "typeclaw-core",
+ "typeclaw-ffi",
 ]
 
 [[package]]
-name = "typeflow-host-config"
-version = "1.2.1"
+name = "typeclaw-host-config"
+version = "1.2.2"
 dependencies = [
  "serde",
  "toml",
- "typeflow-core",
+ "typeclaw-core",
 ]
 
 [[package]]

@@ -1,15 +1,15 @@
-# Typeflow
+# TypeClaw
 
-![Typeflow converts wrong-layout typing into the intended word](docs/assets/typeflow-demo.gif)
+![TypeClaw converts wrong-layout typing into the intended word](docs/assets/typeclaw-demo.gif)
 
-[![Download Typeflow for macOS](https://img.shields.io/badge/download-macOS%20app-0A7AFF?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/nnnickg/Typeflow/releases/latest/download/Typeflow-macos-universal.zip)
+[![Download TypeClaw for macOS](https://img.shields.io/badge/download-macOS%20app-0A7AFF?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/nnnickg/TypeClaw/releases/latest/download/TypeClaw-macos-universal.zip)
 
-Typeflow is local-only: it does not send keystrokes, text, telemetry, or crash
+TypeClaw is local-only: it does not send keystrokes, text, telemetry, or crash
 reports anywhere. The macOS app is distributed for user-trust installation with
 ad-hoc signing, not Apple Developer notarization, so macOS will require the
 normal manual trust step on first launch.
 
-Typeflow is a macOS background agent that observes typing and switches between
+TypeClaw is a macOS background agent that observes typing and switches between
 English plus one configurable secondary keyboard layout. It does not render
 inline composition or become the active text compositor; when Rust decides a
 token was typed in the wrong layout, the agent replaces that token once and
@@ -19,8 +19,8 @@ Ukrainian is the built-in default secondary language; other secondary languages
 are loaded from local packs.
 
 ```sh
-typeflow --version
-typeflow predict ghsdbn
+typeclaw --version
+typeclaw predict ghsdbn
 ```
 
 ## Who this is for
@@ -31,7 +31,7 @@ want wrong-layout words corrected locally without a cloud service in the path.
 ## Status
 
 Public alpha macOS observer agent. Keep normal English and secondary keyboard
-layouts installed; Typeflow switches those real system sources for future keys
+layouts installed; TypeClaw switches those real system sources for future keys
 and replaces decided tokens with synthetic selection plus Unicode events. The
 Rust engine works end-to-end on real data, and `macos/` builds and signs the
 agent app. See
@@ -42,11 +42,11 @@ state-of-the-project snapshot.
 
 ```text
 crates/
-├── typeflow-core/   pure Rust engine; scoring, decision, data types
-├── typeflow-host-config/  TOML/env/app-policy resolution for CLI + macOS host
-├── typeflow-data/   xtask: downloads OpenSubtitles + hermitdave word lists, builds n-grams + FSTs
-├── typeflow-cli/    user-facing CLI: type / stream / repl / predict / pack / config
-└── typeflow-ffi/    C ABI bridge for the Swift macOS agent
+├── typeclaw-core/   pure Rust engine; scoring, decision, data types
+├── typeclaw-host-config/  TOML/env/app-policy resolution for CLI + macOS host
+├── typeclaw-data/   xtask: downloads OpenSubtitles + hermitdave word lists, builds n-grams + FSTs
+├── typeclaw-cli/    user-facing CLI: type / stream / repl / predict / pack / config
+└── typeclaw-ffi/    C ABI bridge for the Swift macOS agent
 docs/
 ├── architecture.md  component layout + data flow
 ├── artifact-format.md  pack/data compatibility policy
@@ -71,14 +71,14 @@ files. The raw subtitles are only build-time/training input.
 To rebuild the embedded model artifacts, run:
 
 ```sh
-cargo run --release -p typeflow-data
+cargo run --release -p typeclaw-data
 ```
 
 That downloads ~3.7 GB from OpenSubtitles + hermitdave into
-`target/typeflow-data-cache/` and produces the small compile-time artifacts:
+`target/typeclaw-data-cache/` and produces the small compile-time artifacts:
 
 ```text
-crates/typeflow-core/data/
+crates/typeclaw-core/data/
 ├── en.ngrams.bin
 ├── uk.ngrams.bin
 ├── en.dict.fst
@@ -96,44 +96,44 @@ Data-source attribution and generated-artifact license notes are in
 ### 2. Build and run the CLI
 
 ```sh
-cargo build --release -p typeflow-cli
-./target/release/typeflow --help
+cargo build --release -p typeclaw-cli
+./target/release/typeclaw --help
 ```
 
-`target/release/typeflow` is standalone: the model is embedded with
+`target/release/typeclaw` is standalone: the model is embedded with
 `include_bytes!`. External language packs are optional and installed separately.
 
 Or install it on your PATH:
 
 ```sh
-cargo install --path crates/typeflow-cli
-typeflow --help
+cargo install --path crates/typeclaw-cli
+typeclaw --help
 ```
 
 ### 3. Try the engine
 
 ```sh
 # Per-keystroke trace ending in final score breakdown.
-typeflow type ghsdbn        # Ukrainian: привіт
-typeflow type typeflow      # English
+typeclaw type ghsdbn        # Ukrainian: привіт
+typeclaw type typeclaw      # English
 
 # Cyrillic input also works (reverse-mapped to physical keys).
-typeflow type привіт
+typeclaw type привіт
 
 # One-shot decision, pipe-friendly.
-typeflow predict ghsdbn                  # -> "Ukrainian\tпривіт"
-typeflow predict --json ghsdbn           # -> JSON line
+typeclaw predict ghsdbn                  # -> "Ukrainian\tпривіт"
+typeclaw predict --json ghsdbn           # -> JSON line
 
 # Built-in hard-case smoke corpus and generated dictionary regression corpus.
-typeflow eval
-typeflow eval --generated 500             # 500 EN + 500 secondary dictionary cases
+typeclaw eval
+typeclaw eval --generated 500             # 500 EN + 500 secondary dictionary cases
 # eval prints accuracy, confusion counts, false positives/negatives, length
 # buckets, and a bounded failure sample.
-typeflow model
+typeclaw model
 
 # Real benchmarks live under Cargo's benchmark harness.
-cargo bench -p typeflow-core
-cargo bench -p typeflow-ffi
+cargo bench -p typeclaw-core
+cargo bench -p typeclaw-ffi
 
 # Compile fuzz harnesses for artifact and FFI abuse testing.
 cargo build --manifest-path fuzz/Cargo.toml --bins --locked
@@ -145,7 +145,7 @@ make -C macos smoke
 make -C macos swift-package
 
 # Verify the checked-in C header matches the Rust FFI declarations.
-cbindgen --quiet --config cbindgen.toml --crate typeflow-ffi --output crates/typeflow-ffi/include/typeflow.h --verify
+cbindgen --quiet --config cbindgen.toml --crate typeclaw-ffi --output crates/typeclaw-ffi/include/typeclaw.h --verify
 
 # Build and ad-hoc sign the macOS agent app bundle.
 make -C macos bundle
@@ -160,25 +160,22 @@ make -C macos install-user
 # - Accessibility
 # - Input Monitoring
 
-# Restart a running copy after reinstall so macOS loads the new binary.
-pkill -x Typeflow
-
 # External-pack workflow. The binary itself stays standalone.
-cargo run --release -p typeflow-data -- build-pack ./secondary.toml --out /tmp/secondary.typeflow-pack
-typeflow pack install /tmp/secondary.typeflow-pack
-typeflow pack list
-typeflow pack use secondary
-typeflow pack inspect secondary
+cargo run --release -p typeclaw-data -- build-pack ./secondary.toml --out /tmp/secondary.typeclaw-pack
+typeclaw pack install /tmp/secondary.typeclaw-pack
+typeclaw pack list
+typeclaw pack use secondary
+typeclaw pack inspect secondary
 
 # Generate shell completions.
-typeflow completions zsh > /tmp/typeflow.zsh
-typeflow completions bash > /tmp/typeflow.bash
+typeclaw completions zsh > /tmp/typeclaw.zsh
+typeclaw completions bash > /tmp/typeclaw.bash
 
 # Stream tokens from stdin.
-echo -e "ghsdbn\nhello\nyt" | typeflow stream
+echo -e "ghsdbn\nhello\nyt" | typeclaw stream
 
 # Interactive raw-mode REPL with live score updates.
-typeflow repl
+typeclaw repl
 ```
 
 Pack specs are documented in [`docs/pack-spec.md`](docs/pack-spec.md).
@@ -188,15 +185,15 @@ Pack specs are documented in [`docs/pack-spec.md`](docs/pack-spec.md).
 All scoring knobs are exposed via TOML. Generate a fully-commented default:
 
 ```sh
-typeflow config init        # writes ~/.config/typeflow/config.toml
-typeflow config show        # prints effective merged config
-typeflow --config /tmp/x.toml type ghsdbn
+typeclaw config init        # writes ~/.config/typeclaw/config.toml
+typeclaw config show        # prints effective merged config
+typeclaw --config /tmp/x.toml type ghsdbn
 ```
 
 See [`docs/engine.md`](docs/engine.md) for what each config field actually controls.
 The macOS agent reads the same config path for engine tuning, active secondary
 language packs, excluded app bundle IDs, and optional real macOS input-source
-IDs. `TYPEFLOW_DATA_DIR` and `TYPEFLOW_PACK_DIR` override TOML in both the CLI
+IDs. `TYPECLAW_DATA_DIR` and `TYPECLAW_PACK_DIR` override TOML in both the CLI
 and macOS host. Manual switching is not configurable in TOML: the macOS host
 hardcodes standalone Option press/release.
 Option+another key is treated as normal app input.

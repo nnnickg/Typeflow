@@ -25,17 +25,17 @@ written against this file, not against CLI convenience behavior.
   reverse-maps through the loaded keyboard maps and falls back to literals.
 - Ctrl, Command, and Option-modified key events are host bypass events.
 - Standalone Option may call `force_switch_layout()` as a host command. It is
-  not encoded as a `TfEvent`.
+  not encoded as a `TcEvent`.
 
 ## Pass-Through Contract
 
-- Typeflow is an observer, not an input compositor.
+- TypeClaw is an observer, not an input compositor.
 - Normal printable keyDown events pass through to the app through a listen-only
-  event tap. Typeflow must not become the active text compositor.
+  event tap. TypeClaw must not become the active text compositor.
 - The engine never returns text to render or commit during normal typing.
 - The host must not call host composition or overlay APIs for normal observed
   letters.
-- Typeflow may update internal token state and inferred future layout on every
+- TypeClaw may update internal token state and inferred future layout on every
   key. It may perform one host token replacement when a switch decision is made.
 - Manual Option switching changes future layout state and resets the observed
   token. If a token is active, the macOS host may replace that token once.
@@ -114,23 +114,23 @@ written against this file, not against CLI convenience behavior.
 - Any constructor may return null. The host must treat null as initialization
   failure and stop using that engine handle.
 - Pointers returned by constructors must be freed exactly once with
-  `typeflow_engine_free`.
+  `typeclaw_engine_free`.
 - Passing null to null-tolerant functions is a no-op or English fallback as
   documented in the Rust FFI comments.
-- `typeflow_engine_observe` requires a valid engine pointer and writable
-  `TfObservation` pointer. Invalid events write `ObservationAction::None`.
-- `TfObservation` contains only `tag` and `layout`; replacement text is not part
+- `typeclaw_engine_observe` requires a valid engine pointer and writable
+  `TcObservation` pointer. Invalid events write `ObservationAction::None`.
+- `TcObservation` contains only `tag` and `layout`; replacement text is not part
   of the observation payload.
-- `typeflow_engine_observe` and `typeflow_engine_force_switch_layout` must
+- `typeclaw_engine_observe` and `typeclaw_engine_force_switch_layout` must
   capture a pending replacement snapshot before any token reset that follows a
   `SwitchFutureLayout` action.
 - Hosts that need replacement text must consume the pending snapshot with
-  `typeflow_engine_pending_replacement_delete_count`,
-  `typeflow_engine_pending_replacement_utf8_len`, and
-  `typeflow_engine_take_pending_replacement_utf8`. Hosts that support manual
+  `typeclaw_engine_pending_replacement_delete_count`,
+  `typeclaw_engine_pending_replacement_utf8_len`, and
+  `typeclaw_engine_take_pending_replacement_utf8`. Hosts that support manual
   replacement toggles may also read the inverse snapshot with
-  `typeflow_engine_pending_replacement_inverse_utf8_len` and
-  `typeflow_engine_copy_pending_replacement_inverse_utf8` before taking the
+  `typeclaw_engine_pending_replacement_inverse_utf8_len` and
+  `typeclaw_engine_copy_pending_replacement_inverse_utf8` before taking the
   replacement. Reset, host-context changes, invalid events, and non-switch
   observations clear the snapshot.
 

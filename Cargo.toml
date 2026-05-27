@@ -1,25 +1,25 @@
 [workspace]
 members = [
-    "crates/typeflow-core",
-    "crates/typeflow-host-config",
-    "crates/typeflow-data",
-    "crates/typeflow-ffi",
-    "crates/typeflow-cli",
+    "crates/typeclaw-core",
+    "crates/typeclaw-host-config",
+    "crates/typeclaw-data",
+    "crates/typeclaw-ffi",
+    "crates/typeclaw-cli",
 ]
 exclude = ["fuzz"]
 resolver = "2"
 
 [workspace.package]
-version = "1.2.1"
+version = "1.2.2"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/nnnickg/typeflow"
-homepage = "https://github.com/nnnickg/typeflow"
+repository = "https://github.com/nnnickg/typeclaw"
+homepage = "https://github.com/nnnickg/typeclaw"
 
 [workspace.dependencies]
 criterion = "0.8.2"
-typeflow-core = { path = "crates/typeflow-core", version = "1.2.1" }
-typeflow-host-config = { path = "crates/typeflow-host-config", version = "1.2.1" }
+typeclaw-core = { path = "crates/typeclaw-core", version = "1.2.2" }
+typeclaw-host-config = { path = "crates/typeclaw-host-config", version = "1.2.2" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

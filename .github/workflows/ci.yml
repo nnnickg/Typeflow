@@ -57,8 +57,8 @@ jobs:
       - name: Install Coverage Tool
         run: cargo install cargo-llvm-cov --version 0.8.6 --locked
 
-      - name: typeflow-core Line Coverage
-        run: cargo llvm-cov -p typeflow-core --locked --summary-only --fail-under-lines 40
+      - name: typeclaw-core Line Coverage
+        run: cargo llvm-cov -p typeclaw-core --locked --summary-only --fail-under-lines 40
 
   macos:
     name: macOS
@@ -98,30 +98,30 @@ jobs:
         run: cargo deny check
 
       - name: FFI Header
-        run: cbindgen --quiet --config cbindgen.toml --crate typeflow-ffi --output crates/typeflow-ffi/include/typeflow.h --verify
+        run: cbindgen --quiet --config cbindgen.toml --crate typeclaw-ffi --output crates/typeclaw-ffi/include/typeclaw.h --verify
 
       - name: Fuzz Targets
         run: cargo build --manifest-path fuzz/Cargo.toml --bins --locked
 
       - name: Release Build
-        run: cargo build --release --locked -p typeflow-cli -p typeflow-ffi
+        run: cargo build --release --locked -p typeclaw-cli -p typeclaw-ffi
 
       - name: CLI Smoke
         run: |
-          touch "$RUNNER_TEMP/typeflow-empty.toml"
-          target/release/typeflow --config "$RUNNER_TEMP/typeflow-empty.toml" model
-          target/release/typeflow --config "$RUNNER_TEMP/typeflow-empty.toml" predict ghsdbn
-          target/release/typeflow --config "$RUNNER_TEMP/typeflow-empty.toml" pack inspect uk
-          target/release/typeflow --config "$RUNNER_TEMP/typeflow-empty.toml" eval --generated 500
-          target/release/typeflow completions zsh >/dev/null
+          touch "$RUNNER_TEMP/typeclaw-empty.toml"
+          target/release/typeclaw --config "$RUNNER_TEMP/typeclaw-empty.toml" model
+          target/release/typeclaw --config "$RUNNER_TEMP/typeclaw-empty.toml" predict ghsdbn
+          target/release/typeclaw --config "$RUNNER_TEMP/typeclaw-empty.toml" pack inspect uk
+          target/release/typeclaw --config "$RUNNER_TEMP/typeclaw-empty.toml" eval --generated 500
+          target/release/typeclaw completions zsh >/dev/null
 
       - name: macOS Staticlib Smoke
-        run: make -C macos smoke CARGO_TARGET_DIR="$PWD/target" BUILD_DIR="$RUNNER_TEMP/typeflow-macos-build"
+        run: make -C macos smoke CARGO_TARGET_DIR="$PWD/target" BUILD_DIR="$RUNNER_TEMP/typeclaw-macos-build"
 
       - name: SwiftPM Build
         run: |
-          CARGO_TARGET_DIR="$PWD/target" RUST_PROFILE=release xcrun swift run --package-path macos -c release typeflow-staticlib-smoke
-          CARGO_TARGET_DIR="$PWD/target" RUST_PROFILE=release xcrun swift build --package-path macos -c release --product Typeflow
+          CARGO_TARGET_DIR="$PWD/target" RUST_PROFILE=release xcrun swift run --package-path macos -c release typeclaw-staticlib-smoke
+          CARGO_TARGET_DIR="$PWD/target" RUST_PROFILE=release xcrun swift build --package-path macos -c release --product TypeClaw
 
       - name: macOS Bundle Build
-        run: make -C macos bundle CARGO_TARGET_DIR="$PWD/target" BUILD_DIR="$RUNNER_TEMP/typeflow-macos-build"
+        run: make -C macos bundle CARGO_TARGET_DIR="$PWD/target" BUILD_DIR="$RUNNER_TEMP/typeclaw-macos-build"

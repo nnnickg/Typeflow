@@ -5,14 +5,14 @@
 ```text
 keyDown
 -> Swift host reads cached host context
--> Swift translates the event to TfEvent
+-> Swift translates the event to TcEvent
 -> Rust observes the event and updates token/layout state
 -> macOS/app inserts the key normally
 -> on a switch decision, Swift replaces the just-typed token once
 -> Swift schedules a real input-source switch for future keys
 ```
 
-Typeflow is a pass-through state machine. It does not compose inline text, draw
+TypeClaw is a pass-through state machine. It does not compose inline text, draw
 an overlay, or call host insertion/replacement APIs per key. Host mutation is a
 single explicit token-replacement side effect when Rust decides the active token
 belongs to the other layout.
@@ -22,7 +22,7 @@ replace only the secondary side.
 
 ## Crates
 
-### `typeflow-core`
+### `typeclaw-core`
 
 Pure Rust. Hot path has no I/O. It owns:
 
@@ -40,7 +40,7 @@ The engine returns state notifications, not text:
 
 `docs/invariants.md` is the contract for host behavior.
 
-### `typeflow-host-config`
+### `typeclaw-host-config`
 
 Rust config and host-policy layer shared by CLI and FFI. It owns TOML parsing,
 environment overrides, default config paths, app disable policy, and host-surface
@@ -54,33 +54,33 @@ The app policy surface is intentionally small:
 
 There is no live-rendering policy because there is no live composition path.
 
-### `typeflow-ffi`
+### `typeclaw-ffi`
 
 C ABI for the macOS bundle. The hot path is:
 
-- `typeflow_engine_observe(engine, TfEvent, *out TfObservation)`
-- `typeflow_engine_force_switch_layout(engine, *out TfObservation)`
-- `typeflow_engine_reset_token`
-- `typeflow_engine_reset_layout`
-- `typeflow_engine_set_host_context`
-- `typeflow_engine_current_layout`
-- `typeflow_engine_token_len`
-- `typeflow_engine_pending_replacement_delete_count`
-- `typeflow_engine_pending_replacement_utf8_len`
-- `typeflow_engine_pending_replacement_inverse_utf8_len`
-- `typeflow_engine_copy_pending_replacement_inverse_utf8`
-- `typeflow_engine_take_pending_replacement_utf8`
+- `typeclaw_engine_observe(engine, TcEvent, *out TcObservation)`
+- `typeclaw_engine_force_switch_layout(engine, *out TcObservation)`
+- `typeclaw_engine_reset_token`
+- `typeclaw_engine_reset_layout`
+- `typeclaw_engine_set_host_context`
+- `typeclaw_engine_current_layout`
+- `typeclaw_engine_token_len`
+- `typeclaw_engine_pending_replacement_delete_count`
+- `typeclaw_engine_pending_replacement_utf8_len`
+- `typeclaw_engine_pending_replacement_inverse_utf8_len`
+- `typeclaw_engine_copy_pending_replacement_inverse_utf8`
+- `typeclaw_engine_take_pending_replacement_utf8`
 
-`TfObservation` is lifetime-free and text-free:
+`TcObservation` is lifetime-free and text-free:
 
 ```c
 typedef struct {
     uint8_t tag;
     uint8_t layout;
-} TfObservation;
+} TcObservation;
 ```
 
-### `typeflow-cli`
+### `typeclaw-cli`
 
 CLI tools use the same observer engine. `predict`, `stream`, and `eval` inspect
 the engine's final candidates/layout; they do not simulate committed host text as
@@ -90,18 +90,18 @@ engine output. `repl` shows pass-through host text plus the observed state trace
 
 The macOS target is an LSUIElement background agent plus Swift wrappers:
 
-- `TypeflowKit/Engine.swift` wraps `TfEngine*` and decodes `TfObservation`.
-- `TypeflowKit/HostConfig.swift` wraps opaque Rust config/policy.
-- `TypeflowKit/KeyCodeMap.swift` maps ANSI virtual keycodes to Rust physical
+- `TypeClawKit/Engine.swift` wraps `TcEngine*` and decodes `TcObservation`.
+- `TypeClawKit/HostConfig.swift` wraps opaque Rust config/policy.
+- `TypeClawKit/KeyCodeMap.swift` maps ANSI virtual keycodes to Rust physical
   key indices.
-- `TypeflowAgent/main.swift` installs a listen-only `CGEventTap`, observes
+- `TypeClawAgent/main.swift` installs a listen-only `CGEventTap`, observes
   keys, replaces switched tokens by selecting the previous tracked token and
   posting Unicode over that selection, and selects real macOS keyboard input
   sources for future keys. Installed app
-  bundles register the main app with `SMAppService` so Typeflow launches at
+  bundles register the main app with `SMAppService` so TypeClaw launches at
   login. Startup explicitly requests Accessibility and Input Monitoring before
   creating the event tap.
-- `TypeflowSmoke/main.swift` verifies the static archive and pass-through
+- `TypeClawSmoke/main.swift` verifies the static archive and pass-through
   observer behavior.
 
 The old compositor files are gone. There is no inline rendering path and no
@@ -118,7 +118,7 @@ and exits non-zero rather than running as a disabled accessory process.
 3. Swift uses cached host facts/policy only. AX refresh runs asynchronously off
    the key path and publishes a fresh policy when ready.
 4. Secure, terminal, and disabled surfaces reset/bypass the engine.
-5. Printable letters are sent as physical-key `TfEvent`s.
+5. Printable letters are sent as physical-key `TcEvent`s.
 6. Boundaries such as space, unambiguous punctuation, return, tab, escape,
    focus loss, and app switch reset the observed token.
 7. Rust updates token candidates, scoring cache, current layout, captures a
@@ -129,7 +129,7 @@ and exits non-zero rather than running as a disabled accessory process.
    configured real keyboard source.
 
 Standalone Option is the exception: Swift treats the modifier-only press/release
-as a Typeflow command, calls `force_switch_layout()`, consumes the replacement
+as a TypeClaw command, calls `force_switch_layout()`, consumes the replacement
 snapshot captured by that call when one exists, and switches the real input
 source.
 

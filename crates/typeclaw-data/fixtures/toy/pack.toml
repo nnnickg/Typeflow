@@ -1,0 +1,11 @@
+id = "toy"
+display_name = "Toy Latin"
+script = "Latin"
+layout = "english-us"
+alphabet = "abcdefghijklmnopqrstuvwxyz"
+corpus = "./corpus.txt"
+dictionary = "./dictionary.txt"
+dictionary_top_k = 100
+source_corpus = "typeclaw fixture corpus"
+source_dictionary = "typeclaw fixture dictionary"
+build_id = "fixture"

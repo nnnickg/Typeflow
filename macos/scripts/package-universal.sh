@@ -5,14 +5,14 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 macos_dir="$(cd "$script_dir/.." && pwd)"
 root_dir="$(cd "$macos_dir/.." && pwd)"
 
-app_name="${APP_NAME:-Typeflow}"
+app_name="${APP_NAME:-TypeClaw}"
 build_dir="${BUILD_DIR:-$macos_dir/build/release}"
 cargo_target_dir="${CARGO_TARGET_DIR:-$root_dir/target}"
 macos_deployment_target="${MACOS_DEPLOYMENT_TARGET:-13.0}"
 codesign_identity="${CODESIGN_IDENTITY:--}"
-archs="${TYPEFLOW_MACOS_ARCHS:-arm64 x86_64}"
-typeflow_version="${TYPEFLOW_VERSION:-$("$root_dir/scripts/typeflow-version.sh")}"
-typeflow_bundle_version="${TYPEFLOW_BUNDLE_VERSION:-$("$root_dir/scripts/typeflow-bundle-version.sh")}"
+archs="${TYPECLAW_MACOS_ARCHS:-arm64 x86_64}"
+typeclaw_version="${TYPECLAW_VERSION:-$("$root_dir/scripts/typeclaw-version.sh")}"
+typeclaw_bundle_version="${TYPECLAW_BUNDLE_VERSION:-$("$root_dir/scripts/typeclaw-bundle-version.sh")}"
 
 app_bundle="$build_dir/$app_name.app"
 app_executable="$app_bundle/Contents/MacOS/$app_name"
@@ -20,14 +20,14 @@ module_cache_dir="$build_dir/clang-module-cache"
 dist_dir="$build_dir/dist"
 zip_path="$dist_dir/$app_name-macos-universal.zip"
 
-ffi_include_dir="$macos_dir/TypeflowFFI/include"
+ffi_include_dir="$macos_dir/TypeClawFFI/include"
 info_plist="$macos_dir/Resources/Info.plist"
 info_plist_strings="$macos_dir/Resources/en.lproj/InfoPlist.strings"
 pkginfo="$macos_dir/Resources/PkgInfo"
-icon_source="$macos_dir/Resources/Typeflow.png"
+icon_source="$macos_dir/Resources/TypeClaw.png"
 
-kit_sources=("$macos_dir"/Sources/TypeflowKit/*.swift)
-agent_sources=("${kit_sources[@]}" "$macos_dir"/Sources/TypeflowAgent/*.swift)
+kit_sources=("$macos_dir"/Sources/TypeClawKit/*.swift)
+agent_sources=("${kit_sources[@]}" "$macos_dir"/Sources/TypeClawAgent/*.swift)
 
 rust_target_for_arch() {
     case "$1" in
@@ -51,7 +51,7 @@ require_rust_target() {
 
 build_rust_staticlib() {
     local rust_target="$1"
-    CARGO_TARGET_DIR="$cargo_target_dir" cargo build --release -p typeflow-ffi --target "$rust_target"
+    CARGO_TARGET_DIR="$cargo_target_dir" cargo build --release -p typeclaw-ffi --target "$rust_target"
 }
 
 build_swift_executable() {
@@ -60,7 +60,7 @@ build_swift_executable() {
     local output="$3"
     shift 3
 
-    local rust_staticlib="$cargo_target_dir/$rust_target/release/libtypeflow_ffi.a"
+    local rust_staticlib="$cargo_target_dir/$rust_target/release/libtypeclaw_ffi.a"
     local swift_target
     swift_target="$(swift_target_for_arch "$arch")"
 
@@ -80,9 +80,9 @@ copy_bundle_resources() {
     rm -rf "$app_bundle"
     mkdir -p "$app_bundle/Contents/MacOS" "$app_bundle/Contents/Resources/en.lproj"
     cp "$info_plist" "$app_bundle/Contents/Info.plist"
-    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $typeflow_version" "$app_bundle/Contents/Info.plist"
-    /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $typeflow_bundle_version" "$app_bundle/Contents/Info.plist"
-    if [[ "$typeflow_bundle_version" == "1" ]]; then
+    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $typeclaw_version" "$app_bundle/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $typeclaw_bundle_version" "$app_bundle/Contents/Info.plist"
+    if [[ "$typeclaw_bundle_version" == "1" ]]; then
         echo "error: refusing CFBundleVersion=1" >&2
         return 1
     fi
@@ -112,12 +112,12 @@ build_icons() {
     sips -s format tiff --resampleHeightWidth 1024 1024 "$icon_source" \
         --out "$icon_tiff_dir/icon_1024.tiff" >/dev/null
     tiffutil -cat "$icon_tiff_dir"/icon_*.tiff -out "$icon_multi_tiff" >/dev/null 2>/dev/null
-    tiff2icns "$icon_multi_tiff" "$resources_dir/Typeflow.icns"
+    tiff2icns "$icon_multi_tiff" "$resources_dir/TypeClaw.icns"
 }
 
 codesign_bundle() {
     if [[ "$codesign_identity" != "-" ]]; then
-        echo "error: Typeflow release packaging is ad-hoc only; set CODESIGN_IDENTITY=-" >&2
+        echo "error: TypeClaw release packaging is ad-hoc only; set CODESIGN_IDENTITY=-" >&2
         return 2
     fi
     local codesign_args=(--force --sign "$codesign_identity")

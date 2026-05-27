@@ -21,27 +21,27 @@ SWIFT_OPT_FLAGS := -Onone
 SWIFT_PACKAGE_CONFIG := debug
 endif
 
-FFI_INCLUDE_DIR := $(abspath TypeflowFFI/include)
-RUST_STATICLIB := $(RUST_LIB_DIR)/libtypeflow_ffi.a
+FFI_INCLUDE_DIR := $(abspath TypeClawFFI/include)
+RUST_STATICLIB := $(RUST_LIB_DIR)/libtypeclaw_ffi.a
 BUILD_DIR := $(abspath build)
 MODULE_CACHE_DIR := $(BUILD_DIR)/clang-module-cache
-SMOKE_BIN := $(BUILD_DIR)/typeflow-staticlib-smoke
-APP_NAME := Typeflow
-TYPEFLOW_VERSION ?= $(shell cd $(ROOT_DIR) && ./scripts/typeflow-version.sh)
-TYPEFLOW_BUNDLE_VERSION ?= $(shell cd $(ROOT_DIR) && ./scripts/typeflow-bundle-version.sh)
+SMOKE_BIN := $(BUILD_DIR)/typeclaw-staticlib-smoke
+APP_NAME := TypeClaw
+TYPECLAW_VERSION ?= $(shell cd $(ROOT_DIR) && ./scripts/typeclaw-version.sh)
+TYPECLAW_BUNDLE_VERSION ?= $(shell cd $(ROOT_DIR) && ./scripts/typeclaw-bundle-version.sh)
 APP_BUNDLE := $(BUILD_DIR)/$(APP_NAME).app
 APP_EXECUTABLE := $(APP_BUNDLE)/Contents/MacOS/$(APP_NAME)
 APP_INFO_PLIST := Resources/Info.plist
 APP_PKGINFO := Resources/PkgInfo
 APP_INFO_PLIST_STRINGS := Resources/en.lproj/InfoPlist.strings
-ICON_SOURCE := Resources/Typeflow.png
+ICON_SOURCE := Resources/TypeClaw.png
 ICON_TIFF_DIR := $(BUILD_DIR)/$(APP_NAME)-icon-tiffs
 ICON_MULTI_TIFF := $(BUILD_DIR)/$(APP_NAME)-icons.tiff
-APP_ICON_ICNS := $(APP_BUNDLE)/Contents/Resources/Typeflow.icns
+APP_ICON_ICNS := $(APP_BUNDLE)/Contents/Resources/TypeClaw.icns
 APP_ICONS := $(APP_ICON_ICNS)
-KIT_SOURCES := $(wildcard Sources/TypeflowKit/*.swift)
-SMOKE_SOURCES := $(KIT_SOURCES) $(wildcard Sources/TypeflowSmoke/*.swift)
-AGENT_SOURCES := $(KIT_SOURCES) $(wildcard Sources/TypeflowAgent/*.swift)
+KIT_SOURCES := $(wildcard Sources/TypeClawKit/*.swift)
+SMOKE_SOURCES := $(KIT_SOURCES) $(wildcard Sources/TypeClawSmoke/*.swift)
+AGENT_SOURCES := $(KIT_SOURCES) $(wildcard Sources/TypeClawAgent/*.swift)
 SWIFT_COMMON_FLAGS := $(SWIFT_OPT_FLAGS) -module-cache-path $(MODULE_CACHE_DIR) -I $(FFI_INCLUDE_DIR)
 RUST_LINK_FLAGS := -Xlinker -force_load -Xlinker $(RUST_STATICLIB)
 AGENT_FRAMEWORK_FLAGS := -framework AppKit -framework ApplicationServices -framework Carbon -framework ServiceManagement -framework IOKit
@@ -51,9 +51,9 @@ AGENT_FRAMEWORK_FLAGS := -framework AppKit -framework ApplicationServices -frame
 all: smoke bundle
 
 rust-staticlib:
-	cd $(ROOT_DIR) && CARGO_TARGET_DIR=$(CARGO_TARGET_DIR) cargo build $(CARGO_PROFILE_FLAG) -p typeflow-ffi
+	cd $(ROOT_DIR) && CARGO_TARGET_DIR=$(CARGO_TARGET_DIR) cargo build $(CARGO_PROFILE_FLAG) -p typeclaw-ffi
 
-$(SMOKE_BIN): $(SMOKE_SOURCES) TypeflowFFI/include/module.modulemap TypeflowFFI/include/typeflow_shim.h rust-staticlib
+$(SMOKE_BIN): $(SMOKE_SOURCES) TypeClawFFI/include/module.modulemap TypeClawFFI/include/typeclaw_shim.h rust-staticlib
 	mkdir -p $(BUILD_DIR) $(MODULE_CACHE_DIR)
 	$(SWIFTC) $(SWIFT_COMMON_FLAGS) $(SMOKE_SOURCES) $(RUST_LINK_FLAGS) -o $(SMOKE_BIN)
 
@@ -61,8 +61,8 @@ smoke: $(SMOKE_BIN)
 	$(SMOKE_BIN)
 
 swift-package: rust-staticlib
-	CARGO_TARGET_DIR=$(CARGO_TARGET_DIR) RUST_PROFILE=$(RUST_PROFILE) $(SWIFT) run --package-path . -c $(SWIFT_PACKAGE_CONFIG) typeflow-staticlib-smoke
-	CARGO_TARGET_DIR=$(CARGO_TARGET_DIR) RUST_PROFILE=$(RUST_PROFILE) $(SWIFT) build --package-path . -c $(SWIFT_PACKAGE_CONFIG) --product Typeflow
+	CARGO_TARGET_DIR=$(CARGO_TARGET_DIR) RUST_PROFILE=$(RUST_PROFILE) $(SWIFT) run --package-path . -c $(SWIFT_PACKAGE_CONFIG) typeclaw-staticlib-smoke
+	CARGO_TARGET_DIR=$(CARGO_TARGET_DIR) RUST_PROFILE=$(RUST_PROFILE) $(SWIFT) build --package-path . -c $(SWIFT_PACKAGE_CONFIG) --product TypeClaw
 
 $(APP_ICON_ICNS): $(ICON_SOURCE)
 	mkdir -p $(APP_BUNDLE)/Contents/Resources $(ICON_TIFF_DIR)
@@ -77,14 +77,14 @@ $(APP_ICON_ICNS): $(ICON_SOURCE)
 	tiff2icns $(ICON_MULTI_TIFF) $(APP_ICON_ICNS)
 
 check-adhoc-codesign:
-	@test "$(CODESIGN_IDENTITY)" = "-" || { echo "error: Typeflow packaging is ad-hoc only; set CODESIGN_IDENTITY=-" >&2; exit 2; }
+	@test "$(CODESIGN_IDENTITY)" = "-" || { echo "error: TypeClaw packaging is ad-hoc only; set CODESIGN_IDENTITY=-" >&2; exit 2; }
 
-$(APP_EXECUTABLE): $(AGENT_SOURCES) $(APP_INFO_PLIST) $(APP_INFO_PLIST_STRINGS) $(APP_PKGINFO) $(APP_ICONS) TypeflowFFI/include/module.modulemap TypeflowFFI/include/typeflow_shim.h rust-staticlib
+$(APP_EXECUTABLE): $(AGENT_SOURCES) $(APP_INFO_PLIST) $(APP_INFO_PLIST_STRINGS) $(APP_PKGINFO) $(APP_ICONS) TypeClawFFI/include/module.modulemap TypeClawFFI/include/typeclaw_shim.h rust-staticlib
 	mkdir -p $(APP_BUNDLE)/Contents/MacOS $(APP_BUNDLE)/Contents/Resources/en.lproj $(MODULE_CACHE_DIR)
 	cp $(APP_INFO_PLIST) $(APP_BUNDLE)/Contents/Info.plist
-	$(PLISTBUDDY) -c "Set :CFBundleShortVersionString $(TYPEFLOW_VERSION)" $(APP_BUNDLE)/Contents/Info.plist
-	$(PLISTBUDDY) -c "Set :CFBundleVersion $(TYPEFLOW_BUNDLE_VERSION)" $(APP_BUNDLE)/Contents/Info.plist
-	@test "$(TYPEFLOW_BUNDLE_VERSION)" != "1" || { echo "error: refusing CFBundleVersion=1" >&2; exit 1; }
+	$(PLISTBUDDY) -c "Set :CFBundleShortVersionString $(TYPECLAW_VERSION)" $(APP_BUNDLE)/Contents/Info.plist
+	$(PLISTBUDDY) -c "Set :CFBundleVersion $(TYPECLAW_BUNDLE_VERSION)" $(APP_BUNDLE)/Contents/Info.plist
+	@test "$(TYPECLAW_BUNDLE_VERSION)" != "1" || { echo "error: refusing CFBundleVersion=1" >&2; exit 1; }
 	cp $(APP_INFO_PLIST_STRINGS) $(APP_BUNDLE)/Contents/Resources/en.lproj/InfoPlist.strings
 	cp $(APP_PKGINFO) $(APP_BUNDLE)/Contents/PkgInfo
 	plutil -lint $(APP_BUNDLE)/Contents/Info.plist
@@ -100,6 +100,7 @@ release-universal:
 	./scripts/package-universal.sh
 
 install-user: bundle
+	-pkill -x "$(APP_NAME)" 2>/dev/null
 	mkdir -p "$(APPLICATIONS_DIR)"
 	ditto "$(APP_BUNDLE)" "$(APPLICATIONS_DIR)/$(APP_NAME).app"
 	xattr -cr "$(APPLICATIONS_DIR)/$(APP_NAME).app" || true

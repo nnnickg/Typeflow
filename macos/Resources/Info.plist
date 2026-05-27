@@ -6,21 +6,21 @@
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
   <key>CFBundleExecutable</key>
-  <string>Typeflow</string>
+  <string>TypeClaw</string>
   <key>CFBundleDisplayName</key>
-  <string>Typeflow</string>
+  <string>TypeClaw</string>
   <key>CFBundleIconFile</key>
-  <string>Typeflow.icns</string>
+  <string>TypeClaw.icns</string>
   <key>CFBundleIdentifier</key>
-  <string>io.github.nnnickg.typeflow.agent</string>
+  <string>io.github.nnnickg.typeclaw.agent</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>Typeflow</string>
+  <string>TypeClaw</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>__TYPEFLOW_VERSION__</string>
+  <string>__TYPECLAW_VERSION__</string>
   <key>CFBundleSignature</key>
   <string>????</string>
   <key>CFBundleSupportedPlatforms</key>
@@ -28,7 +28,7 @@
     <string>MacOSX</string>
   </array>
   <key>CFBundleVersion</key>
-  <string>__TYPEFLOW_BUNDLE_VERSION__</string>
+  <string>__TYPECLAW_BUNDLE_VERSION__</string>
   <key>LSUIElement</key>
   <true/>
   <key>LSMinimumSystemVersion</key>
@@ -36,9 +36,9 @@
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
   <key>NSAccessibilityUsageDescription</key>
-  <string>Typeflow observes keyboard events and foreground text surfaces so it can switch keyboard layouts and replace detected wrong-layout tokens.</string>
+  <string>TypeClaw observes keyboard events and foreground text surfaces so it can switch keyboard layouts and replace detected wrong-layout tokens.</string>
   <key>NSInputMonitoringUsageDescription</key>
-  <string>Typeflow observes keyboard events so it can switch the active keyboard layout for future keys.</string>
+  <string>TypeClaw observes keyboard events so it can switch the active keyboard layout for future keys.</string>
   <key>NSSupportsSuddenTermination</key>
   <true/>
 </dict>

@@ -27,7 +27,7 @@ Concrete embedded Ukrainian examples:
 
 ## Generated Eval
 
-`typeflow eval --generated N` still checks:
+`typeclaw eval --generated N` still checks:
 
 - built-in smoke cases;
 - top English dictionary words as English;
@@ -65,7 +65,7 @@ Generated eval cannot replace curated cases. Add TSV cases for:
 Current repo seed:
 
 ```sh
-typeflow eval crates/typeflow-cli/eval/uk-hard.tsv
+typeclaw eval crates/typeclaw-cli/eval/uk-hard.tsv
 ```
 
 That file is intentionally small and tied to the embedded secondary language.

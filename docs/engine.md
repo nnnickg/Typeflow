@@ -89,7 +89,7 @@ are garbage and one is merely less bad, e.g. `http` → `реез`.
 
 ## Config knobs and what they do
 
-All exposed via `~/.config/typeflow/config.toml`. Run `typeflow config init` to
+All exposed via `~/.config/typeclaw/config.toml`. Run `typeclaw config init` to
 generate the file with full inline comments. Each field:
 
 ### `min_token_len` *(default: 4)*
@@ -189,12 +189,12 @@ part of the token and can trigger an automatic switch.
 The defaults are an educated guess, not a calibrated value. The right way to
 tune is against a regression corpus:
 
-1. Start with `typeflow eval --generated <N>`. This derives labeled cases from
+1. Start with `typeclaw eval --generated <N>`. This derives labeled cases from
    the loaded EN and secondary dictionaries and renders secondary words back to
    physical key sequences.
 2. Add external TSV hard cases where needed. TSV format is
    `keys<TAB>expected-layout`.
-3. Run `typeflow eval <cases.tsv>` or `typeflow eval --generated <N>`. The
+3. Run `typeclaw eval <cases.tsv>` or `typeclaw eval --generated <N>`. The
    report includes accuracy, confusion counts, false positives/negatives,
    failure buckets by token length, and a bounded failure sample.
 4. Adjust one knob at a time, re-run, see whether accuracy moves.
@@ -202,7 +202,7 @@ tune is against a regression corpus:
 The generated corpus is intentionally stricter than the old smoke set. It skips
 only generated secondary cases whose physical key sequence is an exact English
 dictionary word. See `docs/calibration.md` for that ambiguity policy. Use
-`typeflow repl` for interactive inspection of any failure.
+`typeclaw repl` for interactive inspection of any failure.
 
 ## The Observation Protocol
 

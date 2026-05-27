@@ -1031,8 +1031,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "756daf9b1013ebe47a8776667b466417e2d4c5679d441c26230efd9ef78692db"
 
 [[package]]
-name = "typeflow-cli"
-version = "1.2.1"
+name = "typeclaw-cli"
+version = "1.2.2"
 dependencies = [
  "clap",
  "clap_complete",
@@ -1041,13 +1041,13 @@ dependencies = [
  "serde",
  "serde_json",
  "toml",
- "typeflow-core",
- "typeflow-host-config",
+ "typeclaw-core",
+ "typeclaw-host-config",
 ]
 
 [[package]]
-name = "typeflow-core"
-version = "1.2.1"
+name = "typeclaw-core"
+version = "1.2.2"
 dependencies = [
  "criterion",
  "fst",
@@ -1057,34 +1057,34 @@ dependencies = [
 ]
 
 [[package]]
-name = "typeflow-data"
-version = "1.2.1"
+name = "typeclaw-data"
+version = "1.2.2"
 dependencies = [
  "anyhow",
  "flate2",
  "fst",
  "serde",
  "toml",
- "typeflow-core",
+ "typeclaw-core",
  "ureq",
 ]
 
 [[package]]
-name = "typeflow-ffi"
-version = "1.2.1"
+name = "typeclaw-ffi"
+version = "1.2.2"
 dependencies = [
  "criterion",
- "typeflow-core",
- "typeflow-host-config",
+ "typeclaw-core",
+ "typeclaw-host-config",
 ]
 
 [[package]]
-name = "typeflow-host-config"
-version = "1.2.1"
+name = "typeclaw-host-config"
+version = "1.2.2"
 dependencies = [
  "serde",
  "toml",
- "typeflow-core",
+ "typeclaw-core",
 ]
 
 [[package]]

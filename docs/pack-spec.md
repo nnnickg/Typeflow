@@ -1,15 +1,15 @@
 # Language Pack Specs
 
-`typeflow-data build-pack` creates an installable secondary-language pack from a
+`typeclaw-data build-pack` creates an installable secondary-language pack from a
 TOML spec.
 
 Ukrainian is the embedded secondary language. Use packs for any other local
 secondary language.
 
 ```sh
-cargo run --release -p typeflow-data -- build-pack ./secondary.toml --out /tmp/secondary.typeflow-pack
-typeflow pack install /tmp/secondary.typeflow-pack
-typeflow pack use secondary
+cargo run --release -p typeclaw-data -- build-pack ./secondary.toml --out /tmp/secondary.typeclaw-pack
+typeclaw pack install /tmp/secondary.typeclaw-pack
+typeclaw pack use secondary
 ```
 
 The output directory contains:
@@ -72,7 +72,7 @@ must be whitespace-separated `word count` lines; the builder lowercases and
 filters words through `alphabet`, then builds the FST dictionary and serialized
 prefix-evidence index.
 
-For HTTP/HTTPS inputs, `typeflow-data` validates `Content-Length` when the
+For HTTP/HTTPS inputs, `typeclaw-data` validates `Content-Length` when the
 server provides it and resumes incomplete `*.partial` downloads with `Range:`
 when the server supports it. Embedded EN/UK sources are additionally pinned by
 byte count and SHA-256. External pack specs should set `corpus_sha256` and

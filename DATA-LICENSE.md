@@ -1,21 +1,21 @@
 # Data License
 
-Typeflow source code is licensed under `MIT OR Apache-2.0`.
+TypeClaw source code is licensed under `MIT OR Apache-2.0`.
 
 This file covers the generated language-model artifacts and any external packs
-built with Typeflow tooling. Those files are data artifacts, not Typeflow source
+built with TypeClaw tooling. Those files are data artifacts, not TypeClaw source
 code, and must not be treated as MIT/Apache-licensed code.
 
 ## Checked-In Model Artifacts
 
 The embedded model files are:
 
-- `crates/typeflow-core/data/en.ngrams.bin`
-- `crates/typeflow-core/data/uk.ngrams.bin`
-- `crates/typeflow-core/data/en.dict.fst`
-- `crates/typeflow-core/data/uk.dict.fst`
-- `crates/typeflow-core/data/en.dict-prefix.bin`
-- `crates/typeflow-core/data/uk.dict-prefix.bin`
+- `crates/typeclaw-core/data/en.ngrams.bin`
+- `crates/typeclaw-core/data/uk.ngrams.bin`
+- `crates/typeclaw-core/data/en.dict.fst`
+- `crates/typeclaw-core/data/uk.dict.fst`
+- `crates/typeclaw-core/data/en.dict-prefix.bin`
+- `crates/typeclaw-core/data/uk.dict-prefix.bin`
 
 They are generated statistical artifacts derived from third-party inputs:
 
@@ -37,9 +37,9 @@ Source attribution and citation details are listed in `NOTICE.md`.
 
 ## External Packs
 
-External packs built with `typeflow-data build-pack` inherit the licenses and
+External packs built with `typeclaw-data build-pack` inherit the licenses and
 redistribution terms of their corpus and dictionary inputs. Pack authors should
 fill `source_corpus` and `source_dictionary` in `pack.toml` and document any
 required attribution next to the pack.
 
-Typeflow does not validate legal compatibility of pack inputs.
+TypeClaw does not validate legal compatibility of pack inputs.

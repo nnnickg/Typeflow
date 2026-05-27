@@ -5,7 +5,7 @@ external secondary-language packs.
 
 ## Embedded Artifacts
 
-The release binary embeds six files from `crates/typeflow-core/data/`:
+The release binary embeds six files from `crates/typeclaw-core/data/`:
 
 ```text
 en.ngrams.bin
@@ -16,7 +16,7 @@ uk.dict.fst
 uk.dict-prefix.bin
 ```
 
-`*.ngrams.bin` is a Typeflow n-gram artifact containing `CompiledLanguageData`:
+`*.ngrams.bin` is a TypeClaw n-gram artifact containing `CompiledLanguageData`:
 
 ```rust
 pub struct CompiledLanguageData {
@@ -31,7 +31,7 @@ pub struct CompiledLanguageData {
 `*.dict.fst` is a BurntSushi `fst::Map` keyed by UTF-8 word bytes with `u64`
 frequency values.
 
-`*.dict-prefix.bin` is a Typeflow dictionary-prefix artifact. It stores two
+`*.dict-prefix.bin` is a TypeClaw dictionary-prefix artifact. It stores two
 prebuilt `fst::Map` blobs keyed by UTF-8 prefix bytes: one for capped prefix
 frequency sums and one for capped sample counts.
 

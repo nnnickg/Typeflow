@@ -1,0 +1,4 @@
+module TypeClawFFI {
+    header "typeclaw_shim.h"
+    export *
+}

@@ -1,6 +1,6 @@
 # Status
 
-Typeflow is currently a public alpha pass-through observer agent.
+TypeClaw is currently a public alpha pass-through observer agent.
 
 The default embedded secondary language is Ukrainian. Other secondary languages
 come from local packs.
@@ -9,13 +9,13 @@ come from local packs.
 
 - Rust owns token tracking, scoring, and future layout state.
 - Swift observes normal printable keys with a listen-only `CGEventTap`, sends
-  `TfEvent` to Rust, and leaves insertion to macOS/the target app.
+  `TcEvent` to Rust, and leaves insertion to macOS/the target app.
 - `SwitchFutureLayout` replaces the current token once with the Rust-rendered
   target candidate, then selects a configured real macOS keyboard input source
   for future keys.
 - Host policy/AX refresh is asynchronous. Key handling reads only the cached
   policy and defaults to bypass while policy is unknown or stale.
-- No live inline composition is owned by Typeflow.
+- No live inline composition is owned by TypeClaw.
 - No host composition or overlay text is used for normal observed typing.
 - Standalone Option converts the current tracked token when one exists, toggles
   future layout, and resets the observed token.
@@ -24,19 +24,19 @@ come from local packs.
 
 - Core: `Engine::observe(InputEvent) -> ObservationOutput`
 - Core manual switch: `Engine::force_switch_layout()`
-- FFI: `typeflow_engine_observe(engine, TfEvent, *out TfObservation)`
+- FFI: `typeclaw_engine_observe(engine, TcEvent, *out TcObservation)`
 - FFI replacement snapshot:
-  `typeflow_engine_pending_replacement_delete_count` +
-  `typeflow_engine_pending_replacement_utf8_len` +
-  `typeflow_engine_take_pending_replacement_utf8`
+  `typeclaw_engine_pending_replacement_delete_count` +
+  `typeclaw_engine_pending_replacement_utf8_len` +
+  `typeclaw_engine_take_pending_replacement_utf8`
 - FFI inverse replacement snapshot for manual toggles:
-  `typeflow_engine_pending_replacement_inverse_utf8_len` +
-  `typeflow_engine_copy_pending_replacement_inverse_utf8`
+  `typeclaw_engine_pending_replacement_inverse_utf8_len` +
+  `typeclaw_engine_copy_pending_replacement_inverse_utf8`
 - FFI manual switch:
-  `typeflow_engine_force_switch_layout(engine, *out TfObservation)`
-- Swift: `TypeflowObservationAction`
+  `typeclaw_engine_force_switch_layout(engine, *out TcObservation)`
+- Swift: `TypeClawObservationAction`
 
-`TfObservation` contains only a tag and layout. Replacement text crosses the FFI
+`TcObservation` contains only a tag and layout. Replacement text crosses the FFI
 boundary only through the explicit pending-replacement snapshot API.
 
 ## Host Policy

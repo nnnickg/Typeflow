@@ -6,42 +6,42 @@ import PackageDescription
 let environment = ProcessInfo.processInfo.environment
 let cargoTargetDirectory = environment["CARGO_TARGET_DIR"] ?? "../target"
 let rustProfile = environment["RUST_PROFILE"] == "debug" ? "debug" : "release"
-let rustStaticLibrary = "\(cargoTargetDirectory)/\(rustProfile)/libtypeflow_ffi.a"
+let rustStaticLibrary = "\(cargoTargetDirectory)/\(rustProfile)/libtypeclaw_ffi.a"
 let rustStaticLinkerFlags = ["-Xlinker", "-force_load", "-Xlinker", rustStaticLibrary]
 
 let package = Package(
-    name: "TypeflowMacOS",
+    name: "TypeClawMacOS",
     platforms: [
         .macOS(.v13),
     ],
     products: [
-        .library(name: "TypeflowKit", targets: ["TypeflowKit"]),
-        .executable(name: "typeflow-staticlib-smoke", targets: ["TypeflowSmoke"]),
-        .executable(name: "Typeflow", targets: ["TypeflowAgent"]),
+        .library(name: "TypeClawKit", targets: ["TypeClawKit"]),
+        .executable(name: "typeclaw-staticlib-smoke", targets: ["TypeClawSmoke"]),
+        .executable(name: "TypeClaw", targets: ["TypeClawAgent"]),
     ],
     targets: [
         .systemLibrary(
-            name: "TypeflowFFI",
-            path: "TypeflowFFI/include"
+            name: "TypeClawFFI",
+            path: "TypeClawFFI/include"
         ),
         .target(
-            name: "TypeflowKit",
-            dependencies: ["TypeflowFFI"],
-            path: "Sources/TypeflowKit"
+            name: "TypeClawKit",
+            dependencies: ["TypeClawFFI"],
+            path: "Sources/TypeClawKit"
         ),
         .executableTarget(
-            name: "TypeflowSmoke",
-            dependencies: ["TypeflowKit", "TypeflowFFI"],
-            path: "Sources/TypeflowSmoke",
+            name: "TypeClawSmoke",
+            dependencies: ["TypeClawKit", "TypeClawFFI"],
+            path: "Sources/TypeClawSmoke",
             linkerSettings: [
                 .unsafeFlags(rustStaticLinkerFlags),
                 .linkedFramework("Carbon"),
             ]
         ),
         .executableTarget(
-            name: "TypeflowAgent",
-            dependencies: ["TypeflowKit", "TypeflowFFI"],
-            path: "Sources/TypeflowAgent",
+            name: "TypeClawAgent",
+            dependencies: ["TypeClawKit", "TypeClawFFI"],
+            path: "Sources/TypeClawAgent",
             linkerSettings: [
                 .unsafeFlags(rustStaticLinkerFlags),
                 .linkedFramework("AppKit"),

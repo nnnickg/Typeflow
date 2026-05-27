@@ -1,5 +1,5 @@
 [package]
-name = "typeflow-fuzz"
+name = "typeclaw-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2024"
@@ -9,8 +9,8 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-typeflow-core = { path = "../crates/typeflow-core", version = "1.2.1" }
-typeflow-ffi = { path = "../crates/typeflow-ffi", version = "1.2.1" }
+typeclaw-core = { path = "../crates/typeclaw-core", version = "1.2.2" }
+typeclaw-ffi = { path = "../crates/typeclaw-ffi", version = "1.2.2" }
 
 [[bin]]
 name = "artifact_decoders"

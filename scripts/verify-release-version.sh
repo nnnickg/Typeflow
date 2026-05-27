@@ -4,17 +4,17 @@ set -euo pipefail
 release_tag="${1:-${RELEASE_TAG:-}}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 packages=(
-  typeflow-core
-  typeflow-host-config
-  typeflow-data
-  typeflow-ffi
-  typeflow-cli
+  typeclaw-core
+  typeclaw-host-config
+  typeclaw-data
+  typeclaw-ffi
+  typeclaw-cli
 )
 
 workspace_version=""
 
 for package in "${packages[@]}"; do
-  package_version="$("$script_dir/typeflow-version.sh" "$package")"
+  package_version="$("$script_dir/typeclaw-version.sh" "$package")"
 
   if [[ -z "$workspace_version" ]]; then
     workspace_version="$package_version"

@@ -36,8 +36,8 @@ jobs:
 
       - name: Configure Paths
         run: |
-          echo "RELEASE_BUILD_DIR=$RUNNER_TEMP/typeflow-release" >> "$GITHUB_ENV"
-          echo "RELEASE_ZIP=$RUNNER_TEMP/typeflow-release/dist/Typeflow-macos-universal.zip" >> "$GITHUB_ENV"
+          echo "RELEASE_BUILD_DIR=$RUNNER_TEMP/typeclaw-release" >> "$GITHUB_ENV"
+          echo "RELEASE_ZIP=$RUNNER_TEMP/typeclaw-release/dist/TypeClaw-macos-universal.zip" >> "$GITHUB_ENV"
 
       - name: Toolchain
         run: |
@@ -71,10 +71,10 @@ jobs:
       - name: Verify Artifact
         run: |
           test -f "$RELEASE_ZIP"
-          file "$RELEASE_BUILD_DIR/Typeflow.app/Contents/MacOS/Typeflow"
-          codesign --verify --strict --verbose=2 "$RELEASE_BUILD_DIR/Typeflow.app"
-          APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$RELEASE_BUILD_DIR/Typeflow.app/Contents/Info.plist")"
-          BUNDLE_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$RELEASE_BUILD_DIR/Typeflow.app/Contents/Info.plist")"
+          file "$RELEASE_BUILD_DIR/TypeClaw.app/Contents/MacOS/TypeClaw"
+          codesign --verify --strict --verbose=2 "$RELEASE_BUILD_DIR/TypeClaw.app"
+          APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$RELEASE_BUILD_DIR/TypeClaw.app/Contents/Info.plist")"
+          BUNDLE_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$RELEASE_BUILD_DIR/TypeClaw.app/Contents/Info.plist")"
           test "$APP_VERSION" = "${RELEASE_TAG#v}"
           test "$BUNDLE_VERSION" != "1"
           echo "$APP_VERSION"
@@ -86,6 +86,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release upload "$RELEASE_TAG" \
-            "$RELEASE_ZIP#Typeflow-macos-universal.zip" \
-            "$RELEASE_ZIP.sha256#Typeflow-macos-universal.zip.sha256" \
+            "$RELEASE_ZIP#TypeClaw-macos-universal.zip" \
+            "$RELEASE_ZIP.sha256#TypeClaw-macos-universal.zip.sha256" \
             --clobber

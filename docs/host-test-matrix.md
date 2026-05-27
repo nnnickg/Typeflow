@@ -6,7 +6,7 @@ Rust unit suite.
 
 Assumptions:
 
-- Typeflow is running as a background agent.
+- TypeClaw is running as a background agent.
 - Real English and secondary keyboard input sources are installed. Configure
   `[macos].english_input_source_id` and `[macos].secondary_input_source_id` if
   auto-detection picks the wrong ones.
@@ -41,15 +41,15 @@ Expected host behavior:
 
 - Normal fields should feel exactly like app-native typing: no underline, no
   inline ownership UI, no overlay.
-- When Rust returns `SwitchFutureLayout`, Typeflow replaces the current token
+- When Rust returns `SwitchFutureLayout`, TypeClaw replaces the current token
   once and changes the real macOS keyboard source for future keys.
 - Token replacement is posted as synthetic selection plus synthetic Unicode
-  events. If focus changes between decision and post, Typeflow must cancel the
+  events. If focus changes between decision and post, TypeClaw must cancel the
   replacement. If focus changes after selection but before Unicode insertion,
   the selected text can remain selected and the token may be left unchanged.
   Treat any wrong-field replacement or wrong-field selection as a release
   blocker.
-- Password fields bypass Typeflow observation.
+- Password fields bypass TypeClaw observation.
 - Apps in `apps.disable_auto_bundle_ids` disable automatic layout switching but
   still allow standalone Option in normal non-secure fields.
 - Apps in `apps.disable_bundle_ids` bypass both automatic observation behavior
@@ -57,6 +57,6 @@ Expected host behavior:
 - Terminal-like surfaces bypass both automatic behavior and standalone Option
   switching even when the app is not listed in config.
 - Embedded terminal-pane detection depends on macOS Accessibility metadata from
-  the focused element and its parent containers. If Typeflow is not
+  the focused element and its parent containers. If TypeClaw is not
   Accessibility-trusted, terminal apps are still blocked by bundle id but
   embedded terminal panes may look like normal editor text.

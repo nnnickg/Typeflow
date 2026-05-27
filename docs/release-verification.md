@@ -9,7 +9,7 @@ truth. Workspace crates inherit it, and the CLI prints it through Cargo's
 `CARGO_PKG_VERSION`.
 
 The macOS build injects that same Cargo version into
-`CFBundleShortVersionString` when it creates `Typeflow.app`. Release tags must
+`CFBundleShortVersionString` when it creates `TypeClaw.app`. Release tags must
 be `v<version>`.
 
 Before publishing a GitHub release:
@@ -31,8 +31,8 @@ version=1.0.0
 cargo check --workspace
 ./scripts/verify-release-version.sh "v$version"
 cargo test --workspace --locked
-cargo build --release --locked -p typeflow-cli
-target/release/typeflow -V
+cargo build --release --locked -p typeclaw-cli
+target/release/typeclaw -V
 
 git add Cargo.toml Cargo.lock
 git commit -m "release: v$version"
@@ -44,22 +44,22 @@ gh release create "v$version" --title "v$version" --generate-notes
 ## Build
 
 ```sh
-cargo build --release -p typeflow-cli -p typeflow-ffi
+cargo build --release -p typeclaw-cli -p typeclaw-ffi
 ```
 
 Expected artifacts on macOS:
 
 ```text
-target/release/typeflow
-target/release/libtypeflow_ffi.a
-target/release/libtypeflow_ffi.dylib
-target/release/libtypeflow_ffi.rlib
+target/release/typeclaw
+target/release/libtypeclaw_ffi.a
+target/release/libtypeclaw_ffi.dylib
+target/release/libtypeclaw_ffi.rlib
 ```
 
 The CLI and dylib should be arm64 Mach-O files on Apple Silicon:
 
 ```sh
-file target/release/typeflow target/release/libtypeflow_ffi.dylib
+file target/release/typeclaw target/release/libtypeclaw_ffi.dylib
 ```
 
 ## Runtime Smoke
@@ -67,11 +67,11 @@ file target/release/typeflow target/release/libtypeflow_ffi.dylib
 Use an empty config so local user config cannot shadow the embedded defaults:
 
 ```sh
-touch /tmp/typeflow-empty.toml
-target/release/typeflow --config /tmp/typeflow-empty.toml model
-target/release/typeflow --config /tmp/typeflow-empty.toml predict ghsdbn
-target/release/typeflow --config /tmp/typeflow-empty.toml pack inspect uk
-target/release/typeflow --config /tmp/typeflow-empty.toml eval --generated 500
+touch /tmp/typeclaw-empty.toml
+target/release/typeclaw --config /tmp/typeclaw-empty.toml model
+target/release/typeclaw --config /tmp/typeclaw-empty.toml predict ghsdbn
+target/release/typeclaw --config /tmp/typeclaw-empty.toml pack inspect uk
+target/release/typeclaw --config /tmp/typeclaw-empty.toml eval --generated 500
 ```
 
 Expected:
@@ -100,7 +100,7 @@ staticlib smoke: observed ghsdbn; host text pass-through ghsdbn
 ## macOS SwiftPM Build
 
 This verifies the Swift library/executable target graph outside the Makefile's
-single-module `swiftc` compile path. It builds `TypeflowKit`, runs the SwiftPM
+single-module `swiftc` compile path. It builds `TypeClawKit`, runs the SwiftPM
 staticlib smoke executable, and builds the agent executable:
 
 ```sh
@@ -109,9 +109,9 @@ make -C macos swift-package
 
 Expected:
 
-- `typeflow-staticlib-smoke` prints
+- `typeclaw-staticlib-smoke` prints
   `staticlib smoke: observed ghsdbn; host text pass-through ghsdbn`.
-- `Typeflow` builds as a SwiftPM executable linked against `libtypeflow_ffi.a`.
+- `TypeClaw` builds as a SwiftPM executable linked against `libtypeclaw_ffi.a`.
 
 ## macOS Agent Bundle Build
 
@@ -124,9 +124,9 @@ make -C macos bundle
 
 Expected:
 
-- `build/Typeflow.app/Contents/Info.plist` passes `plutil -lint`.
-- `build/Typeflow.app/Contents/Resources/Typeflow.icns` exists for Finder/Dock.
-- `build/Typeflow.app/Contents/MacOS/Typeflow` is a Mach-O executable for the
+- `build/TypeClaw.app/Contents/Info.plist` passes `plutil -lint`.
+- `build/TypeClaw.app/Contents/Resources/TypeClaw.icns` exists for Finder/Dock.
+- `build/TypeClaw.app/Contents/MacOS/TypeClaw` is a Mach-O executable for the
   local build host architecture.
 - `codesign --verify --strict` passes.
 
@@ -134,7 +134,7 @@ Expected:
 
 The release packaging path builds separate Rust and Swift artifacts for arm64
 and x86_64, merges them with `lipo`, ad-hoc signs the app bundle, and writes a
-zip. This is intentional: Typeflow is distributed on a user-trust model.
+zip. This is intentional: TypeClaw is distributed on a user-trust model.
 
 ```sh
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
@@ -143,17 +143,17 @@ make -C macos release-universal
 
 Expected:
 
-- `macos/build/release/Typeflow.app/Contents/MacOS/Typeflow` verifies both
+- `macos/build/release/TypeClaw.app/Contents/MacOS/TypeClaw` verifies both
   `arm64` and `x86_64` with `lipo -verify_arch`.
 - `codesign --verify --strict` passes for the ad-hoc signature.
 - `CFBundleVersion` is set to `<major version>.<git commit count>` and must not
   be `1`.
-- `macos/build/release/dist/Typeflow-macos-universal.zip` exists.
+- `macos/build/release/dist/TypeClaw-macos-universal.zip` exists.
 
 For local single-architecture smoke testing on the current machine only:
 
 ```sh
-TYPEFLOW_MACOS_ARCHS=arm64 make -C macos release-universal
+TYPECLAW_MACOS_ARCHS=arm64 make -C macos release-universal
 ```
 
 The GitHub release workflow builds with `CODESIGN_IDENTITY="-"`. The packaging
@@ -165,31 +165,29 @@ If macOS keeps the quarantine attribute on a downloaded build, the user can
 remove it after inspecting the release checksum:
 
 ```sh
-xattr -dr com.apple.quarantine Typeflow.app
+xattr -dr com.apple.quarantine TypeClaw.app
 ```
 
 To install and start for the current user:
 
 ```sh
 make -C macos install-user
-pkill -x Typeflow
 ```
 
-`install-user` copies the app to `~/Applications/Typeflow.app` and opens it.
-On launch, installed app bundles register the main app as a login item via
-`SMAppService`.
+`install-user` stops any running TypeClaw process, copies the app to
+`~/Applications/TypeClaw.app`, and opens it. On launch, installed app bundles
+register the main app as a login item via `SMAppService`.
 First launch requests both Accessibility and Input Monitoring. If Input
 Monitoring is denied, the event tap is not created and the app exits with an
 explicit permission error.
-`pkill -x Typeflow` is only to force a running copy to restart after reinstall.
 
 ## macOS Agent Runtime Smoke
 
-With the Typeflow agent running and real English/secondary keyboard sources
+With the TypeClaw agent running and real English/secondary keyboard sources
 installed:
 
 1. With default embedded Ukrainian config, type `ghsdbn`; expected visible text:
-   `привіт`. Typeflow should replace the just-typed token once and switch the
+   `привіт`. TypeClaw should replace the just-typed token once and switch the
    real input source after the decision threshold for future keys.
 2. Type `type`, then tap standalone Option; expected visible text becomes the
    configured secondary rendering (`ензу` with the embedded Ukrainian pack), and
@@ -201,15 +199,15 @@ installed:
    switching is allowed.
 4. Install any external secondary pack, set `language.secondary` to that pack
    id, configure `[macos].secondary_input_source_id` if auto-detection picks the
-   wrong source, restart Typeflow, and verify automatic token replacement plus
+   wrong source, restart TypeClaw, and verify automatic token replacement plus
    standalone Option replacement in an app that is not disabled.
 5. Press Option with another key; it should pass through as normal app input and
    must not trigger manual switching.
 6. Add an app bundle id under `[apps].disable_auto_bundle_ids`, restart
-   Typeflow, and confirm automatic layout switching does not fire in that app.
+   TypeClaw, and confirm automatic layout switching does not fire in that app.
 7. In the same auto-disabled app, tap standalone Option in a normal text field
    and confirm it can replace the current tracked token manually.
-8. Add an app bundle id under `[apps].disable_bundle_ids`, restart Typeflow,
+8. Add an app bundle id under `[apps].disable_bundle_ids`, restart TypeClaw,
    and confirm neither automatic observation behavior nor standalone Option switching
    fires. Repeat in a password field and confirm it does not fire.
 9. In Terminal.app and iTerm2, type a normally-switching token such as `ghsdbn`.
@@ -252,12 +250,12 @@ Running tests/abi_smoke.rs
 
 ## Coverage
 
-CI enforces `typeflow-core` line coverage at 40%. To reproduce it locally:
+CI enforces `typeclaw-core` line coverage at 40%. To reproduce it locally:
 
 ```sh
 rustup component add llvm-tools-preview
 cargo install cargo-llvm-cov --version 0.8.6 --locked
-cargo llvm-cov -p typeflow-core --locked --summary-only --fail-under-lines 40
+cargo llvm-cov -p typeclaw-core --locked --summary-only --fail-under-lines 40
 ```
 
 ## Fuzz Target Build
@@ -280,69 +278,69 @@ cargo fuzz run ffi_events -- -max_total_time=60
 ## FFI Symbols
 
 ```sh
-nm -gU target/release/libtypeflow_ffi.dylib
+nm -gU target/release/libtypeclaw_ffi.dylib
 ```
 
 Expected exported symbols:
 
 ```text
-_typeflow_engine_current_layout
-_typeflow_engine_copy_pending_replacement_inverse_utf8
-_typeflow_engine_default_config
-_typeflow_engine_force_switch_layout
-_typeflow_engine_free
-_typeflow_engine_new_embedded
-_typeflow_engine_new_embedded_with_config
-_typeflow_engine_new_from_data_dir
-_typeflow_engine_new_from_data_dir_with_config
-_typeflow_engine_new_from_host_config
-_typeflow_engine_new_from_pack_dir
-_typeflow_engine_new_from_pack_dir_with_config
-_typeflow_engine_observe
-_typeflow_engine_pending_replacement_delete_count
-_typeflow_engine_pending_replacement_inverse_utf8_len
-_typeflow_engine_pending_replacement_utf8_len
-_typeflow_engine_reset_layout
-_typeflow_engine_reset_token
-_typeflow_engine_set_host_context
-_typeflow_engine_take_pending_replacement_utf8
-_typeflow_engine_token_len
-_typeflow_last_error_message
-_typeflow_host_config_data_directory
-_typeflow_host_config_engine_config
-_typeflow_host_config_engine_source
-_typeflow_host_config_auto_disabled_bundle_count
-_typeflow_host_config_disabled_bundle_count
-_typeflow_host_config_free
-_typeflow_host_config_is_automatic_processing_disabled
-_typeflow_host_config_is_bundle_disabled
-_typeflow_host_config_load
-_typeflow_host_config_load_defaults
-_typeflow_host_config_load_with_environment
-_typeflow_host_config_macos_english_input_source_id
-_typeflow_host_config_macos_secondary_input_source_id
-_typeflow_host_config_pack_directory
-_typeflow_host_config_resolve_input_policy
-_typeflow_host_config_secondary_language
-_typeflow_host_config_source_path
+_typeclaw_engine_current_layout
+_typeclaw_engine_copy_pending_replacement_inverse_utf8
+_typeclaw_engine_default_config
+_typeclaw_engine_force_switch_layout
+_typeclaw_engine_free
+_typeclaw_engine_new_embedded
+_typeclaw_engine_new_embedded_with_config
+_typeclaw_engine_new_from_data_dir
+_typeclaw_engine_new_from_data_dir_with_config
+_typeclaw_engine_new_from_host_config
+_typeclaw_engine_new_from_pack_dir
+_typeclaw_engine_new_from_pack_dir_with_config
+_typeclaw_engine_observe
+_typeclaw_engine_pending_replacement_delete_count
+_typeclaw_engine_pending_replacement_inverse_utf8_len
+_typeclaw_engine_pending_replacement_utf8_len
+_typeclaw_engine_reset_layout
+_typeclaw_engine_reset_token
+_typeclaw_engine_set_host_context
+_typeclaw_engine_take_pending_replacement_utf8
+_typeclaw_engine_token_len
+_typeclaw_last_error_message
+_typeclaw_host_config_data_directory
+_typeclaw_host_config_engine_config
+_typeclaw_host_config_engine_source
+_typeclaw_host_config_auto_disabled_bundle_count
+_typeclaw_host_config_disabled_bundle_count
+_typeclaw_host_config_free
+_typeclaw_host_config_is_automatic_processing_disabled
+_typeclaw_host_config_is_bundle_disabled
+_typeclaw_host_config_load
+_typeclaw_host_config_load_defaults
+_typeclaw_host_config_load_with_environment
+_typeclaw_host_config_macos_english_input_source_id
+_typeclaw_host_config_macos_secondary_input_source_id
+_typeclaw_host_config_pack_directory
+_typeclaw_host_config_resolve_input_policy
+_typeclaw_host_config_secondary_language
+_typeclaw_host_config_source_path
 ```
 
 ## Standalone Dylib Caveat
 
 The macOS app bundle links the Rust static archive, so the app packaging script
-does not ship `libtypeflow_ffi.dylib`. Standalone dylib releases still need the
+does not ship `libtypeclaw_ffi.dylib`. Standalone dylib releases still need the
 install name rewritten because Cargo points it into the local `target`
 directory:
 
 ```sh
-otool -D target/release/libtypeflow_ffi.dylib
+otool -D target/release/libtypeclaw_ffi.dylib
 ```
 
 Before shipping a standalone dylib package, rewrite the install name to a
 package-relative value, for example:
 
 ```sh
-install_name_tool -id @rpath/libtypeflow_ffi.dylib target/release/libtypeflow_ffi.dylib
+install_name_tool -id @rpath/libtypeclaw_ffi.dylib target/release/libtypeclaw_ffi.dylib
 ```
 
 Do this in the standalone dylib packaging script, not by committing mutated
