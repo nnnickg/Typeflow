@@ -194,8 +194,9 @@ See [`docs/engine.md`](docs/engine.md) for what each config field actually contr
 The macOS agent reads the same config path for engine tuning, active secondary
 language packs, excluded app bundle IDs, and optional real macOS input-source
 IDs. `TYPECLAW_DATA_DIR` and `TYPECLAW_PACK_DIR` override TOML in both the CLI
-and macOS host. Manual switching is not configurable in TOML: the macOS host
-hardcodes standalone Option press/release.
+and macOS host. `TYPECLAW_DATA_DIR` is an EN/UK artifact override and requires
+`language.secondary = "uk"`. Manual switching is not configurable in TOML: the
+macOS host hardcodes standalone Option press/release.
 Option+another key is treated as normal app input.
 
 Privacy and operations docs:

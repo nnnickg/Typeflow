@@ -139,8 +139,8 @@ written against this file, not against CLI convenience behavior.
 - Embedded data must deserialize into `CompiledLanguageData` whose
   `language_tag` matches the expected pack id.
 - Pack manifests must stay within the pack directory. Path traversal is invalid.
-- Pack ids are stable user-facing identifiers. `en` is reserved and cannot be a
-  secondary pack id.
+- Pack ids are stable user-facing identifiers. `en` and `uk` are reserved and
+  cannot be external secondary pack ids.
 - Secondary packs own their `punctuation_letter_keys`; the engine must not
   assume Ukrainian-specific punctuation-key behavior.
 - Pack format compatibility is governed by `PACK_FORMAT_VERSION`.

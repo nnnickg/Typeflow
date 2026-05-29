@@ -490,6 +490,9 @@ fn validate_pack_id(id: &str) -> Result<()> {
     if id == "en" {
         bail!("spec field 'id' cannot be 'en'; English is the fixed primary side");
     }
+    if id == "uk" {
+        bail!("spec field 'id' cannot be 'uk'; Ukrainian is the embedded secondary side");
+    }
     if !id
         .chars()
         .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
@@ -1556,8 +1559,8 @@ mod tests {
 
     #[test]
     fn pack_id_rejects_reserved_and_path_like_values() {
-        assert!(validate_pack_id("uk").is_ok());
         assert!(validate_pack_id("en").is_err());
+        assert!(validate_pack_id("uk").is_err());
         assert!(validate_pack_id("../uk").is_err());
         assert!(validate_pack_id("uk/en").is_err());
     }

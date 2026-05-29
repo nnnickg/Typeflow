@@ -4,7 +4,7 @@
 TOML spec.
 
 Ukrainian is the embedded secondary language. Use packs for any other local
-secondary language.
+secondary language; external pack ids cannot be `en` or `uk`.
 
 ```sh
 cargo run --release -p typeclaw-data -- build-pack ./secondary.toml --out /tmp/secondary.typeclaw-pack

@@ -1032,7 +1032,7 @@ checksum = "756daf9b1013ebe47a8776667b466417e2d4c5679d441c26230efd9ef78692db"
 
 [[package]]
 name = "typeclaw-cli"
-version = "1.2.2"
+version = "1.2.3"
 dependencies = [
  "clap",
  "clap_complete",
@@ -1047,7 +1047,7 @@ dependencies = [
 
 [[package]]
 name = "typeclaw-core"
-version = "1.2.2"
+version = "1.2.3"
 dependencies = [
  "criterion",
  "fst",
@@ -1058,7 +1058,7 @@ dependencies = [
 
 [[package]]
 name = "typeclaw-data"
-version = "1.2.2"
+version = "1.2.3"
 dependencies = [
  "anyhow",
  "flate2",
@@ -1071,7 +1071,7 @@ dependencies = [
 
 [[package]]
 name = "typeclaw-ffi"
-version = "1.2.2"
+version = "1.2.3"
 dependencies = [
  "criterion",
  "typeclaw-core",
@@ -1080,7 +1080,7 @@ dependencies = [
 
 [[package]]
 name = "typeclaw-host-config"
-version = "1.2.2"
+version = "1.2.3"
 dependencies = [
  "serde",
  "toml",

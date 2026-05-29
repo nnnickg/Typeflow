@@ -1182,6 +1182,12 @@ impl LanguageBundle {
                 "secondary pack id cannot be 'en'; English is the fixed primary side".to_owned(),
             ));
         }
+        if secondary.id == "uk" {
+            return Err(BundleError::InvalidPack(
+                "secondary pack id cannot be 'uk'; Ukrainian is the embedded secondary side"
+                    .to_owned(),
+            ));
+        }
 
         let (en_ngrams, en_dict, en_dict_prefix) = Self::embedded_english_artifacts();
         Ok(Self {
@@ -1367,6 +1373,11 @@ fn validate_pack_id(id: &str) -> Result<(), BundleError> {
     if id == "en" {
         return Err(BundleError::InvalidPack(
             "id 'en' is reserved; English is the fixed primary side".to_owned(),
+        ));
+    }
+    if id == "uk" {
+        return Err(BundleError::InvalidPack(
+            "id 'uk' is reserved; Ukrainian is the embedded secondary side".to_owned(),
         ));
     }
     if !id
@@ -1760,12 +1771,14 @@ dict_prefix = "dict-prefix.bin"
     }
 
     #[test]
-    fn pack_manifest_rejects_reserved_english_id() {
-        let dir = temp_pack_dir("reserved-en");
-        write_manifest(&dir, "en");
+    fn pack_manifest_rejects_reserved_ids() {
+        for id in ["en", "uk"] {
+            let dir = temp_pack_dir(&format!("reserved-{id}"));
+            write_manifest(&dir, id);
 
-        let error = LanguagePackManifest::read_from_dir(&dir).unwrap_err();
-        assert!(error.to_string().contains("reserved"));
+            let error = LanguagePackManifest::read_from_dir(&dir).unwrap_err();
+            assert!(error.to_string().contains("reserved"));
+        }
     }
 
     #[test]

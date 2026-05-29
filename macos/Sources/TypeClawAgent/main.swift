@@ -605,6 +605,40 @@ private final class TypeClawAgent: NSObject {
             return
         }
 
+        if let replacementPlan {
+            textReplacer.replaceLastToken(
+                reason: source,
+                deleteCount: replacementPlan.deleteCount,
+                with: replacementPlan.text,
+                isStillValid: { [weak self] in
+                    self?.replacementFocusIsStillValid(replacementPlan.focus) ?? false
+                },
+                didPost: { [weak self] in
+                    guard let self,
+                          capturedReplacementGeneration == self.replacementGeneration,
+                          self.replacementFocusIsStillValid(replacementPlan.focus)
+                    else {
+                        return
+                    }
+                    if source == "manual" {
+                        self.updateManualReplacementToggle(
+                            from: replacementPlan,
+                            targetLayout: layout
+                        )
+                    } else {
+                        self.manualReplacementToggle = nil
+                    }
+                    self.selectFutureLayout(layout, source: source)
+                }
+            )
+            return
+        }
+
+        selectFutureLayout(layout, source: source)
+    }
+
+    @discardableResult
+    private func selectFutureLayout(_ layout: TypeClawLayout, source: String) -> Bool {
         let selected = measured("inputSource.selectForFuture.\(source)", thresholdMs: slowCallThresholdMs) {
             sourceSwitcher.selectForFuture(layout, reason: source)
         }
@@ -612,28 +646,11 @@ private final class TypeClawAgent: NSObject {
             syncedInputSourceLayout = nil
             _ = syncLayoutWithCurrentInputSource()
             cancelPendingReplacement(reason: "inputSourceSelectionFailed")
-            return
+            return false
         }
         syncedInputSourceLayout = layout
         inputSourceStateReady = true
-        if let replacementPlan {
-            if source == "manual" {
-                updateManualReplacementToggle(
-                    from: replacementPlan,
-                    targetLayout: layout
-                )
-            } else {
-                manualReplacementToggle = nil
-            }
-            textReplacer.replaceLastToken(
-                reason: source,
-                deleteCount: replacementPlan.deleteCount,
-                with: replacementPlan.text,
-                isStillValid: { [weak self] in
-                    self?.replacementFocusIsStillValid(replacementPlan.focus) ?? false
-                }
-            )
-        }
+        return true
     }
 
     private func replacementPlan(from replacement: TypeClawReplacement?) -> ReplacementPlan? {
@@ -1720,7 +1737,8 @@ private final class TextReplacer {
         reason: String,
         deleteCount: Int,
         with text: String,
-        isStillValid: @escaping () -> Bool
+        isStillValid: @escaping () -> Bool,
+        didPost: @escaping () -> Void = {}
     ) {
         guard deleteCount > 0, !text.isEmpty else {
             return
@@ -1767,6 +1785,7 @@ private final class TextReplacer {
             logger.notice(
                 "replaced token reason=\(reason, privacy: .public) deleteCount=\(deleteCount, privacy: .public) insertedUtf16=\(text.utf16.count, privacy: .public)"
             )
+            didPost()
             if self.generation == scheduledGeneration {
                 self.pendingWorkItem = nil
             }

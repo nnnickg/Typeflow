@@ -308,12 +308,15 @@ impl ResolvedHostConfig {
         validate_secondary_id(&secondary_language)?;
         let macos_input_sources = MacOSInputSourceConfig::from_config(&source.config);
         validate_macos_secondary_input_source(&secondary_language, &macos_input_sources)?;
+        let data_directory = configured_data_dir_with_environment(&source.config, environment);
+        validate_data_directory_secondary(&secondary_language, data_directory.as_deref())?;
+        let pack_directory = configured_pack_dir_with_environment(&source.config, environment);
 
         Ok(Self {
             engine,
             secondary_language,
-            pack_directory: configured_pack_dir_with_environment(&source.config, environment),
-            data_directory: configured_data_dir_with_environment(&source.config, environment),
+            pack_directory,
+            data_directory,
             app_policy: AppDisablePolicy::from_bundle_ids(
                 source.config.apps.disable_bundle_ids.clone(),
                 source.config.apps.disable_auto_bundle_ids.clone(),
@@ -641,6 +644,18 @@ fn validate_secondary_id(id: &str) -> Result<(), String> {
     {
         return Err(format!(
             "invalid language.secondary '{id}': use ASCII letters, digits, '-' or '_'"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_data_directory_secondary(
+    secondary_language: &str,
+    data_directory: Option<&Path>,
+) -> Result<(), String> {
+    if data_directory.is_some() && secondary_language != "uk" {
+        return Err(format!(
+            "data.directory/TYPECLAW_DATA_DIR currently loads only embedded-format English + Ukrainian artifacts; language.secondary must be 'uk', got '{secondary_language}'"
         ));
     }
     Ok(())
@@ -995,6 +1010,29 @@ secondary_input_source_id = "com.apple.keylayout.ABC"
         assert!(error.contains("secondary_input_source_id"));
         assert!(error.contains("embedded Ukrainian model"));
         assert!(error.contains("installed secondary pack id"));
+    }
+
+    #[test]
+    fn resolved_host_config_rejects_data_directory_with_non_uk_secondary() {
+        let config = toml::from_str::<Config>(
+            r#"
+[language]
+secondary = "pl"
+
+[data]
+directory = "/tmp/typeclaw-data"
+"#,
+        )
+        .unwrap();
+
+        let error = ResolvedHostConfig::from_source(
+            ConfigSource { config, path: None },
+            &HostEnvironment::default(),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("data.directory"));
+        assert!(error.contains("language.secondary must be 'uk'"));
     }
 
     #[test]

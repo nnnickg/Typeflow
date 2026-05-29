@@ -101,7 +101,7 @@ dictionary inputs. Pack authors should fill `source_corpus` and
   `fst::Map<Vec<u8>>` blobs: prefix → `prefix_sum`, then prefix →
   `prefix_sample`.
 - The n-gram artifact's `language_tag` must exactly match manifest `id`.
-- `id = "en"` is invalid for secondary packs.
+- `id = "en"` and `id = "uk"` are invalid for external secondary packs.
 - Keyboard rows, when provided, must contain exactly `PhysicalKey::COUNT`
   characters.
 - Each keyboard-row character must be a single non-combining UTF-16 code unit.

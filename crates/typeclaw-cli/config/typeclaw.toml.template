@@ -133,6 +133,7 @@ disable_auto_bundle_ids = [
 
 # Dev override for the language-bundle directory.
 # Release binaries use the embedded model by default. Set this only when testing
-# freshly rebuilt artifacts without rebuilding the CLI/library.
+# freshly rebuilt EN/UK artifacts without rebuilding the CLI/library. This
+# override is valid only with language.secondary = "uk".
 # Resolution order: $TYPECLAW_DATA_DIR > this field > installed pack/embedded model.
 # directory = "/path/to/data"
